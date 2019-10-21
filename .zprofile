@@ -12,6 +12,10 @@ export PATH="$HOME/.nodebrew/current/bin:$PATH"
 # ruby
 eval "$(rbenv init -)"
 
+# golang
+eval "$(goenv init -)" 
+export GOPATH=$HOME/.go
+
 # direnv
 export EDITOR="/usr/bin/vim"
 eval "$(direnv hook bash)"
