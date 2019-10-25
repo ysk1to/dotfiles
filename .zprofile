@@ -20,4 +20,7 @@ export GOPATH=$HOME/.go
 export EDITOR="/usr/bin/vim"
 eval "$(direnv hook bash)"
 
+# local bin
+export PATH="$HOME/bin:$PATH"
+
 [ -f ~/.zshrc ] &&  . ~/.zshrc
