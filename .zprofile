@@ -7,7 +7,7 @@ eval "$(pyenv init -)"
 export PATH="$PYENV_ROOT/versions/anaconda3-5.2.0/bin:$PATH"
 
 # node
-export PATH="$HOME/.nodebrew/current/bin:$PATH"
+eval "$(nodenv init -)"
 
 # ruby
 eval "$(rbenv init -)"
