@@ -58,6 +58,9 @@ set number
 "" multibyte
 set ambiwidth=double
 
+"" clipboard
+set clipboard+=unnamed
+"
 "" background"
 highlight! Normal ctermbg=NONE guibg=NONE
 highlight! NonText ctermbg=NONE guibg=NONE
