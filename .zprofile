@@ -23,4 +23,6 @@ eval "$(direnv hook bash)"
 # local bin
 export PATH="$HOME/bin:$PATH"
 
+[ -f ~/.zprofile.local  ] && . ~/.zprofile.local
+
 [ -f ~/.zshrc ] &&  . ~/.zshrc
