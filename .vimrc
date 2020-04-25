@@ -7,6 +7,9 @@ set backspace=indent,eol,start
 " line
 set number
 
+" not create swapfile
+set noswapfile
+
 " multibyte
 set ambiwidth=double
 
