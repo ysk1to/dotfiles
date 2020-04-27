@@ -51,6 +51,9 @@ Plug 'tiagofumo/vim-nerdtree-syntax-highlight'
 " status line
 Plug 'itchyny/lightline.vim'
 
+" paste
+Plug 'ConradIrwin/vim-bracketed-paste'
+
 "" bracket auto close
 Plug 'cohama/lexima.vim'
 Plug 'tpope/vim-surround'
