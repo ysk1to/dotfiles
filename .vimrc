@@ -1,6 +1,11 @@
 "" Basic setting
 let mapleader = ","
 
+" tab
+set tabstop=4
+set expandtab
+set shiftwidth=4
+
 " delete key
 set backspace=indent,eol,start
 
