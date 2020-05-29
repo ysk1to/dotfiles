@@ -10,6 +10,14 @@ POWERLEVEL9K_MULTILINE_FIRST_PROMPT_PREFIX=""
 # solve ctrl+a command does not work issue.
 bindkey -e
 
+# zsh-completions
+if type brew &>/dev/null; then
+    FPATH=$(brew --prefix)/share/zsh-completions:$FPATH
+
+    autoload -Uz compinit
+    compinit
+fi
+
 # alias
 
 ## ls
