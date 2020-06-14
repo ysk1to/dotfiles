@@ -21,6 +21,9 @@ set ambiwidth=double
 " clipboard
 set clipboard+=unnamed
 
+" search case-sensitive
+set ignorecase
+
 " background"
 highlight! Normal ctermbg=NONE guibg=NONE
 highlight! NonText ctermbg=NONE guibg=NONE
@@ -34,6 +37,8 @@ map <C-l> <C-W>l
 
 " highlight
 set hlsearch
+autocmd ColorScheme * hi Search ctermbg=Cyan
+autocmd ColorScheme * hi Search ctermfg=Black
 
 " search (? backwords)
 map <space> /
