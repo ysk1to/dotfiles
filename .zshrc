@@ -43,6 +43,9 @@ alias gf='git fetch'
 alias gm='git merge'
 alias gc='git commit'
 
+# terraform
+alias tf='terraform'
+
 ## program
 alias n='node'
 alias p='python'

@@ -89,6 +89,9 @@ Plug 'mattn/vim-lsp-settings'
 Plug 'prabirshrestha/asyncomplete.vim'
 Plug 'prabirshrestha/asyncomplete-lsp.vim'
 
+" terraform
+Plug 'hashivim/vim-terraform'
+
 " emmet
 Plug 'mattn/emmet-vim'
 
@@ -139,3 +142,7 @@ let g:lsp_signs_error = {'text': '✗'}
 let g:lsp_signs_warning = {'text': '!!'}
 let g:lsp_signs_information = {'text': 'i'}
 let g:lsp_signs_hint = {'text': '?'}
+
+" vim-terraform
+let g:terraform_align=1
+let g:terraform_fmt_on_save=1
