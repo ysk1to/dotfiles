@@ -6,6 +6,7 @@ brew "anyenv"
 brew "fontforge"
 brew "mas"
 brew "mkcert"
+brew "openjdk"
 brew "tig"
 brew "vim"
 brew "wget"
@@ -13,11 +14,13 @@ brew "sanemat/font/ricty", args: ["with-powerline"]
 cask "1password"
 cask "alfred"
 cask "appcleaner"
+cask "chatwork"
 cask "deepl"
 cask "docker"
 cask "google-chrome"
 cask "google-japanese-ime"
 cask "iterm2"
+cask "kindle"
 cask "notion"
 cask "omnifocus"
 cask "postman"
@@ -30,4 +33,5 @@ mas "iMovie", id: 408981434
 mas "Keynote", id: 409183694
 mas "Numbers", id: 409203825
 mas "Pages", id: 409201541
+mas "Paste", id: 967805235
 mas "Toggl Track", id: 1291898086
