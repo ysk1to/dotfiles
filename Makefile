@@ -1,5 +1,5 @@
 DOTPATH    := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))
-CANDIDATES := $(wildcard .??*) .vim_runtime/my_configs.vim bin
+CANDIDATES := $(wildcard .??*) bin
 EXCLUSIONS := .DS_Store .git .gitmodules
 DOTFILES   := $(filter-out $(EXCLUSIONS), $(CANDIDATES))
 
