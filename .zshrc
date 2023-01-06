@@ -1,11 +1,6 @@
-# Prezto + poworlevel9k
-POWERLEVEL9K_MODE=nerdfont-complete
+# Prezto + poworlevel10k
 [ -f "${ZDOTDIR:-$HOME}/.zprezto/init.zsh"  ] && source "${ZDOTDIR:-$HOME}/.zprezto/init.zsh"
-POWERLEVEL9K_LEFT_PROMPT_ELEMENTS=(dir vcs)
-POWERLEVEL9K_RIGHT_PROMPT_ELEMENTS=()
-POWERLEVEL9K_PROMPT_ON_NEWLINE=true
-POWERLEVEL9K_MULTILINE_LAST_PROMPT_PREFIX=" \U25B8 "
-POWERLEVEL9K_MULTILINE_FIRST_PROMPT_PREFIX=""
+source "${ZDOTDIR:-$HOME}/.p10k.zsh"
 
 # solve ctrl+a command does not work issue.
 bindkey -e

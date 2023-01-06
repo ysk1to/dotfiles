@@ -6,6 +6,9 @@ eval "$(/opt/homebrew/bin/brew shellenv)"
 # anyenv
 eval "$(anyenv init -)"
 
+# java
+export PATH="/opt/homebrew/opt/openjdk/bin:$PATH"
+
 # python
 #export PYENV_ROOT="$HOME/.pyenv"
 #export PATH="$PYENV_ROOT/bin:$PATH"
