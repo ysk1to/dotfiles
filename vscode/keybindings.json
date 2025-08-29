@@ -1,5 +1,10 @@
-// 既定値を上書きするには、このファイル内にキー バインドを挿入します
+// VSCode カスタムキーバインディング設定
 [
+    // ========================================
+    // サイドバー・エクスプローラー操作
+    // ========================================
+    
+    // ,n でエクスプローラー表示/非表示を切り替え
     {
         "key": ", n",
         "command": "workbench.view.explorer",
@@ -10,24 +15,8 @@
         "command": "workbench.action.toggleSidebarVisibility",
         "when": "explorerViewletVisible && !searchViewletVisible && !inDebugMode && vim.mode != 'SearchInProgressMode' && vim.mode != 'Insert'"
     },
-    // サイドバーを表示したまま，フォーカスを切り替え
-    {
-        "key": "ctrl+h",
-        "command": "workbench.action.focusSideBar",
-        "when": "editorFocus && vim.mode != 'SearchInProgressMode' && vim.mode != 'Insert'"
-    },
-    // ターミナルからサイドバーへフォーカスを切り替え（効かないのでコメントアウト）
-    {
-        "key": "ctrl+h",
-        "command": "workbench.action.focusSideBar",
-        "when": "terminalFocus"
-    },
-    {
-        "key": "ctrl+l",
-        "command": "workbench.action.focusFirstEditorGroup",
-        "when": "explorerViewletFocus"
-    },
-    // ファイルの時は"Enter" or "o"で同一タブで表示
+    
+    // エクスプローラー内でのファイル操作
     {
         "key": "Enter",
         "command": "list.select",
@@ -38,73 +27,115 @@
         "command": "list.select",
         "when": "explorerViewletFocus && explorerViewletVisible && !explorerResourceIsFolder && !inputFocus"
     },
-    // フォルダのときは"Enter" or "o"で展開
     {
         "key": "Enter",
         "command": "list.toggleExpand",
         "when": "explorerViewletFocus && explorerViewletVisible && explorerResourceIsFolder && !inputFocus"
     },
-    // "s"で別ウィンドウで開く
     {
         "key": "s",
         "command": "explorer.openToSide",
         "when": "explorerViewletFocus && explorerViewletVisible && !explorerResourceIsFolder && !inputFocus"
     },
-    // --- ファイルシステム系 ---
-    // "m + r"でリネーム
+    
+    // ファイル操作 (m + キー)
     {
         "key": "m m",
         "command": "renameFile",
         "when": "explorerViewletVisible && filesExplorerFocus && !inputFocus"
     },
-    // "m + c"でコピー
     {
         "key": "m c",
         "command": "filesExplorer.copy",
         "when": "explorerViewletVisible && filesExplorerFocus && !inputFocus"
     },
-    // "m + p"でペースト
     {
         "key": "m p",
         "command": "filesExplorer.paste",
         "when": "explorerViewletVisible && filesExplorerFocus && !inputFocus"
     },
-    // "m + a"でファイル追加
     {
         "key": "m a",
         "command": "explorer.newFile",
         "when": "explorerViewletVisible && filesExplorerFocus && !inputFocus"
     },
-    // "m + d"で削除
     {
         "key": "m d",
         "command": "deleteFile",
         "when": "explorerViewletVisible && filesExplorerFocus && !inputFocus"
     },
-    // "m + f"でフォルダ追加
     {
         "key": "m f",
         "command": "explorer.newFolder",
         "when": "explorerViewletVisible && filesExplorerFocus && !inputFocus"
     },
-    // ターミナルの新規ウィンドウを作成
+
+    // ========================================
+    // フォーカス移動・ペイン操作
+    // ========================================
+    
+    // エクスプローラー ⇔ エディタ間の移動
     {
-        "key": "ctrl+z",
-        "command": "workbench.action.terminal.newInActiveWorkspace"
+        "key": "ctrl+h",
+        "command": "workbench.action.focusSideBar",
+        "when": "editorFocus && vim.mode != 'SearchInProgressMode' && vim.mode != 'Insert'"
     },
-    // ターミナルにフォーカスを切り替え
+    {
+        "key": "ctrl+h",
+        "command": "workbench.action.focusSideBar",
+        "when": "terminalFocus"
+    },
+    {
+        "key": "ctrl+l",
+        "command": "workbench.action.focusFirstEditorGroup",
+        "when": "explorerViewletFocus"
+    },
+    
+    // エディタ ⇔ ターミナル間の移動
     {
         "key": "ctrl+j",
         "command": "workbench.action.terminal.focus",
         "when": "editorFocus && vim.mode != 'SearchInProgressMode' && vim.mode != 'Insert'"
     },
-    // エディタにフォーカスを切り替え
     {
         "key": "ctrl+k",
         "command": "workbench.action.focusFirstEditorGroup",
         "when": "terminalFocus"
     },
-    // ターミナルのウィンドウ切り替え
+    
+    // エディタ内の分割ペイン間移動
+    {
+        "key": "alt+h",
+        "command": "workbench.action.focusLeftGroup",
+        "when": "editorFocus"
+    },
+    {
+        "key": "alt+l",
+        "command": "workbench.action.focusRightGroup",
+        "when": "editorFocus"
+    },
+    {
+        "key": "alt+j",
+        "command": "workbench.action.focusBelowGroup",
+        "when": "editorFocus"
+    },
+    {
+        "key": "alt+k",
+        "command": "workbench.action.focusAboveGroup",
+        "when": "editorFocus"
+    },
+
+    // ========================================
+    // ターミナル操作
+    // ========================================
+    
+    // ターミナル新規作成
+    {
+        "key": "ctrl+z",
+        "command": "workbench.action.terminal.newInActiveWorkspace"
+    },
+    
+    // ターミナル間の切り替え
     {
         "key": "ctrl+l",
         "command": "workbench.action.terminal.focusNext",
@@ -115,11 +146,8 @@
         "command": "workbench.action.terminal.focusPrevious",
         "when": "terminalFocus && terminalProcessSupported"
     },
-    {
-        "key": "ctrl+n",
-        "command": "-cursorDown",
-        "when": "textInputFocus"
-    },
+    
+    // ターミナル内での改行継続
     {
         "key": "shift+enter",
         "command": "workbench.action.terminal.sendSequence",
@@ -127,5 +155,73 @@
             "text": "\\\r\n"
         },
         "when": "terminalFocus"
+    },
+
+    // ========================================
+    // タブ操作
+    // ========================================
+    
+    // Chrome風タブ切り替え
+    {
+        "key": "ctrl+tab",
+        "command": "workbench.action.nextEditor"
+    },
+    {
+        "key": "ctrl+shift+tab",
+        "command": "workbench.action.previousEditor"
+    },
+
+    // ========================================
+    // 検索・ナビゲーション (Space + キー)
+    // ========================================
+    
+    // ファイル検索
+    {
+        "key": "space f",
+        "command": "workbench.action.quickOpen",
+        "when": "vim.mode != 'Insert' && vim.mode != 'SearchInProgressMode'"
+    },
+    
+    // シンボル検索
+    {
+        "key": "space s",
+        "command": "workbench.action.gotoSymbol",
+        "when": "vim.mode != 'Insert' && vim.mode != 'SearchInProgressMode'"
+    },
+    
+    // 全体検索
+    {
+        "key": "space /",
+        "command": "workbench.action.findInFiles",
+        "when": "vim.mode != 'Insert' && vim.mode != 'SearchInProgressMode'"
+    },
+
+    // ========================================
+    // Git操作 (Space + キー)
+    // ========================================
+    
+    // Git状態表示
+    {
+        "key": "space g",
+        "command": "workbench.view.scm",
+        "when": "vim.mode != 'Insert' && vim.mode != 'SearchInProgressMode'"
+    },
+    
+    // Git差分表示
+    {
+        "key": "space d",
+        "command": "git.openChange",
+        "when": "vim.mode != 'Insert' && vim.mode != 'SearchInProgressMode'"
+    },
+
+    // ========================================
+    // その他の設定
+    // ========================================
+    
+    // Ctrl+Nの既定動作を無効化
+    {
+        "key": "ctrl+n",
+        "command": "-cursorDown",
+        "when": "textInputFocus"
     }
 ]
