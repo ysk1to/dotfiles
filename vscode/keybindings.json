@@ -82,25 +82,27 @@
     },
     {
         "key": "ctrl+h",
-        "command": "workbench.action.focusSideBar",
-        "when": "terminalFocus"
-    },
-    {
-        "key": "ctrl+l",
         "command": "workbench.action.focusFirstEditorGroup",
         "when": "explorerViewletFocus"
     },
     
-    // エディタ ⇔ ターミナル間の移動
+    // エディタ → ターミナル → Claude Code → エディタの巡回
     {
-        "key": "ctrl+j",
+        "key": "ctrl+l",
         "command": "workbench.action.terminal.focus",
         "when": "editorFocus && vim.mode != 'SearchInProgressMode' && vim.mode != 'Insert'"
     },
     {
-        "key": "ctrl+k",
-        "command": "workbench.action.focusFirstEditorGroup",
+        "key": "ctrl+l",
+        "command": "workbench.action.terminal.sendSequence",
+        "args": {
+            "text": "osascript -e 'tell application \"Claude\" to activate' 2>/dev/null || open -a 'Claude' 2>/dev/null"
+        },
         "when": "terminalFocus"
+    },
+    {
+        "key": "ctrl+k",
+        "command": "workbench.action.focusFirstEditorGroup"
     },
     
     // エディタ内の分割ペイン間移動
@@ -135,14 +137,14 @@
         "command": "workbench.action.terminal.newInActiveWorkspace"
     },
     
-    // ターミナル間の切り替え
+    // ターミナル間の切り替え（複数ターミナルがある場合）
     {
-        "key": "ctrl+l",
+        "key": "alt+l",
         "command": "workbench.action.terminal.focusNext",
         "when": "terminalFocus && terminalProcessSupported"
     },
     {
-        "key": "ctrl+h",
+        "key": "alt+h",
         "command": "workbench.action.terminal.focusPrevious",
         "when": "terminalFocus && terminalProcessSupported"
     },
