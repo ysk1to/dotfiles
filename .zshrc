@@ -1,3 +1,8 @@
+# Powerlevel10k instant prompt（入力待ちを伴う処理より前に置く）
+if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
+  source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
+fi
+
 # Prezto + poworlevel10k
 [ -f "${ZDOTDIR:-$HOME}/.zprezto/init.zsh"  ] && source "${ZDOTDIR:-$HOME}/.zprezto/init.zsh"
 source "${ZDOTDIR:-$HOME}/.p10k.zsh"
@@ -11,6 +16,13 @@ if type brew &>/dev/null; then
 
     autoload -Uz compinit
     compinit
+fi
+
+# fzf（tmux 内ではポップアップで表示）
+if type fzf &>/dev/null; then
+    source <(fzf --zsh)
+    export FZF_TMUX=1
+    export FZF_TMUX_OPTS="-p 80%"
 fi
 
 # alias
