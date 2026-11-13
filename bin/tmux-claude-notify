@@ -1,9 +1,29 @@
 #!/bin/bash
 # Claude Code のフックから呼ばれ、実行中ペインの状態を tmux のペインオプション @claude_state に記録する。
+# 待機中・完了になったときは効果音も鳴らす。
 # 使い方: tmux-claude-notify waiting|done|running
-#   waiting: 許可待ち・入力待ち / done: 作業完了 / running: 作業中（表示を消す）
+#   waiting: 許可待ち / done: 作業完了 / running: 作業中（色を元に戻す）
+# 効果音は CLAUDE_SOUND_WAITING / CLAUDE_SOUND_DONE で変更できる（空にすると鳴らさない）
 
-cat > /dev/null  # フックの入力 JSON は使わない
+sound_waiting="${CLAUDE_SOUND_WAITING-/System/Library/Sounds/Ping.aiff}"
+sound_done="${CLAUDE_SOUND_DONE-/System/Library/Sounds/Glass.aiff}"
+
+input=$(cat)
+
+# 完了後に放置したときの入力待ち通知（idle_prompt）では状態を変えない
+if [ "$1" = waiting ] && command -v jq > /dev/null; then
+  [ "$(echo "$input" | jq -r '.notification_type // empty')" = idle_prompt ] && exit 0
+fi
+
+play() {
+  [ -n "$1" ] && [ -f "$1" ] && afplay "$1" > /dev/null 2>&1 &
+}
+
+case "$1" in
+  waiting) play "$sound_waiting" ;;
+  done)    play "$sound_done" ;;
+esac
+
 [ -n "$TMUX_PANE" ] && command -v tmux > /dev/null || exit 0
 
 case "$1" in
