@@ -1,0 +1,14 @@
+#!/bin/bash
+# Claude Code の statusLine から呼ばれる。
+# プランの使用率（rate_limits）を tmux 用にキャッシュし、簡単なステータス行を出力する。
+
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-rate-limits.json"
+input=$(cat)
+
+limits=$(echo "$input" | jq -c '.rate_limits // empty')
+if [ -n "$limits" ]; then
+  mkdir -p "$(dirname "$cache")"
+  echo "$limits" > "$cache.tmp" && mv "$cache.tmp" "$cache"
+fi
+
+echo "$input" | jq -r '"[\(.model.display_name)] ctx \(.context_window.used_percentage // 0 | floor)%"'
