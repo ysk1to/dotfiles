@@ -22,6 +22,7 @@ macOS用の設定ファイル管理リポジトリ
 ### アプリケーション
 - `Brewfile` - Homebrewパッケージ管理
 - `iTerm.json` - iTerm2カラーテーマ設定
+- `iterm2/profile.json` - iTerm2のdynamic profile（Shift+EnterでESC+CRを送りClaude Codeで改行）
 
 ### スクリプト
 - `bin/ide` - tmuxセッション自動構築スクリプト
@@ -51,7 +52,13 @@ make deploy-vscode
 make deploy-claude
 ```
 
-### 5. Homebrewパッケージをインストール
+### 5. iTerm2プロファイルを反映
+```bash
+make deploy-iterm
+```
+iTerm2の Settings → Profiles で「ysk1to (dotfiles)」を選び、Other Actions → Set as Default でデフォルトにする
+
+### 6. Homebrewパッケージをインストール
 ```bash
 brew bundle
 ```
@@ -63,6 +70,7 @@ brew bundle
 - `make deploy` - dotfilesをホームディレクトリにシンボリックリンク作成
 - `make deploy-vscode` - VSCode設定ファイルをアプリケーションディレクトリにコピー
 - `make deploy-claude` - Claude Code設定を`~/.claude/`にシンボリックリンク作成
+- `make deploy-iterm` - iTerm2のdynamic profileをシンボリックリンク作成
 
 ### カスタムスクリプト
 - `ide` - tmuxで開発環境を自動構築
