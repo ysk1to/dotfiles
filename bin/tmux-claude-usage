@@ -1,12 +1,20 @@
 #!/bin/bash
 # claude-statusline がキャッシュしたプランの使用率を tmux のステータスバー向けに出力する。
-# 例: 5h 42%(16:00) 7d 18%
+# 例: ⏳ 5h ▰▰▱▱▱ 42% ↻16:00 📆 7d ▰▱▱▱▱ 18%
+# 使用率は 50% 未満を緑、80% 未満を黄、それ以上を赤で表示する
 
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-rate-limits.json"
-[ -f "$cache" ] || { echo "5h -- 7d --"; exit 0; }
+[ -f "$cache" ] || { echo "⏳ 5h -- 📆 7d --"; exit 0; }
 
 jq -r --argjson now "$(date +%s)" '
-  def pct(w): if w and w.resets_at > $now then "\(w.used_percentage | floor)%" else "--" end;
-  def reset(w): if w and w.resets_at > $now then "(\(w.resets_at | strflocaltime("%H:%M")))" else "" end;
-  "5h \(pct(.five_hour))\(reset(.five_hour)) 7d \(pct(.seven_day))"
+  def active(w): w and w.resets_at > $now;
+  def color(p): if p >= 80 then "colour203" elif p >= 50 then "colour221" else "colour120" end;
+  def bar(p): (p / 20 | floor) as $n | ("▰" * $n) + ("▱" * (5 - $n));
+  def seg(name; w):
+    if active(w) then
+      (w.used_percentage | floor) as $p
+      | "\(name) #[fg=\(color($p))]\(bar($p)) #[bold]\($p)%#[nobold,fg=default]"
+    else "\(name) --" end;
+  def reset(w): if active(w) then " #[fg=colour248]↻\(w.resets_at | strflocaltime("%H:%M"))#[fg=default]" else "" end;
+  "\(seg("⏳ 5h"; .five_hour))\(reset(.five_hour)) \(seg("📆 7d"; .seven_day))"
 ' "$cache"
