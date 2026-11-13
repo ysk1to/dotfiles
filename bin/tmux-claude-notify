@@ -30,5 +30,5 @@ case "$1" in
   waiting|done) tmux set -p -t "$TMUX_PANE" @claude_state "$1" ;;
   running)      tmux set -p -t "$TMUX_PANE" -u @claude_state ;;
 esac
-tmux refresh-client -S 2> /dev/null
+tmux refresh-client 2> /dev/null  # 枠の色も変わるよう画面全体を描き直す
 exit 0
