@@ -7,14 +7,6 @@ fi
 [ -f "${ZDOTDIR:-$HOME}/.zprezto/init.zsh"  ] && source "${ZDOTDIR:-$HOME}/.zprezto/init.zsh"
 source "${ZDOTDIR:-$HOME}/.p10k.zsh"
 
-# zsh-completions
-if type brew &>/dev/null; then
-    FPATH=$(brew --prefix)/share/zsh-completions:$FPATH
-
-    autoload -Uz compinit
-    compinit
-fi
-
 # fzf（tmux 内ではポップアップで表示）
 if type fzf &>/dev/null; then
     source <(fzf --zsh)
