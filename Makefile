@@ -15,6 +15,12 @@ deploy: ## Create symlink to home directory
 	@echo ''
 	@$(foreach val, $(DOTFILES), ln -sfnv $(abspath $(val)) $(HOME)/$(val);)
 
+deploy-claude: ## Create symlink of Claude Code settings
+	@echo '==> Start to deploy Claude Code settings.'
+	@echo ''
+	@mkdir -p $(HOME)/.claude
+	@ln -sfnv $(DOTPATH)/claude/keybindings.json $(HOME)/.claude/keybindings.json
+
 deploy-vscode: ## Copy VSCode settings to application directory
 	@echo '==> Start to deploy VSCode settings.'
 	@echo ''

@@ -16,6 +16,8 @@ macOS用の設定ファイル管理リポジトリ
 - `vscode/` - Visual Studio Code設定
   - `settings.json` - エディタ設定
   - `keybindings.json` - キーバインド設定
+- `claude/` - Claude Code設定
+  - `keybindings.json` - キーバインド設定（Alt+Enterで改行）
 
 ### アプリケーション
 - `Brewfile` - Homebrewパッケージ管理
@@ -23,6 +25,8 @@ macOS用の設定ファイル管理リポジトリ
 
 ### スクリプト
 - `bin/ide` - tmuxセッション自動構築スクリプト
+- `bin/claude-statusline` - Claude CodeのstatusLine（モデル・effort・トークン数・コンテキスト使用率など）
+- `bin/tmux-claude-usage` - Claudeプラン使用率をtmuxに表示
 
 ## 🚀 セットアップ
 
@@ -42,7 +46,12 @@ make deploy
 make deploy-vscode
 ```
 
-### 4. Homebrewパッケージをインストール
+### 4. Claude Code設定を反映
+```bash
+make deploy-claude
+```
+
+### 5. Homebrewパッケージをインストール
 ```bash
 brew bundle
 ```
@@ -53,6 +62,7 @@ brew bundle
 - `make list` - リポジトリ内のdotfilesを一覧表示
 - `make deploy` - dotfilesをホームディレクトリにシンボリックリンク作成
 - `make deploy-vscode` - VSCode設定ファイルをアプリケーションディレクトリにコピー
+- `make deploy-claude` - Claude Code設定を`~/.claude/`にシンボリックリンク作成
 
 ### カスタムスクリプト
 - `ide` - tmuxで開発環境を自動構築
