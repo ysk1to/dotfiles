@@ -1,0 +1,7 @@
+#!/bin/bash
+# 現在のセッションで動いている Claude Code のペイン数を tmux のステータスバー向けに出力する。
+# 例: 🤖×3（1つもなければ何も出力しない）
+
+count=$(tmux list-panes -s -F '#{pane_current_command}' 2>/dev/null | grep -c '^claude$')
+[ "$count" -gt 0 ] && echo "🤖×$count"
+exit 0
