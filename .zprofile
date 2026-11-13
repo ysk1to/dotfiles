@@ -22,8 +22,7 @@ export PATH="/opt/homebrew/opt/openjdk/bin:$PATH"
 #eval "$(rbenv init -)"
 
 # golang
-#eval "$(goenv init -)" 
-#export GOPATH=$HOME/.go
+export PATH="$GOENV_ROOT/shims:$PATH"
 
 # direnv
 #export EDITOR="/usr/bin/vim"
