@@ -1,7 +1,16 @@
 #!/bin/bash
-# 現在のセッションで動いている Claude Code のペイン数を tmux のステータスバー向けに出力する。
-# 例: 🤖×3（1つもなければ何も出力しない）
+# 現在のセッションで動いている Claude Code のペイン数と、待機中・完了の数を tmux のステータスバー向けに出力する。
+# 例: 🤖×3 🙋1 ✅1（Claude が1つもなければ何も出力しない）
+# 待機中・完了は tmux-claude-notify が記録したペインオプション @claude_state で判定する
 
-count=$(tmux list-panes -s -F '#{pane_current_command}' 2>/dev/null | grep -c '^claude$')
-[ "$count" -gt 0 ] && echo "🤖×$count"
-exit 0
+panes=$(tmux list-panes -s -F '#{pane_current_command} #{@claude_state}' 2>/dev/null | grep '^claude')
+[ -n "$panes" ] || exit 0
+
+total=$(echo "$panes" | wc -l | tr -d ' ')
+waiting=$(echo "$panes" | grep -c ' waiting$')
+finished=$(echo "$panes" | grep -c ' done$')
+
+out="🤖×$total"
+[ "$waiting" -gt 0 ] && out="$out 🙋$waiting"
+[ "$finished" -gt 0 ] && out="$out ✅$finished"
+echo "$out"

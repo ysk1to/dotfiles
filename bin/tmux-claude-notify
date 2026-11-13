@@ -1,0 +1,14 @@
+#!/bin/bash
+# Claude Code のフックから呼ばれ、実行中ペインの状態を tmux のペインオプション @claude_state に記録する。
+# 使い方: tmux-claude-notify waiting|done|running
+#   waiting: 許可待ち・入力待ち / done: 作業完了 / running: 作業中（表示を消す）
+
+cat > /dev/null  # フックの入力 JSON は使わない
+[ -n "$TMUX_PANE" ] && command -v tmux > /dev/null || exit 0
+
+case "$1" in
+  waiting|done) tmux set -p -t "$TMUX_PANE" @claude_state "$1" ;;
+  running)      tmux set -p -t "$TMUX_PANE" -u @claude_state ;;
+esac
+tmux refresh-client -S 2> /dev/null
+exit 0
