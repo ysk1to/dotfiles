@@ -1,0 +1,158 @@
+{
+  "cleanupPeriodDays": 365,
+  "env": {
+    "EDITOR": "code --wait"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git blame:*)",
+      "Bash(git branch --list:*)",
+      "Bash(git branch --show-current)",
+      "Bash(git branch)",
+      "Bash(git cat-file:*)",
+      "Bash(git describe:*)",
+      "Bash(git diff:*)",
+      "Bash(git fetch:*)",
+      "Bash(git grep:*)",
+      "Bash(git log:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(git remote -v)",
+      "Bash(git remote)",
+      "Bash(git rev-list:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git shortlog:*)",
+      "Bash(git show:*)",
+      "Bash(git stash list:*)",
+      "Bash(git status:*)",
+      "Bash(git tag --list:*)",
+      "Bash(git tag)",
+      "Glob",
+      "Grep",
+      "Read",
+      "Read(//private/tmp/**)",
+      "Read(//tmp/**)",
+      "WebFetch",
+      "WebSearch",
+      "mcp__serena"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(rm -rf /*)",
+      "Bash(sudo rm -rf /)",
+      "Bash(format*)",
+      "Bash(mkfs*)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)"
+    ],
+    "ask": [
+      "Agent"
+    ]
+  },
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/bin/tmux-claude-notify waiting",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/bin/tmux-claude-notify running",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/bin/tmux-claude-notify running",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/bin/tmux-claude-notify done",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/bin/tmux-claude-notify running",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "language": "japanese",
+  "tui": "fullscreen",
+  "enabledPlugins": {
+    "gopls-lsp@claude-plugins-official": true
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "~/bin/claude-statusline"
+  },
+  "model": "opus",
+  "effortLevel": "medium",
+  "spinnerVerbs": {
+    "mode": "replace",
+    "verbs": [
+      "🤔 考えとるでぇ",
+      "💪 やっとるでぇ",
+      "🔍 調べとるでぇ",
+      "📖 読んどるでぇ",
+      "📒 書いとるでぇ",
+      "🔎 探しとるでぇ",
+      "✅ 確認しとるでぇ",
+      "📊 分析しとるでぇ",
+      "📝 整理しとるでぇ",
+      "💭 検討しとるでぇ",
+      "👀 見とるでぇ",
+      "🧪 試しとるでぇ",
+      "🧰 作っとるでぇ",
+      "🔧 直しとるでぇ",
+      "🧐 チェックしとるでぇ",
+      "🧪 テストしとるでぇ",
+      "🧱 ビルドしとるでぇ",
+      "🚀 動かしとるでぇ",
+      "🏃 実行しとるでぇ",
+      "💻 コード書いとるでぇ",
+      "📄 ファイル読んどるでぇ",
+      "💪 がんばっとるでぇ",
+      "🔥 頑張っとるでぇ",
+      "⚡ 処理しとるでぇ",
+      "🔢 計算しとるでぇ",
+      "🔬 解析しとるでぇ",
+      "🔨 修正しとるでぇ",
+      "➕ 追加しとるでぇ",
+      "🧹 削除しとるでぇ",
+      "🔄 更新しとるでぇ"
+    ]
+  },
+  "theme": "dark",
+  "editorMode": "normal",
+  "autoCompactEnabled": true
+}
