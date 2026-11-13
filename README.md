@@ -16,8 +16,11 @@ macOS用の設定ファイル管理リポジトリ
 - `vscode/` - Visual Studio Code設定
   - `settings.json` - エディタ設定
   - `keybindings.json` - キーバインド設定
-- `claude/` - Claude Code設定
+- `claude/` - Claude Code設定（`~/.claude/`にシンボリックリンク）
+  - `settings.json` - 権限・フック・statusLineなどの設定
+  - `CLAUDE.md` - 全プロジェクト共通の指示
   - `keybindings.json` - キーバインド設定（Alt+Enterで改行）
+  - PCごとの設定は Git 管理外の `~/.claude/settings.local.json` に書く
 
 ### アプリケーション
 - `Brewfile` - Homebrewパッケージ管理

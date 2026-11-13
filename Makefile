@@ -19,7 +19,7 @@ deploy-claude: ## Create symlink of Claude Code settings
 	@echo '==> Start to deploy Claude Code settings.'
 	@echo ''
 	@mkdir -p $(HOME)/.claude
-	@ln -sfnv $(DOTPATH)/claude/keybindings.json $(HOME)/.claude/keybindings.json
+	@$(foreach val, keybindings.json settings.json CLAUDE.md, ln -sfnv $(DOTPATH)/claude/$(val) $(HOME)/.claude/$(val);)
 
 deploy-iterm: ## Create symlink of iTerm2 dynamic profile
 	@echo '==> Start to deploy iTerm2 dynamic profile.'
