@@ -9,24 +9,8 @@ eval "$(anyenv init -)"
 # java
 export PATH="/opt/homebrew/opt/openjdk/bin:$PATH"
 
-# python
-#export PYENV_ROOT="$HOME/.pyenv"
-#export PATH="$PYENV_ROOT/bin:$PATH"
-#eval "$(pyenv init -)"
-#export PATH="$PYENV_ROOT/versions/anaconda3-5.2.0/bin:$PATH"
-
-# node
-#eval "$(nodenv init -)"
-
-# ruby
-#eval "$(rbenv init -)"
-
 # golang
 export PATH="$GOENV_ROOT/shims:$PATH"
-
-# direnv
-#export EDITOR="/usr/bin/vim"
-#eval "$(direnv hook bash)"
 
 # local bin
 export PATH="$HOME/bin:$PATH"
