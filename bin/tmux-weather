@@ -1,0 +1,28 @@
+#!/bin/bash
+# wttr.in の天気を tmux のステータスバー向けに出力する。
+# status-interval ごとに外部 API を叩かないよう、結果を一定時間キャッシュする。
+# 例: Chiba: ☀️ +18°C
+# 使い方: tmux-weather [地点]（省略時は Chiba）
+# キャッシュの有効期間は TMUX_WEATHER_TTL（秒、既定 1800）で変更できる
+
+location="${1:-Chiba}"
+ttl="${TMUX_WEATHER_TTL:-1800}"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/tmux-weather-$location.txt"
+
+# キャッシュが有効期間内ならそのまま使う
+if [ -f "$cache" ] && [ $(( $(date +%s) - $(stat -f %m "$cache") )) -lt "$ttl" ]; then
+  cat "$cache"
+  exit 0
+fi
+
+weather=$(curl -fsS --max-time 5 "https://wttr.in/$location?format=3" 2>/dev/null)
+
+# 取得に失敗したら古いキャッシュを出す（オフライン時に空にしない）
+if [ -z "$weather" ] || [[ "$weather" == *"Unknown"* ]]; then
+  [ -f "$cache" ] && cat "$cache"
+  exit 0
+fi
+
+mkdir -p "$(dirname "$cache")"
+echo "$weather" > "$cache.tmp" && mv "$cache.tmp" "$cache"
+echo "$weather"

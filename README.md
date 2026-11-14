@@ -31,6 +31,7 @@ macOS用の設定ファイル管理リポジトリ
 - `bin/claude-team` - 指定ディレクトリでClaude Codeを3ペイン起動するtmuxセッションを構築
 - `bin/claude-statusline` - Claude CodeのstatusLine（モデル・effort・トークン数・コンテキスト使用率など）
 - `bin/tmux-claude-usage` - Claudeプラン使用率をtmuxに表示
+- `bin/tmux-weather` - wttr.inの天気をキャッシュしてtmuxに表示（既定30分）
 
 ## 🚀 セットアップ
 
