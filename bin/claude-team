@@ -1,0 +1,57 @@
+#!/bin/bash
+# 指定ディレクトリで Claude Code を3ペイン起動する tmux セッションを作る
+# 使い方: claude-team [ディレクトリ] [セッション名]
+#   ディレクトリは ~/Program からの相対パス（例: works/xxx）か絶対パス
+#   ディレクトリ省略時はカレントディレクトリ、セッション名省略時はディレクトリ名
+#   案件名はリポジトリに書かず、スニペット（例: claude-team works/xxx）で呼び分ける
+#
+# +-----------+----------+
+# |  Main     | Sub      |
+# |           |          |
+# |           +----------+
+# |           | Reviewer |
+# |           |          |
+# +-----------+----------+
+
+BASE="$HOME/Program"
+
+case "$1" in
+  "") target="$PWD" ;;
+  /*) target="$1" ;;
+  *) target="$BASE/$1" ;;
+esac
+DIR=$(cd "$target" 2>/dev/null && pwd) || { echo "ディレクトリが見つかりません: $target" >&2; exit 1; }
+# tmux のセッション名に使えない . と : は _ に置き換える
+SESSION=$(printf '%s' "${2:-$(basename "$DIR")}" | tr '.:' '__')
+
+attach() {
+  if [ -n "$TMUX" ]; then
+    tmux switch-client -t "=$SESSION"
+  else
+    tmux attach -t "=$SESSION"
+  fi
+}
+
+# 既存セッションがあればアタッチ
+if tmux has-session -t "=$SESSION" 2>/dev/null; then
+  echo "既存セッション '$SESSION' にアタッチします..."
+  attach
+  exit 0
+fi
+
+# pane-base-index に依存しないよう、番号ではなくペインIDで扱う
+main=$(tmux new-session -d -s "$SESSION" -n main -c "$DIR" -P -F '#{pane_id}')
+sub=$(tmux split-window -h -t "$main" -c "$DIR" -P -F '#{pane_id}')
+reviewer=$(tmux split-window -v -t "$sub" -c "$DIR" -P -F '#{pane_id}')
+
+tmux select-pane -t "$main" -T Main
+tmux select-pane -t "$sub" -T Sub
+tmux select-pane -t "$reviewer" -T Reviewer
+
+# claude 終了後もシェルが残るよう send-keys で起動する
+for pane in "$main" "$sub" "$reviewer"; do
+  tmux send-keys -t "$pane" claude Enter
+done
+
+tmux select-pane -t "$main"
+attach
