@@ -94,8 +94,9 @@ brew bundle
 # 新しいパッケージをインストール
 brew install [package-name]
 
-# Brewfileを更新
-brew bundle dump --force
+# Brewfileの該当カテゴリに手で追記する（dumpすると依存ライブラリまで混ざるため）
+# Brewfileとの差分確認
+brew bundle check --verbose
 ```
 
 ## 💻 主要な設定内容
