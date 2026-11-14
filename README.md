@@ -13,7 +13,7 @@ macOS用の設定ファイル管理リポジトリ
 ### エディタ設定
 - `.vimrc` - Vim設定
 - `.tmux.conf` - tmux設定
-- `vscode/` - Visual Studio Code設定
+- `vscode/` - Visual Studio Code設定（`~/Library/Application Support/Code/User/`にシンボリックリンク）
   - `settings.json` - エディタ設定
   - `keybindings.json` - キーバインド設定
 - `claude/` - Claude Code設定（`~/.claude/`にシンボリックリンク）
@@ -72,7 +72,7 @@ brew bundle
 ### Makeターゲット
 - `make list` - リポジトリ内のdotfilesを一覧表示
 - `make deploy` - dotfilesをホームディレクトリにシンボリックリンク作成
-- `make deploy-vscode` - VSCode設定ファイルをアプリケーションディレクトリにコピー
+- `make deploy-vscode` - VSCode設定をアプリケーションディレクトリにシンボリックリンク作成
 - `make deploy-claude` - Claude Code設定を`~/.claude/`にシンボリックリンク作成
 - `make deploy-iterm` - iTerm2のdynamic profileをシンボリックリンク作成
 
@@ -86,8 +86,7 @@ brew bundle
 2. `make deploy`で自動的にシンボリックリンクが作成されます
 
 ### VSCode設定の更新
-1. `vscode/`ディレクトリ内のファイルを編集
-2. `make deploy-vscode`で設定を反映
+シンボリックリンクなので、VSCode上で設定を変えるとそのまま`vscode/`に反映される。差分をコミットするだけでよい
 
 ### Homebrewパッケージの追加
 ```bash
