@@ -28,7 +28,7 @@ macOS用の設定ファイル管理リポジトリ
 - `iterm2/profile.json` - iTerm2のdynamic profile（Shift+EnterでESC+CRを送りClaude Codeで改行）
 
 ### スクリプト
-- `bin/ide` - tmuxセッション自動構築スクリプト
+- `bin/claude-team` - 指定ディレクトリでClaude Codeを3ペイン起動するtmuxセッションを構築
 - `bin/claude-statusline` - Claude CodeのstatusLine（モデル・effort・トークン数・コンテキスト使用率など）
 - `bin/tmux-claude-usage` - Claudeプラン使用率をtmuxに表示
 
@@ -76,7 +76,7 @@ brew bundle
 - `make deploy-iterm` - iTerm2のdynamic profileをシンボリックリンク作成
 
 ### カスタムスクリプト
-- `ide` - tmuxで開発環境を自動構築
+- `claude-team [dir] [session]` - tmuxでClaude Codeの開発環境を構築（dirは`~/Program`からの相対パス。案件名はスニペットで渡し、リポジトリには書かない）
 
 ## 🔧 カスタマイズ
 
