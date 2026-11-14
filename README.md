@@ -41,35 +41,27 @@ git clone https://github.com/ysk1to/dotfiles.git ~/dotfiles
 cd ~/dotfiles
 ```
 
-### 2. dotfilesをホームディレクトリに展開
+### 2. 設定の展開とHomebrewパッケージのインストール
 ```bash
-make deploy
+make install
 ```
+dotfiles・Claude Code・VSCode・iTerm2の設定をシンボリックリンクで展開し、`brew bundle`でパッケージを入れる。個別に展開したいときは`make deploy-*`を使う
 
-### 3. VSCode設定を反映
-```bash
-make deploy-vscode
-```
-
-### 4. Claude Code設定を反映
-```bash
-make deploy-claude
-```
-
-### 5. iTerm2プロファイルを反映
-```bash
-make deploy-iterm
-```
+### 3. iTerm2のプロファイルをデフォルトにする
 iTerm2の Settings → Profiles で「ysk1to (dotfiles)」を選び、Other Actions → Set as Default でデフォルトにする
 
-### 6. Homebrewパッケージをインストール
+### 4. 状態を確認
 ```bash
-brew bundle
+make check
 ```
 
 ## 📋 利用可能なコマンド
 
 ### Makeターゲット
+- `make` / `make help` - ターゲット一覧を表示
+- `make install` - すべての設定を展開し、Homebrewパッケージをインストール
+- `make check` - シンボリックリンクとHomebrewパッケージが揃っているか確認（古いだけのパッケージは問題なしとみなす）
+- `make lint` - `bin/`のスクリプトをshellcheck、JSONファイルを構文チェック
 - `make list` - リポジトリ内のdotfilesを一覧表示
 - `make deploy` - dotfilesをホームディレクトリにシンボリックリンク作成
 - `make deploy-vscode` - VSCode設定をアプリケーションディレクトリにシンボリックリンク作成
@@ -120,7 +112,8 @@ brew bundle check --verbose
 
 設定ファイルを変更した場合：
 ```bash
-# 変更をコミット
+# 構文チェックしてからコミット
+make lint
 git add .
 git commit -m "[update] 設定ファイル更新"
 git push origin master
@@ -130,6 +123,6 @@ git push origin master
 ```bash
 cd ~/dotfiles
 git pull origin master
-make deploy
-make deploy-vscode
+make install
+make check
 ```

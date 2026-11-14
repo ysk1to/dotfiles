@@ -31,6 +31,7 @@ brew "ollama", restart_service: :changed
 brew "qemu"
 brew "repomix"
 brew "serverless"
+brew "shellcheck"
 brew "yq"
 
 # -- 画像・動画・フォント --------------------------------------------------------

@@ -24,7 +24,7 @@ DIR=$(cd "$target" 2>/dev/null && pwd) || { echo "ディレクトリが見つか
 # tmux のセッション名に使えない . と : は _ に置き換える
 SESSION=$(printf '%s' "${2:-$(basename "$DIR")}" | tr '.:' '__')
 
-attach() {
+attach_session() {
   if [ -n "$TMUX" ]; then
     tmux switch-client -t "=$SESSION"
   else
@@ -35,7 +35,7 @@ attach() {
 # 既存セッションがあればアタッチ
 if tmux has-session -t "=$SESSION" 2>/dev/null; then
   echo "既存セッション '$SESSION' にアタッチします..."
-  attach
+  attach_session
   exit 0
 fi
 
@@ -54,4 +54,4 @@ for pane in "$main" "$sub" "$reviewer"; do
 done
 
 tmux select-pane -t "$main"
-attach
+attach_session
