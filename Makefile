@@ -6,16 +6,20 @@ DOTFILES   := $(filter-out $(EXCLUSIONS), $(CANDIDATES))
 VSCODE_DIR := $(HOME)/Library/Application Support/Code/User
 ITERM_DIR  := $(HOME)/Library/Application Support/iTerm2/DynamicProfiles
 
+# Claude Code のスキル。~/.claude/skills には Claude が管理するディレクトリ（synced）もあるので、スキルごとにリンクする
+SKILLS := $(notdir $(wildcard claude/skills/*))
+
 # リンク元とリンク先の対応（check で使う）。「元,先」の形で持ち、パスの空白は @ に置き換える
 LINKS := $(foreach val, $(DOTFILES), $(DOTPATH)/$(val),$(HOME)/$(val)) \
          $(foreach val, keybindings.json settings.json CLAUDE.md, $(DOTPATH)/claude/$(val),$(HOME)/.claude/$(val)) \
+         $(foreach val, $(SKILLS), $(DOTPATH)/claude/skills/$(val),$(HOME)/.claude/skills/$(val)) \
          $(foreach val, settings.json keybindings.json, $(DOTPATH)/vscode/$(val),$(subst $() ,@,$(VSCODE_DIR))/$(val)) \
          $(DOTPATH)/iterm2/profile.json,$(subst $() ,@,$(ITERM_DIR))/dotfiles.json
 
 # コメントを含まない JSON（VSCode の設定は JSONC なので別扱い）
 JSON_FILES  := $(wildcard claude/*.json iterm2/*.json) iTerm.json
 JSONC_FILES := $(wildcard vscode/*.json)
-SCRIPTS     := $(wildcard bin/*)
+SCRIPTS     := $(wildcard bin/* claude/skills/*/*.sh)
 
 .DEFAULT_GOAL := help
 .PHONY: help list install deploy deploy-claude deploy-iterm deploy-vscode check lint
@@ -41,6 +45,8 @@ deploy-claude: ## Create symlink of Claude Code settings
 	@echo ''
 	@mkdir -p $(HOME)/.claude
 	@$(foreach val, keybindings.json settings.json CLAUDE.md, ln -sfnv $(DOTPATH)/claude/$(val) $(HOME)/.claude/$(val);)
+	@mkdir -p $(HOME)/.claude/skills
+	@$(foreach val, $(SKILLS), ln -sfnv $(DOTPATH)/claude/skills/$(val) $(HOME)/.claude/skills/$(val);)
 
 deploy-iterm: ## Create symlink of iTerm2 dynamic profile
 	@echo '==> Start to deploy iTerm2 dynamic profile.'
