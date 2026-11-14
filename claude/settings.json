@@ -106,17 +106,15 @@
       }
     ]
   },
-  "language": "japanese",
-  "tui": "fullscreen",
-  "enabledPlugins": {
-    "gopls-lsp@claude-plugins-official": true
-  },
   "statusLine": {
     "type": "command",
     "command": "~/bin/claude-statusline"
   },
-  "model": "opus",
-  "effortLevel": "medium",
+  "enabledPlugins": {
+    "gopls-lsp@claude-plugins-official": true,
+    "swift-lsp@claude-plugins-official": true
+  },
+  "language": "japanese",
   "spinnerVerbs": {
     "mode": "replace",
     "verbs": [
@@ -142,6 +140,8 @@
       "🛠️ Crafting"
     ]
   },
+  "effortLevel": "medium",
+  "tui": "fullscreen",
   "theme": "dark",
   "editorMode": "normal",
   "autoCompactEnabled": true
