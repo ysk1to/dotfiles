@@ -4,7 +4,7 @@
   "[markdown]": {
     "editor.formatOnSave": false
   },
-  "workbench.colorTheme": "Default Dark+",
+  "workbench.colorTheme": "Dark+",
   "workbench.iconTheme": "material-icon-theme",
   "[html]": {
     "editor.tabSize": 2,
@@ -79,8 +79,8 @@
   "remote.containers.dockerPath": "/usr/local/bin/docker",
   "docker.commands.composeUp": "/usr/local/bin/docker-compose",
   "workbench.startupEditor": "none",
-  "go.gopath": "/Users/ysk/go/1.23.1",
-  "go.goroot": "/Users/ysk/.anyenv/envs/goenv/versions/1.23.1",
+  "go.gopath": "/Users/ysk/go/1.25.4",
+  "go.goroot": "/Users/ysk/.anyenv/envs/goenv/versions/1.25.4",
   "go.lintTool": "golangci-lint",
   "editor.suggestSelection": "first",
   "vsintellicode.modify.editor.suggestSelection": "automaticallyOverrodeDefaultValue",
@@ -111,4 +111,26 @@
   "workbench.panel.defaultLocation": "right",
   "containers.commands.composeUp": "/usr/local/bin/docker-compose",
   "docker.extension.enableComposeLanguageServer": false,
+  "[dockercompose]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2,
+    "editor.autoIndent": "advanced",
+    "editor.quickSuggestions": {
+      "other": true,
+      "comments": false,
+      "strings": true
+    },
+    "editor.defaultFormatter": "redhat.vscode-yaml"
+  },
+  "[github-actions-workflow]": {
+    "editor.defaultFormatter": "redhat.vscode-yaml"
+  },
+  "yaml.disableSchemaDetection": [
+    "**/.github/workflows/*.yml",
+    "**/.github/workflows/*.yaml",
+    "**/.gitea/workflows/*.yml",
+    "**/.gitea/workflows/*.yaml",
+    "**/.forgejo/workflows/*.yml",
+    "**/.forgejo/workflows/*.yaml"
+  ],
 }
