@@ -20,6 +20,9 @@ macOS用の設定ファイル管理リポジトリ
   - `settings.json` - 権限・フック・statusLineなどの設定
   - `CLAUDE.md` - 全プロジェクト共通の指示
   - `keybindings.json` - キーバインド設定（Alt+Enterで改行）
+  - `skills/` - 全プロジェクト共通のスキル（スキルごとに`~/.claude/skills/`へシンボリックリンク。`~/.claude/skills/synced`はClaudeが管理するので触らない）
+    - `kindle-capture/` - Kindleの本を1ページずつ撮影してPDFにする（撮影スクリプト本体も含む）
+    - `book-summary/` - 書籍PDFを章ごとに要約する
   - PCごとの設定は Git 管理外の `~/.claude/settings.local.json` に書く
 
 ### アプリケーション
