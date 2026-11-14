@@ -97,7 +97,7 @@ Plug 'mattn/emmet-vim'
 
 " markdown
 Plug 'tpope/vim-markdown'
-Plug 'iamcco/markdown-preview.nvim', { 'do': 'cd app & yarn install' }
+Plug 'iamcco/markdown-preview.nvim', { 'do': 'cd app && yarn install' }
 
 call plug#end()
 
