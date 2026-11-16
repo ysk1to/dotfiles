@@ -61,6 +61,19 @@ CLAUDE_USAGE_REFRESH="touch $marker" "$bin/tmux-claude-usage" > /dev/null
 sleep 0.5
 assert_eq "直後の呼び出しでは更新しない" "no" "$([ -f "$marker" ] && echo yes || echo no)"
 
+# 確認の間隔は1時間。10分前に確認済みなら起動しない
+rm -f "$marker"
+touch -t "$(date -v-10M +%Y%m%d%H%M.%S)" "$cache.checked"
+CLAUDE_USAGE_REFRESH="touch $marker" "$bin/tmux-claude-usage" > /dev/null
+sleep 0.5
+assert_eq "10分前に確認済みなら更新しない" "no" "$([ -f "$marker" ] && echo yes || echo no)"
+
+# 1時間を過ぎていれば起動する
+touch -t "$(date -v-61M +%Y%m%d%H%M.%S)" "$cache.checked"
+CLAUDE_USAGE_REFRESH="touch $marker" "$bin/tmux-claude-usage" > /dev/null
+sleep 0.5
+assert_eq "61分前の確認なら更新する" "yes" "$([ -f "$marker" ] && echo yes || echo no)"
+
 if [ "$failures" -ne 0 ]; then
   echo "$failures failed"
   exit 1

@@ -5,10 +5,10 @@
 
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-rate-limits.json"
 
-# 他端末での利用も反映するため、5分おきに claude-usage-refresh をバックグラウンドで起動する。
+# 他端末での利用も反映するため、1時間おきに claude-usage-refresh をバックグラウンドで起動する。
 # 起動した時刻を記録して、取得に失敗しても API を呼びすぎないようにする
 stamp="$cache.checked"
-if [ -z "$(find "$stamp" -mmin -5 2>/dev/null)" ]; then
+if [ -z "$(find "$stamp" -mmin -60 2>/dev/null)" ]; then
   mkdir -p "$(dirname "$cache")"
   touch "$stamp"
   (eval "${CLAUDE_USAGE_REFRESH:-$(dirname "$0")/claude-usage-refresh}" > /dev/null 2>&1 &)
