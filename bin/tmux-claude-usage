@@ -1,9 +1,19 @@
 #!/bin/bash
-# claude-statusline がキャッシュしたプランの使用率を tmux のステータスバー向けに出力する。
+# claude-statusline と claude-usage-refresh がキャッシュしたプランの使用率を tmux のステータスバー向けに出力する。
 # 例: ⏳ 5h ▰▰▱▱▱ 42% ↻16:00 📆 7d ▰▱▱▱▱ 18%
 # 使用率は 50% 未満を緑、80% 未満を黄、それ以上を赤で表示する
 
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-rate-limits.json"
+
+# 他端末での利用も反映するため、5分おきに claude-usage-refresh をバックグラウンドで起動する。
+# 起動した時刻を記録して、取得に失敗しても API を呼びすぎないようにする
+stamp="$cache.checked"
+if [ -z "$(find "$stamp" -mmin -5 2>/dev/null)" ]; then
+  mkdir -p "$(dirname "$cache")"
+  touch "$stamp"
+  (eval "${CLAUDE_USAGE_REFRESH:-$(dirname "$0")/claude-usage-refresh}" > /dev/null 2>&1 &)
+fi
+
 [ -f "$cache" ] || { echo "⏳ 5h -- 📆 7d --"; exit 0; }
 
 jq -r --argjson now "$(date +%s)" '
