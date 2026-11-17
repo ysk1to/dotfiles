@@ -1,0 +1,33 @@
+#!/bin/bash
+# Claude Code のフック（PostToolUse・UserPromptSubmit）から呼ばれ、コンテキストが自動圧縮に近づいたら
+# 圧縮で経緯が失われる前に Notion へ途中経過を記録するよう、会話に指示を差し込む。
+# 1回促したら、圧縮などでしきい値を下回るまでは繰り返さない。
+# しきい値は CLAUDE_CONTEXT_WARN_TOKENS で変更できる（既定 150000。autoCompactWindow より小さくする）
+
+threshold="${CLAUDE_CONTEXT_WARN_TOKENS:-150000}"
+state_dir="${XDG_CACHE_HOME:-$HOME/.cache}/claude-context-guard"
+
+input=$(cat)
+transcript=$(echo "$input" | jq -r '.transcript_path // empty')
+session=$(echo "$input" | jq -r '.session_id // empty')
+event=$(echo "$input" | jq -r '.hook_event_name // "PostToolUse"')
+[ -f "$transcript" ] && [ -n "$session" ] || exit 0
+
+# 最後の応答で送ったコンテキストの量
+tokens=$(tail -n 200 "$transcript" |
+  jq -R 'fromjson? | select(.type == "assistant") | .message.usage // empty
+    | (.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)' |
+  tail -n 1)
+[ -n "$tokens" ] || exit 0
+
+marker="$state_dir/$session"
+if [ "$tokens" -lt "$threshold" ]; then
+  rm -f "$marker"
+  exit 0
+fi
+[ -f "$marker" ] && exit 0
+mkdir -p "$state_dir" && touch "$marker"
+
+message="コンテキストが約$((tokens / 10000))万トークンになり、まもなく自動圧縮されます。Notion に記録する作業なら、圧縮で経緯が失われる前に、今の作業の区切り（なければ今すぐ）で開発ログに途中経過（何をしたか・なぜか・次にやること）を追記し、必要ならプロジェクトページの現状と決定事項も更新してください。"
+jq -n --arg event "$event" --arg message "$message" \
+  '{hookSpecificOutput: {hookEventName: $event, additionalContext: $message}}'
