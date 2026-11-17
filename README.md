@@ -24,6 +24,10 @@ macOS用の設定ファイル管理リポジトリ
     - `kindle-capture/` - Kindleの本を1ページずつ撮影してPDFにする（撮影スクリプト本体も含む）
     - `book-summary/` - 書籍PDFを章ごとに要約する
   - PCごとの設定は Git 管理外の `~/.claude/settings.local.json` に書く
+  - 個人の情報は Git 管理外のファイルに書き、`CLAUDE.md` から `@` で読み込む
+    - `~/.claude/notion-hub.local.md` - Notion のハブと DB の URL
+    - `~/.claude/todoist.local.md` - 自動実行中の判断待ちを登録する Todoist のプロジェクト
+- シェルのPCごとの設定は Git 管理外の `~/.zprofile.local` に書く（`.zprofile`が読み込む。例: tmux-weather の地点 `TMUX_WEATHER_LOCATION`）
 
 ### アプリケーション
 - `Brewfile` - Homebrewパッケージ管理
