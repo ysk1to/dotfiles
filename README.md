@@ -17,7 +17,7 @@ macOS用の設定ファイル管理リポジトリ
   - `settings.json` - エディタ設定
   - `keybindings.json` - キーバインド設定
 - `claude/` - Claude Code設定（`~/.claude/`にシンボリックリンク）
-  - `settings.json` - 権限・フック・statusLine・自動圧縮（20万トークンで開始）などの設定
+  - `settings.json` - 権限・フック・statusLine・自動圧縮（30万トークンで開始）などの設定
   - `CLAUDE.md` - 全プロジェクト共通の指示
   - `keybindings.json` - キーバインド設定（Alt+Enterで改行）
   - `skills/` - 全プロジェクト共通のスキル（スキルごとに`~/.claude/skills/`へシンボリックリンク。`~/.claude/skills/synced`はClaudeが管理するので触らない）
@@ -33,7 +33,7 @@ macOS用の設定ファイル管理リポジトリ
 ### スクリプト
 - `bin/claude-team` - 指定ディレクトリでClaude Codeを3ペイン起動するtmuxセッションを構築
 - `bin/claude-statusline` - Claude CodeのstatusLine（モデル・effort・トークン数・コンテキスト使用率など）
-- `bin/claude-context-guard` - Claude Codeのフック。コンテキストが自動圧縮に近づいたら（既定15万トークン）、圧縮前にNotionへ途中経過を記録するよう促す
+- `bin/claude-context-guard` - Claude Codeのフック。コンテキストが自動圧縮に近づいたら（既定25万トークン）、圧縮前にNotionへ途中経過を記録するよう促す
 - `bin/claude-usage-refresh` - usage APIからプラン使用率を取得してキャッシュ（Claude Codeを起動していない間の利用もtmuxに反映する）
 - `bin/tmux-claude-notify` - Claude Codeのフック。ペインの状態（許可待ち・完了・作業中）をtmuxに記録し、効果音を鳴らす
 - `bin/tmux-claude-panes` - 現在のセッションのClaude Codeペイン数と、許可待ち・完了の数をtmuxに表示

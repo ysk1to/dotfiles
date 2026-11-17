@@ -2,9 +2,9 @@
 # Claude Code のフック（PostToolUse・UserPromptSubmit）から呼ばれ、コンテキストが自動圧縮に近づいたら
 # 圧縮で経緯が失われる前に Notion へ途中経過を記録するよう、会話に指示を差し込む。
 # 1回促したら、圧縮などでしきい値を下回るまでは繰り返さない。
-# しきい値は CLAUDE_CONTEXT_WARN_TOKENS で変更できる（既定 150000。autoCompactWindow より小さくする）
+# しきい値は CLAUDE_CONTEXT_WARN_TOKENS で変更できる（既定 250000。autoCompactWindow より小さくする）
 
-threshold="${CLAUDE_CONTEXT_WARN_TOKENS:-150000}"
+threshold="${CLAUDE_CONTEXT_WARN_TOKENS:-250000}"
 state_dir="${XDG_CACHE_HOME:-$HOME/.cache}/claude-context-guard"
 
 input=$(cat)
