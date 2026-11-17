@@ -1,6 +1,8 @@
 #!/bin/bash
 # launchd などから定期的に呼ばれ、リポジトリの auto-ready の Issue を1件、Claude Code（claude -p）に PR にさせる。
 # 手順の本体はリポジトリの .claude/auto-dev.md。個人の情報（Notion の URL など）は設定ファイルに置く。
+# claude には GitHub への書き込み（push・PR・ラベル・コメント）を許さず、このスクリプトが行う。
+# claude は作業の結果を、PR のファイルか判断待ちのファイルに書いて終わる。
 # 使い方: claude-auto-dev <リポジトリのパス>
 # 設定ファイル: $CLAUDE_AUTO_DEV_CONFIG_DIR/<リポジトリ名>.md（既定 ~/.config/claude-auto-dev）
 
@@ -39,9 +41,9 @@ trap on_exit EXIT
 
 # やることがない回は Claude を起動しない（使用量を消費しない）。
 # レビュー待ちの PR が2件以上あるときも、積み上げないよう着手しない
-ready=$(gh issue list --label auto-ready --state open --json number,labels |
-  jq '[.[] | select([.labels[].name] | index("needs-decision") or index("auto-in-progress") | not)] | length') || exit 1
-[ "$ready" -gt 0 ] || exit 0
+issue=$(gh issue list --label auto-ready --state open --json number,labels |
+  jq '[.[] | select([.labels[].name] | index("needs-decision") or index("auto-in-progress") | not) | .number] | min // empty') || exit 1
+[ -n "$issue" ] || exit 0
 open_prs=$(gh pr list --label auto-dev --state open --json number | jq length) || exit 1
 [ "$open_prs" -lt 2 ] || exit 0
 
@@ -53,40 +55,63 @@ mkdir -p "$state_dir/worktrees"
 # worktree と、claude が作った手元のブランチを消す。push 済みのブランチはリモートに残る。
 # 本人のブランチを消さないよう、消すのは auto- で始まるものだけ
 cleanup() {
+  local b
   cd "$repo" || return
-  branch=$(git -C "$work" branch --show-current 2>/dev/null)
+  b=$(git -C "$work" branch --show-current 2>/dev/null)
   git worktree remove --force "$work" 2>/dev/null
   git worktree prune
-  case "$branch" in auto-*) git branch -q -D "$branch" ;; esac
+  case "$b" in auto-*) git branch -q -D "$b" ;; esac
 }
 cleanup  # 前の回が途中で止まって残ったものを消す
 work_created=yes
 git -C "$repo" worktree add -q --detach "$work" "$base" || exit 1
 
-# push と PR の作成は claude に許さず、このスクリプトが行う。claude に許すと、
-# git push origin auto-x:main のように push 先を変えて main に push できてしまうため
-pr_file="$state_dir/pr/$name.md"
-mkdir -p "$state_dir/pr"
-rm -f "$pr_file"
-export CLAUDE_AUTO_DEV_PR_FILE="$pr_file"
+# ワークフローは本人の GitHub アカウントで動くので、人のコメントと見分けられるよう目印を付ける
+comment() {
+  gh issue comment "$issue" --body "🤖 自動開発ワークフロー: $1"
+}
+mkdir -p "$state_dir/logs"
+log="$state_dir/logs/$name-$(date +%Y%m%d-%H%M%S).log"
+# 人は見ていないので、うまくいかなかったら Issue を判断待ちにし、通知で知らせる。
+# auto-ready に戻すと、同じ失敗を毎回くり返して使用量を消費するため。終了コードは2つ目の引数（既定 1）
+fail() {
+  {
+    comment "$1。ログ: $log"
+    gh issue edit "$issue" --remove-label auto-in-progress --add-label needs-decision
+  } >> "$log" 2>&1
+  osascript -e "display notification \"#${issue}: ${1}。ログ: ${log}\" with title \"claude-auto-dev: $name が失敗\""
+  exit "${2:-1}"
+}
 
-prompt="このリポジトリの自動開発ワークフローとして起動された。.claude/auto-dev.md を読み、その手順どおりに進める。
+{
+  gh issue edit "$issue" --remove-label auto-ready --add-label auto-in-progress &&
+    comment "着手しました。"
+} >> "$log" 2>&1 || exit 1
+
+# claude は結果をどちらかのファイルに書いて終わる
+pr_file="$state_dir/pr/$name.md"
+decision_file="$state_dir/decision/$name.md"
+mkdir -p "$state_dir/pr" "$state_dir/decision"
+rm -f "$pr_file" "$decision_file"
+export CLAUDE_AUTO_DEV_PR_FILE="$pr_file" CLAUDE_AUTO_DEV_DECISION_FILE="$decision_file"
+
+prompt="このリポジトリの自動開発ワークフローとして起動された。.claude/auto-dev.md を読み、その手順どおりに Issue #$issue を進める。
 人は見ていないので、確認を待たずに進め、判断が要るところでは手順どおりに止める。
-push と PR の作成は起動スクリプトが行うので、自分ではしない。PR にするときは、auto- で始まるブランチにコミットしたうえで、
-1行目に PR のタイトル、2行目以降に本文を書いたファイルを $pr_file に作って終わる。
+GitHub への書き込み（push、PR の作成、ラベルの変更、コメント）は起動スクリプトが行うので、自分ではしない。結果は次のどちらかのファイルに書いて終わる。
+- PR にするとき: auto- で始まるブランチにコミットしたうえで、1行目に PR のタイトル、2行目以降に本文を書いたファイルを $pr_file に作る。
+- 判断待ちで止めるとき: 決めてほしいこと・選択肢・おすすめとその理由を書いたファイルを $decision_file に作る。Issue へのコメントとして、そのまま載る。
 
 $(cat "$config")"
 
-# 人が確認できないので、使ってよいツールを列挙して絞る。ファイルの編集は worktree と PR のファイルだけ。
+# 人が確認できないので、使ってよいツールを列挙して絞る。ファイルの編集は worktree と結果のファイルだけ。
 # リポジトリごとのテストのコマンドなどは <リポジトリ名>.tools に1行1つで足す
 allowed=(
-  Read Glob Grep ToolSearch TodoWrite "Edit(/$work/**)" "Edit(/$pr_file)"
+  Read Glob Grep ToolSearch TodoWrite "Edit(/$work/**)" "Edit(/$pr_file)" "Edit(/$decision_file)"
   'Bash(git status:*)' 'Bash(git diff:*)' 'Bash(git log:*)' 'Bash(git show:*)' 'Bash(git rev-parse:*)'
   'Bash(git add:*)' 'Bash(git commit:*)' 'Bash(git switch:*)' 'Bash(git branch:*)' 'Bash(git fetch:*)'
   'Bash(git rm:*)' 'Bash(git mv:*)' 'Bash(git restore:*)'
-  'Bash(gh issue list:*)' 'Bash(gh issue view:*)' 'Bash(gh issue comment:*)' 'Bash(gh issue edit:*)'
-  'Bash(gh pr list:*)' 'Bash(gh pr view:*)' 'Bash(gh label list:*)'
-  'Bash(ls:*)' 'Bash(mkdir:*)'
+  'Bash(gh issue list:*)' 'Bash(gh issue view:*)' 'Bash(gh pr list:*)' 'Bash(gh pr view:*)' 'Bash(gh label list:*)'
+  'Bash(ls:*)'
   mcp__claude_ai_Notion__notion-fetch mcp__claude_ai_Notion__notion-search
   mcp__claude_ai_Notion__notion-query-data-sources mcp__claude_ai_Notion__notion-create-pages
   mcp__claude_ai_Notion__notion-update-page
@@ -98,15 +123,11 @@ if [ -f "$config_dir/$name.tools" ]; then
     [ -n "$tool" ] && allowed+=("$tool")
   done < "$config_dir/$name.tools"
 fi
-disallowed=('Bash(git push:*)' 'Bash(gh pr create:*)' 'Bash(gh pr merge:*)' 'Bash(git reset --hard:*)')
+disallowed=(
+  'Bash(git push:*)' 'Bash(gh pr create:*)' 'Bash(gh pr merge:*)' 'Bash(gh issue edit:*)'
+  'Bash(gh issue comment:*)' 'Bash(gh issue create:*)' 'Bash(gh api:*)' 'Bash(git reset --hard:*)'
+)
 
-# 人は見ていないので、失敗したら通知で知らせる
-notify_failure() {
-  osascript -e "display notification \"${1}。ログ: ${log}\" with title \"claude-auto-dev: $name が失敗\""
-}
-
-mkdir -p "$state_dir/logs"
-log="$state_dir/logs/$name-$(date +%Y%m%d-%H%M%S).log"
 cd "$work" || exit 1
 # --allowedTools などは値を複数とるので、プロンプトを先に渡す
 claude -p "$prompt" \
@@ -117,23 +138,36 @@ claude -p "$prompt" \
   >> "$log" 2>&1
 status=$?
 if [ "$status" -ne 0 ]; then
-  notify_failure "終了コード ${status}"
-  exit "$status"
+  fail "claude が終了コード ${status} で止まりました" "$status"
 fi
 
-# PR のファイルがなければ、判断待ちなどで止まったので何もしない
-[ -f "$pr_file" ] || exit 0
+if [ -f "$pr_file" ] && [ -f "$decision_file" ]; then
+  fail "PR のファイルと判断待ちのファイルの両方が残っていました"
+fi
+
+# 判断待ち: 中身をコメントして needs-decision にする。Todoist への登録は claude が済ませている
+if [ -f "$decision_file" ]; then
+  {
+    comment "判断をお願いします。
+
+$(cat "$decision_file")" &&
+      gh issue edit "$issue" --remove-label auto-in-progress --add-label needs-decision
+  } >> "$log" 2>&1 || exit 1
+  rm -f "$decision_file"
+  exit 0
+fi
+
+[ -f "$pr_file" ] || fail "PR のファイルも判断待ちのファイルも残さずに終わりました"
+
+# PR: ブランチ名とコミットを確かめてから push する。push 先はここで決めるので main には push しない
 branch=$(git branch --show-current)
 case "$branch" in
   auto-*) ;;
-  *) notify_failure "PR にするブランチが auto- で始まりません（${branch:-なし}）"; exit 1 ;;
+  *) fail "PR にするブランチが auto- で始まりません（${branch:-なし}）" ;;
 esac
-if [ "$(git rev-list --count "$base..HEAD")" -eq 0 ]; then
-  notify_failure "PR にするコミットがありません"
-  exit 1
-fi
+[ "$(git rev-list --count "$base..HEAD")" -gt 0 ] || fail "PR にするコミットがありません"
 {
   git push -q -u origin "HEAD:refs/heads/$branch" &&
     tail -n +2 "$pr_file" | gh pr create --head "$branch" --title "$(head -n 1 "$pr_file")" --body-file - --label auto-dev
-} >> "$log" 2>&1 || { notify_failure "push か PR の作成に失敗しました"; exit 1; }
+} >> "$log" 2>&1 || fail "push か PR の作成に失敗しました"
 rm -f "$pr_file"

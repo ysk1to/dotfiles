@@ -36,18 +36,19 @@ setup() {
 
 # 偽の claude・gh・osascript。gh は FAKE_ISSUES・FAKE_PRS の JSON を返す。
 # claude は FAKE_CLAUDE_BRANCH のブランチを作り、FAKE_CLAUDE_COMMIT=1 ならコミットし、
-# FAKE_PR_TEXT があれば PR のファイルに書く
+# FAKE_PR_TEXT があれば PR のファイルに、FAKE_DECISION_TEXT があれば判断待ちのファイルに書く
 fake_bin() {
   mkdir -p "$tmp/bin"
   export PATH="$tmp/bin:$PATH" FAKE_LOG="$tmp/fake.log"
   export FAKE_ISSUES='[{"number":1,"labels":[{"name":"auto-ready"}]}]' FAKE_PRS='[]' FAKE_CLAUDE_EXIT=0
-  export FAKE_CLAUDE_BRANCH=auto-1-test FAKE_CLAUDE_COMMIT=0 FAKE_PR_TEXT=
+  export FAKE_CLAUDE_BRANCH=auto-1-test FAKE_CLAUDE_COMMIT=0 FAKE_PR_TEXT= FAKE_DECISION_TEXT='A と B のどちらにするか'
   cat > "$tmp/bin/claude" <<'EOF'
 #!/bin/bash
 { echo "claude pwd=$PWD"; echo "claude head=$(git rev-parse HEAD)"; printf 'claude arg=%s\n' "$@"; } >> "$FAKE_LOG"
 git switch -q -c "$FAKE_CLAUDE_BRANCH"
 if [ "$FAKE_CLAUDE_COMMIT" = 1 ]; then echo change >> README.md && git commit -qam change; fi
 [ -z "$FAKE_PR_TEXT" ] || printf '%s\n' "$FAKE_PR_TEXT" > "$CLAUDE_AUTO_DEV_PR_FILE"
+[ -z "$FAKE_DECISION_TEXT" ] || printf '%s\n' "$FAKE_DECISION_TEXT" > "$CLAUDE_AUTO_DEV_DECISION_FILE"
 echo "PR を作りました"
 exit "$FAKE_CLAUDE_EXIT"
 EOF
@@ -57,6 +58,8 @@ case "$1 $2" in
   "issue list") echo "$FAKE_ISSUES" ;;
   "pr list") echo "$FAKE_PRS" ;;
   "pr create") printf 'gh pr create arg=%s\n' "$@" >> "$FAKE_LOG"; sed 's/^/gh pr create body=/' >> "$FAKE_LOG" ;;
+  "issue edit") echo "gh issue edit $*" >> "$FAKE_LOG" ;;
+  "issue comment") for a in "$@"; do printf 'gh issue comment arg=%s\n' "${a//$'\n'/\\n}"; done >> "$FAKE_LOG" ;;
 esac
 EOF
   cat > "$tmp/bin/osascript" <<'EOF'
@@ -194,7 +197,7 @@ assert_eq "Notion を読める" "yes" "$(has_line "$allowed" 'mcp__claude_ai_Not
 assert_eq "Todoist に登録できる" "yes" "$(has_line "$allowed" 'mcp__claude_ai_Todoist__add-tasks')"
 assert_eq "リポジトリごとのツールを足せる" "yes" "$(has_line "$allowed" 'Bash(npm run test:unit)')"
 assert_eq "PR のマージを禁止する" "yes" "$(has_line "$disallowed" 'Bash(gh pr merge:*)')"
-assert_eq "プロンプトは先頭に渡す（後ろのオプションに飲み込まれない）" "yes" "$(sed -n '2p;3p' "$FAKE_LOG" | grep -q '^claude arg=-p$' && echo yes || echo no)"
+assert_eq "プロンプトは先頭に渡す（後ろのオプションに飲み込まれない）" "claude arg=-p" "$(grep -m 1 '^claude arg=' "$FAKE_LOG")"
 
 # push と PR の作成は claude に許さず、起動スクリプトが行う（push 先を auto- のブランチに限るため）
 work="$CLAUDE_AUTO_DEV_STATE_DIR/worktrees/my-app"
@@ -208,7 +211,7 @@ assert_eq "パスを絞らない Write は許さない" "no" "$(has_line "$allow
 
 # claude がコミットして PR のファイルを書いたら、スクリプトが push して PR を作る
 setup
-FAKE_CLAUDE_COMMIT=1 FAKE_PR_TEXT=$'🤖 [fix] 直した\n## 概要\n直した内容' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+FAKE_CLAUDE_COMMIT=1 FAKE_DECISION_TEXT= FAKE_PR_TEXT=$'🤖 [fix] 直した\n## 概要\n直した内容' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "PR にするときも成功する" "0" "$?"
 assert_eq "auto- のブランチをリモートに push する" "yes" "$(git -C "$tmp/origin.git" rev-parse -q --verify refs/heads/auto-1-test >/dev/null && echo yes || echo no)"
 assert_eq "main には push しない" "$(git -C "$tmp/seed" rev-parse HEAD)" "$(git -C "$tmp/origin.git" rev-parse refs/heads/main)"
@@ -230,18 +233,73 @@ assert_eq "PR のファイルがなければ PR を作らない" "0" "$(grep -c 
 
 # claude が失敗したら、PR のファイルがあっても push しない
 setup
-FAKE_CLAUDE_EXIT=1 FAKE_CLAUDE_COMMIT=1 FAKE_PR_TEXT=$'タイトル\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+FAKE_CLAUDE_EXIT=1 FAKE_CLAUDE_COMMIT=1 FAKE_DECISION_TEXT= FAKE_PR_TEXT=$'タイトル\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "claude が失敗したら push しない" "no" "$(git -C "$tmp/origin.git" rev-parse -q --verify refs/heads/auto-1-test >/dev/null && echo yes || echo no)"
 
 # auto- で始まらないブランチや、コミットのないブランチは PR にせず、失敗として知らせる
 setup
-FAKE_CLAUDE_BRANCH=feature FAKE_CLAUDE_COMMIT=1 FAKE_PR_TEXT=$'タイトル\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+FAKE_CLAUDE_BRANCH=feature FAKE_CLAUDE_COMMIT=1 FAKE_DECISION_TEXT= FAKE_PR_TEXT=$'タイトル\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "auto- で始まらないブランチは失敗で終わる" "1" "$?"
 assert_eq "auto- で始まらないブランチは push しない" "no" "$(git -C "$tmp/origin.git" rev-parse -q --verify refs/heads/feature >/dev/null && echo yes || echo no)"
 assert_eq "auto- で始まらないブランチは通知する" "1" "$(grep -c '^osascript' "$FAKE_LOG")"
 setup
-FAKE_PR_TEXT=$'タイトル\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+FAKE_DECISION_TEXT= FAKE_PR_TEXT=$'タイトル\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "コミットがなければ失敗で終わる" "1" "$?"
 assert_eq "コミットがなければ PR を作らない" "0" "$(grep -c '^gh pr create' "$FAKE_LOG")"
+
+# GitHub への書き込みは claude に許さず、起動スクリプトが行う。
+# claude が Issue 本文の指示などで別の Issue に auto-ready を付けると、本人の承認なしに次の作業が決まってしまうため
+issue_edits() { grep '^gh issue edit' "$FAKE_LOG"; }
+comments() { sed -n 's/^gh issue comment arg=//p' "$FAKE_LOG"; }
+
+setup
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+allowed=$(args_after --allowedTools)
+disallowed=$(args_after --disallowedTools)
+assert_eq "claude には Issue の編集を許さない" "no" "$(has_line "$allowed" 'Bash(gh issue edit:*)')"
+assert_eq "claude には Issue へのコメントを許さない" "no" "$(has_line "$allowed" 'Bash(gh issue comment:*)')"
+assert_eq "Issue の編集を禁止する" "yes" "$(has_line "$disallowed" 'Bash(gh issue edit:*)')"
+assert_eq "Issue へのコメントを禁止する" "yes" "$(has_line "$disallowed" 'Bash(gh issue comment:*)')"
+assert_eq "Issue を読むのは許す" "yes" "$(has_line "$allowed" 'Bash(gh issue view:*)')"
+assert_eq "場所を限らない mkdir は許さない" "no" "$(has_line "$allowed" 'Bash(mkdir:*)')"
+
+# 番号のいちばん小さい Issue を選び、着手したらラベルを付け替えてコメントする
+setup
+FAKE_ISSUES='[{"number":5,"labels":[{"name":"auto-ready"}]},{"number":3,"labels":[{"name":"auto-ready"}]},{"number":2,"labels":[{"name":"auto-ready"},{"name":"needs-decision"}]}]' \
+  "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "番号のいちばん小さい Issue をプロンプトで渡す" "yes" "$(grep -q '#3' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "着手したら auto-ready を auto-in-progress に付け替える" "yes" "$(issue_edits | grep -qxF 'gh issue edit issue edit 3 --remove-label auto-ready --add-label auto-in-progress' && echo yes || echo no)"
+assert_eq "着手したら目印つきでコメントする" "yes" "$(comments | grep -q '^🤖 自動開発ワークフロー: ' && echo yes || echo no)"
+
+# claude が判断待ちのファイルを書いたら、その中身をコメントし、needs-decision にする。push はしない
+setup
+FAKE_CLAUDE_COMMIT=1 FAKE_DECISION_TEXT='キャッシュを何日持つか決めてください' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "判断待ちで止まっても成功で終わる" "0" "$?"
+assert_eq "判断待ちのファイルの中身をコメントする" "yes" "$(comments | grep -qF 'キャッシュを何日持つか決めてください' && echo yes || echo no)"
+assert_eq "判断待ちのコメントにも目印を付ける" "2" "$(comments | grep -c '^🤖 自動開発ワークフロー: ')"
+assert_eq "判断待ちなら needs-decision に付け替える" "yes" "$(issue_edits | grep -qxF 'gh issue edit issue edit 1 --remove-label auto-in-progress --add-label needs-decision' && echo yes || echo no)"
+assert_eq "判断待ちなら push しない" "no" "$(git -C "$tmp/origin.git" rev-parse -q --verify refs/heads/auto-1-test >/dev/null && echo yes || echo no)"
+assert_eq "判断待ちでは通知しない（Todoist に登録される）" "0" "$(grep -c '^osascript' "$FAKE_LOG")"
+assert_eq "判断待ちのファイルは書けるようにする" "yes" "$(has_line "$(args_after --allowedTools)" "Edit(/$CLAUDE_AUTO_DEV_STATE_DIR/decision/my-app.md)")"
+assert_eq "判断待ちのファイルの場所をプロンプトで伝える" "yes" "$(grep -qF "$CLAUDE_AUTO_DEV_STATE_DIR/decision/my-app.md" "$FAKE_LOG" && echo yes || echo no)"
+
+# 何も残さずに終わったとき・claude が失敗したとき・PR にできないときは、needs-decision にして知らせる。
+# auto-ready に戻すと、同じ失敗を毎回くり返して使用量を消費するため
+setup
+FAKE_DECISION_TEXT= "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "何も残さずに終わったら失敗で終わる" "1" "$?"
+assert_eq "何も残さずに終わったら needs-decision にする" "yes" "$(issue_edits | grep -q -- '--add-label needs-decision' && echo yes || echo no)"
+assert_eq "何も残さずに終わったら通知する" "1" "$(grep -c '^osascript' "$FAKE_LOG")"
+setup
+FAKE_CLAUDE_EXIT=2 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "claude が失敗したら needs-decision にする" "yes" "$(issue_edits | grep -q -- '--add-label needs-decision' && echo yes || echo no)"
+assert_eq "claude が失敗したら、判断待ちのファイルがあってもその中身をコメントしない" "no" "$(comments | grep -qF 'A と B のどちらにするか' && echo yes || echo no)"
+setup
+FAKE_PR_TEXT=$'タイトル\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "PR と判断待ちの両方のファイルがあれば失敗で終わる" "1" "$?"
+assert_eq "両方のファイルがあれば PR を作らない" "0" "$(grep -c '^gh pr create' "$FAKE_LOG")"
+setup
+FAKE_CLAUDE_BRANCH=feature FAKE_CLAUDE_COMMIT=1 FAKE_DECISION_TEXT= FAKE_PR_TEXT=$'タイトル\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "PR にできないときも needs-decision にする" "yes" "$(issue_edits | grep -q -- '--add-label needs-decision' && echo yes || echo no)"
 
 [ "$failures" -eq 0 ] || exit 1
