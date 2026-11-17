@@ -63,21 +63,29 @@ cleanup  # 前の回が途中で止まって残ったものを消す
 work_created=yes
 git -C "$repo" worktree add -q --detach "$work" "$base" || exit 1
 
+# push と PR の作成は claude に許さず、このスクリプトが行う。claude に許すと、
+# git push origin auto-x:main のように push 先を変えて main に push できてしまうため
+pr_file="$state_dir/pr/$name.md"
+mkdir -p "$state_dir/pr"
+rm -f "$pr_file"
+export CLAUDE_AUTO_DEV_PR_FILE="$pr_file"
+
 prompt="このリポジトリの自動開発ワークフローとして起動された。.claude/auto-dev.md を読み、その手順どおりに進める。
 人は見ていないので、確認を待たずに進め、判断が要るところでは手順どおりに止める。
+push と PR の作成は起動スクリプトが行うので、自分ではしない。PR にするときは、auto- で始まるブランチにコミットしたうえで、
+1行目に PR のタイトル、2行目以降に本文を書いたファイルを $pr_file に作って終わる。
 
 $(cat "$config")"
 
-# 人が確認できないので、使ってよいツールを列挙して絞る。リポジトリごとのテストのコマンドなどは
-# <リポジトリ名>.tools に1行1つで足す
+# 人が確認できないので、使ってよいツールを列挙して絞る。ファイルの編集は worktree と PR のファイルだけ。
+# リポジトリごとのテストのコマンドなどは <リポジトリ名>.tools に1行1つで足す
 allowed=(
-  Read Edit Write Glob Grep ToolSearch TodoWrite
+  Read Glob Grep ToolSearch TodoWrite "Edit(/$work/**)" "Edit(/$pr_file)"
   'Bash(git status:*)' 'Bash(git diff:*)' 'Bash(git log:*)' 'Bash(git show:*)' 'Bash(git rev-parse:*)'
   'Bash(git add:*)' 'Bash(git commit:*)' 'Bash(git switch:*)' 'Bash(git branch:*)' 'Bash(git fetch:*)'
   'Bash(git rm:*)' 'Bash(git mv:*)' 'Bash(git restore:*)'
-  'Bash(git push -u origin auto-:*)' 'Bash(git push origin auto-:*)'
   'Bash(gh issue list:*)' 'Bash(gh issue view:*)' 'Bash(gh issue comment:*)' 'Bash(gh issue edit:*)'
-  'Bash(gh pr list:*)' 'Bash(gh pr view:*)' 'Bash(gh pr create:*)' 'Bash(gh label list:*)'
+  'Bash(gh pr list:*)' 'Bash(gh pr view:*)' 'Bash(gh label list:*)'
   'Bash(ls:*)' 'Bash(mkdir:*)'
   mcp__claude_ai_Notion__notion-fetch mcp__claude_ai_Notion__notion-search
   mcp__claude_ai_Notion__notion-query-data-sources mcp__claude_ai_Notion__notion-create-pages
@@ -90,10 +98,12 @@ if [ -f "$config_dir/$name.tools" ]; then
     [ -n "$tool" ] && allowed+=("$tool")
   done < "$config_dir/$name.tools"
 fi
-disallowed=(
-  'Bash(gh pr merge:*)' 'Bash(git push --force:*)' 'Bash(git push -f:*)'
-  'Bash(git push origin main:*)' 'Bash(git push origin master:*)' 'Bash(git reset --hard:*)'
-)
+disallowed=('Bash(git push:*)' 'Bash(gh pr create:*)' 'Bash(gh pr merge:*)' 'Bash(git reset --hard:*)')
+
+# 人は見ていないので、失敗したら通知で知らせる
+notify_failure() {
+  osascript -e "display notification \"${1}。ログ: ${log}\" with title \"claude-auto-dev: $name が失敗\""
+}
 
 mkdir -p "$state_dir/logs"
 log="$state_dir/logs/$name-$(date +%Y%m%d-%H%M%S).log"
@@ -106,9 +116,24 @@ claude -p "$prompt" \
   --disallowedTools "${disallowed[@]}" \
   >> "$log" 2>&1
 status=$?
-
-# 人は見ていないので、失敗したら通知で知らせる
 if [ "$status" -ne 0 ]; then
-  osascript -e "display notification \"終了コード ${status}。ログ: ${log}\" with title \"claude-auto-dev: $name が失敗\""
+  notify_failure "終了コード ${status}"
+  exit "$status"
 fi
-exit "$status"
+
+# PR のファイルがなければ、判断待ちなどで止まったので何もしない
+[ -f "$pr_file" ] || exit 0
+branch=$(git branch --show-current)
+case "$branch" in
+  auto-*) ;;
+  *) notify_failure "PR にするブランチが auto- で始まりません（${branch:-なし}）"; exit 1 ;;
+esac
+if [ "$(git rev-list --count "$base..HEAD")" -eq 0 ]; then
+  notify_failure "PR にするコミットがありません"
+  exit 1
+fi
+{
+  git push -q -u origin "HEAD:refs/heads/$branch" &&
+    tail -n +2 "$pr_file" | gh pr create --head "$branch" --title "$(head -n 1 "$pr_file")" --body-file - --label auto-dev
+} >> "$log" 2>&1 || { notify_failure "push か PR の作成に失敗しました"; exit 1; }
+rm -f "$pr_file"

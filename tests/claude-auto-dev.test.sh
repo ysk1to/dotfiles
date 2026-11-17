@@ -34,15 +34,20 @@ setup() {
   fake_bin
 }
 
-# 偽の claude・gh・osascript。gh は FAKE_ISSUES・FAKE_PRS の JSON を返す
+# 偽の claude・gh・osascript。gh は FAKE_ISSUES・FAKE_PRS の JSON を返す。
+# claude は FAKE_CLAUDE_BRANCH のブランチを作り、FAKE_CLAUDE_COMMIT=1 ならコミットし、
+# FAKE_PR_TEXT があれば PR のファイルに書く
 fake_bin() {
   mkdir -p "$tmp/bin"
   export PATH="$tmp/bin:$PATH" FAKE_LOG="$tmp/fake.log"
   export FAKE_ISSUES='[{"number":1,"labels":[{"name":"auto-ready"}]}]' FAKE_PRS='[]' FAKE_CLAUDE_EXIT=0
+  export FAKE_CLAUDE_BRANCH=auto-1-test FAKE_CLAUDE_COMMIT=0 FAKE_PR_TEXT=
   cat > "$tmp/bin/claude" <<'EOF'
 #!/bin/bash
 { echo "claude pwd=$PWD"; echo "claude head=$(git rev-parse HEAD)"; printf 'claude arg=%s\n' "$@"; } >> "$FAKE_LOG"
-git switch -q -c auto-1-test
+git switch -q -c "$FAKE_CLAUDE_BRANCH"
+if [ "$FAKE_CLAUDE_COMMIT" = 1 ]; then echo change >> README.md && git commit -qam change; fi
+[ -z "$FAKE_PR_TEXT" ] || printf '%s\n' "$FAKE_PR_TEXT" > "$CLAUDE_AUTO_DEV_PR_FILE"
 echo "PR を作りました"
 exit "$FAKE_CLAUDE_EXIT"
 EOF
@@ -51,6 +56,7 @@ EOF
 case "$1 $2" in
   "issue list") echo "$FAKE_ISSUES" ;;
   "pr list") echo "$FAKE_PRS" ;;
+  "pr create") printf 'gh pr create arg=%s\n' "$@" >> "$FAKE_LOG"; sed 's/^/gh pr create body=/' >> "$FAKE_LOG" ;;
 esac
 EOF
   cat > "$tmp/bin/osascript" <<'EOF'
@@ -184,13 +190,58 @@ printf '%s\n' 'Bash(go test:*)' 'Bash(npm run test:unit)' > "$CLAUDE_AUTO_DEV_CO
 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 allowed=$(args_after --allowedTools)
 disallowed=$(args_after --disallowedTools)
-assert_eq "auto- のブランチへの push を許す" "yes" "$(has_line "$allowed" 'Bash(git push -u origin auto-:*)')"
-assert_eq "PR の作成を許す" "yes" "$(has_line "$allowed" 'Bash(gh pr create:*)')"
 assert_eq "Notion を読める" "yes" "$(has_line "$allowed" 'mcp__claude_ai_Notion__notion-fetch')"
 assert_eq "Todoist に登録できる" "yes" "$(has_line "$allowed" 'mcp__claude_ai_Todoist__add-tasks')"
 assert_eq "リポジトリごとのツールを足せる" "yes" "$(has_line "$allowed" 'Bash(npm run test:unit)')"
 assert_eq "PR のマージを禁止する" "yes" "$(has_line "$disallowed" 'Bash(gh pr merge:*)')"
-assert_eq "force push を禁止する" "yes" "$(has_line "$disallowed" 'Bash(git push --force:*)')"
 assert_eq "プロンプトは先頭に渡す（後ろのオプションに飲み込まれない）" "yes" "$(sed -n '2p;3p' "$FAKE_LOG" | grep -q '^claude arg=-p$' && echo yes || echo no)"
+
+# push と PR の作成は claude に許さず、起動スクリプトが行う（push 先を auto- のブランチに限るため）
+work="$CLAUDE_AUTO_DEV_STATE_DIR/worktrees/my-app"
+assert_eq "claude には push を許さない" "no" "$(printf '%s\n' "$allowed" | grep -q '^Bash(git push' && echo yes || echo no)"
+assert_eq "claude には PR の作成を許さない" "no" "$(has_line "$allowed" 'Bash(gh pr create:*)')"
+assert_eq "push を禁止する" "yes" "$(has_line "$disallowed" 'Bash(git push:*)')"
+assert_eq "PR の作成を禁止する" "yes" "$(has_line "$disallowed" 'Bash(gh pr create:*)')"
+assert_eq "ファイルの編集は worktree の中に限る" "yes" "$(has_line "$allowed" "Edit(/$work/**)")"
+assert_eq "パスを絞らない Edit は許さない" "no" "$(has_line "$allowed" 'Edit')"
+assert_eq "パスを絞らない Write は許さない" "no" "$(has_line "$allowed" 'Write')"
+
+# claude がコミットして PR のファイルを書いたら、スクリプトが push して PR を作る
+setup
+FAKE_CLAUDE_COMMIT=1 FAKE_PR_TEXT=$'🤖 [fix] 直した\n## 概要\n直した内容' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "PR にするときも成功する" "0" "$?"
+assert_eq "auto- のブランチをリモートに push する" "yes" "$(git -C "$tmp/origin.git" rev-parse -q --verify refs/heads/auto-1-test >/dev/null && echo yes || echo no)"
+assert_eq "main には push しない" "$(git -C "$tmp/seed" rev-parse HEAD)" "$(git -C "$tmp/origin.git" rev-parse refs/heads/main)"
+pr_args=$(sed -n 's/^gh pr create arg=//p' "$FAKE_LOG")
+assert_eq "PR の元のブランチを指定する" "yes" "$(printf '%s\n' "$pr_args" | grep -qxF 'auto-1-test' && echo yes || echo no)"
+assert_eq "PR に auto-dev ラベルを付ける" "yes" "$(printf '%s\n' "$pr_args" | grep -qxF 'auto-dev' && echo yes || echo no)"
+assert_eq "ファイルの1行目を PR のタイトルにする" "yes" "$(printf '%s\n' "$pr_args" | grep -qxF '🤖 [fix] 直した' && echo yes || echo no)"
+assert_eq "ファイルの2行目以降を PR の本文にする" "## 概要
+直した内容" "$(sed -n 's/^gh pr create body=//p' "$FAKE_LOG")"
+assert_eq "プロンプトで PR のファイルの場所を伝える" "yes" "$(grep -qF "$CLAUDE_AUTO_DEV_STATE_DIR/pr/my-app.md" "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "PR のファイルは書けるようにする" "yes" "$(has_line "$(args_after --allowedTools)" "Edit(/$CLAUDE_AUTO_DEV_STATE_DIR/pr/my-app.md)")"
+assert_eq "PR を作ったらファイルを消す" "no" "$([ -e "$CLAUDE_AUTO_DEV_STATE_DIR/pr/my-app.md" ] && echo yes || echo no)"
+
+# PR のファイルがなければ（判断待ちで止まったなど）、push しない
+setup
+FAKE_CLAUDE_COMMIT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "PR のファイルがなければ push しない" "no" "$(git -C "$tmp/origin.git" rev-parse -q --verify refs/heads/auto-1-test >/dev/null && echo yes || echo no)"
+assert_eq "PR のファイルがなければ PR を作らない" "0" "$(grep -c '^gh pr create' "$FAKE_LOG")"
+
+# claude が失敗したら、PR のファイルがあっても push しない
+setup
+FAKE_CLAUDE_EXIT=1 FAKE_CLAUDE_COMMIT=1 FAKE_PR_TEXT=$'タイトル\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "claude が失敗したら push しない" "no" "$(git -C "$tmp/origin.git" rev-parse -q --verify refs/heads/auto-1-test >/dev/null && echo yes || echo no)"
+
+# auto- で始まらないブランチや、コミットのないブランチは PR にせず、失敗として知らせる
+setup
+FAKE_CLAUDE_BRANCH=feature FAKE_CLAUDE_COMMIT=1 FAKE_PR_TEXT=$'タイトル\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "auto- で始まらないブランチは失敗で終わる" "1" "$?"
+assert_eq "auto- で始まらないブランチは push しない" "no" "$(git -C "$tmp/origin.git" rev-parse -q --verify refs/heads/feature >/dev/null && echo yes || echo no)"
+assert_eq "auto- で始まらないブランチは通知する" "1" "$(grep -c '^osascript' "$FAKE_LOG")"
+setup
+FAKE_PR_TEXT=$'タイトル\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "コミットがなければ失敗で終わる" "1" "$?"
+assert_eq "コミットがなければ PR を作らない" "0" "$(grep -c '^gh pr create' "$FAKE_LOG")"
 
 [ "$failures" -eq 0 ] || exit 1
