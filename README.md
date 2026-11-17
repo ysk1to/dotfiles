@@ -38,6 +38,7 @@ macOS用の設定ファイル管理リポジトリ
 - `bin/claude-team` - 指定ディレクトリでClaude Codeを3ペイン起動するtmuxセッションを構築
 - `bin/claude-statusline` - Claude CodeのstatusLine（モデル・effort・トークン数・コンテキスト使用率など）
 - `bin/claude-context-guard` - Claude Codeのフック。コンテキストが自動圧縮に近づいたら（既定25万トークン）、圧縮前にNotionへ途中経過を記録するよう促す
+- `bin/claude-auto-dev` - launchdなどから定期的に呼ばれ、リポジトリの`auto-ready`のIssueを1件、Claude Code（`claude -p`）にPRにさせる。手順の本体はリポジトリの`.claude/auto-dev.md`。Issueがない回はClaudeを起動しない
 - `bin/claude-usage-refresh` - usage APIからプラン使用率を取得してキャッシュ（Claude Codeを起動していない間の利用もtmuxに反映する）
 - `bin/tmux-claude-notify` - Claude Codeのフック。ペインの状態（許可待ち・完了・作業中）をtmuxに記録し、効果音を鳴らす
 - `bin/tmux-claude-panes` - 現在のセッションのClaude Codeペイン数と、許可待ち・完了の数をtmuxに表示
@@ -80,6 +81,15 @@ make check
 - `make deploy-iterm` - iTerm2のdynamic profileをシンボリックリンク作成
 
 ### カスタムスクリプト
+- `claude-auto-dev <リポジトリのパス>` - 自動開発ワークフローを1回動かす。リモートの最新から専用のworktreeを作って作業させ、終わったら片付ける
+  - ClaudeにはGitHubへの書き込み（push・PR・ラベル・コメント）を許さず、編集もworktreeの中に限る。着手のラベルとコメントはスクリプトが付ける
+  - ClaudeがコミットしてPRのファイル（1行目がタイトル、2行目以降が本文）を書いたら、スクリプトが`auto-`のブランチをpushし、`auto-dev`ラベル付きのPRを作る。判断待ちのファイルを書いたら、その中身をIssueにコメントして`needs-decision`にする
+  - 失敗したとき・何も残さずに終わったときは、Issueを`needs-decision`にしてmacOSの通知で知らせる
+  - 設定（Git管理外）: `~/.config/claude-auto-dev/<リポジトリ名>.md`（プロンプトに足す内容。NotionのURL、Todoistの登録先など）、`<リポジトリ名>.tools`（追加で許すツール。1行1つ。例: `Bash(go test:*)`）
+  - Bashのコマンドはサンドボックスで囲み、worktreeの外に書けないようにする（コミット用に元のリポジトリの`.git`だけ許す。`gh`は外で動かす）。リポジトリごとの追加は`<リポジトリ名>.sandbox.json`（`sandbox`設定の中身。例: `{"excludedCommands":["docker *"],"filesystem":{"allowWrite":["~/.npm"]},"network":{"allowedDomains":["registry.npmjs.org"]}}`）。サンドボックス自体は切れない
+  - NotionとTodoistは足す操作だけを許す（Notionの既存ページの書き換えは許さない）
+  - 環境変数: `CLAUDE_AUTO_DEV_MODEL`（既定 `opus`）、`CLAUDE_AUTO_DEV_MAX_TURNS`（既定 150）
+  - ログは`~/.local/state/claude-auto-dev/logs/`。失敗したらmacOSの通知で知らせる
 - `claude-team [dir] [session]` - tmuxでClaude Codeの開発環境を構築（dirは`~/Program`からの相対パス。案件名はスニペットで渡し、リポジトリには書かない）
 
 ## 🔧 カスタマイズ
