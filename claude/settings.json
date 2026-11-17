@@ -155,5 +155,5 @@
   "theme": "dark",
   "editorMode": "normal",
   "autoCompactEnabled": true,
-  "autoCompactWindow": 200000
+  "autoCompactWindow": 300000
 }

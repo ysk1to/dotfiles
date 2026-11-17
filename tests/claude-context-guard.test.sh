@@ -59,6 +59,14 @@ assert_eq "下回ったときは何も出さない" "" "$(run)"
 write_transcript 155000
 assert_eq "再び超えたらまた促す" "PostToolUse" "$(run | jq -r '.hookSpecificOutput.hookEventName')"
 
+# しきい値を指定しなければ、自動圧縮（30万）の手前の25万で促す
+setup
+unset CLAUDE_CONTEXT_WARN_TOKENS
+write_transcript 249999
+assert_eq "既定では25万未満で何も出さない" "" "$(run)"
+write_transcript 250000
+assert_eq "既定では25万で促す" "PostToolUse" "$(run | jq -r '.hookSpecificOutput.hookEventName')"
+
 # 会話ログがなくても失敗しない
 setup
 transcript="$tmp/missing.jsonl"
