@@ -82,15 +82,15 @@ make check
 
 ### カスタムスクリプト
 - `claude-auto-dev <リポジトリのパス>` - 自動開発ワークフローを1回動かす。リモートの最新から専用のworktreeを作って作業させ、終わったら片付ける
-  - ClaudeにはGitHubへの書き込み（push・PR・ラベル・コメント）を許さず、編集もworktreeの中に限る。着手のラベルとコメントはスクリプトが付ける
-  - ClaudeがコミットしてPRのファイル（1行目がタイトル、2行目以降が本文）を書いたら、スクリプトが`auto-`のブランチをpushし、`auto-dev`ラベル付きのPRを作る。判断待ちのファイルを書いたら、その中身をIssueにコメントして`needs-decision`にする
-  - 失敗したとき・何も残さずに終わったときは、Issueを`needs-decision`にしてmacOSの通知で知らせる
-  - 設定（Git管理外）: `~/.config/claude-auto-dev/<リポジトリ名>.md`（プロンプトに足す内容。NotionのURL、Todoistの登録先など）、`<リポジトリ名>.tools`（追加で許すツール。1行1つ。例: `Bash(go test:*)`）
-  - Bashのコマンドはサンドボックスで囲み、worktreeの外に書けないようにする（コミット用に元のリポジトリの`.git`だけ許す。`gh`は外で動かす）。リポジトリごとの追加は`<リポジトリ名>.sandbox.json`（`sandbox`設定の中身。例: `{"excludedCommands":["docker *"],"filesystem":{"allowWrite":["~/.npm"]},"network":{"allowedDomains":["registry.npmjs.org"]}}`）。サンドボックス自体は切れない
+  - ClaudeにはGitHubを触らせない。Issueの選択・取得、着手のラベルとコメント、push、PRの作成はスクリプトが行う。Issueの本文とコメントはファイルで渡し、コメントは「本人の判断」「ワークフローが書いたもの」「ほかの人のもの」に仕分ける
+  - ClaudeがコミットしてPRのファイル（1行目がタイトル、2行目以降が本文）を書いたら、スクリプトが`auto-`のブランチをpushし、`auto-dev`と`no-auto-merge`のラベル付きでPRを作る（慣らしが済んだら`CLAUDE_AUTO_DEV_AUTO_MERGE=1`で`no-auto-merge`を外す）。判断待ちのファイルを書いたら、その中身をIssueにコメントして`needs-decision`にする
+  - 失敗したとき・何も残さずに終わったとき・時間の上限を超えたとき・前の回が途中で止まって`auto-in-progress`が残っていたときは、Issueを`needs-decision`にしてmacOSの通知で知らせる
+  - `--restricted`と`--permission-mode dontAsk`で起動する。ユーザーの設定（グローバルの`CLAUDE.md`・許可・フック）は読まず、ファイルの読み書きは作業ディレクトリと受け渡し用のファイルに限り、WebFetchは使えない。決まりは各リポジトリの`.claude/auto-dev.md`に書く
+  - Bashのコマンドはサンドボックスで囲み、worktreeの外に書けないようにする（コミット用に元のリポジトリの`.git`だけ許す）。リポジトリごとの追加は`<リポジトリ名>.sandbox.json`（`sandbox`設定の中身。例: `{"filesystem":{"allowWrite":["~/.npm"]},"network":{"allowedDomains":["registry.npmjs.org"]}}`）。サンドボックス自体は切れない
   - NotionとTodoistは足す操作だけを許す（Notionの既存ページの書き換えは許さない）
-  - 環境変数: `CLAUDE_AUTO_DEV_MODEL`（既定 `opus`）、`CLAUDE_AUTO_DEV_MAX_TURNS`（既定 150）
-  - ログは`~/.local/state/claude-auto-dev/logs/`。失敗したらmacOSの通知で知らせる
-- `claude-team [dir] [session]` - tmuxでClaude Codeの開発環境を構築（dirは`~/Program`からの相対パス。案件名はスニペットで渡し、リポジトリには書かない）
+  - 設定（Git管理外）: `~/.config/claude-auto-dev/<リポジトリ名>.md`（プロンプトに足す内容。NotionのURL、Todoistの登録先など）、`<リポジトリ名>.tools`（追加で許すツール。1行1つ。例: `Bash(go test:*)`）
+  - 環境変数: `CLAUDE_AUTO_DEV_MODEL`（既定 `opus`）、`CLAUDE_AUTO_DEV_MAX_TURNS`（既定 150）、`CLAUDE_AUTO_DEV_TIMEOUT`（秒。既定 10800）
+  - ログは`~/.local/state/claude-auto-dev/logs/`（最後の応答、ターン数・費用・拒否されたツール。`.json`に結果の全体）
 
 ## 🔧 カスタマイズ
 
