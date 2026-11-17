@@ -117,7 +117,7 @@ brew bundle check --verbose
 ```bash
 git switch -c update-xxx
 make lint                      # 構文チェック
-tests/claude-usage-refresh.test.sh
+for t in tests/*.test.sh; do "$t"; done   # テスト
 git add .
 git commit -m "[update] 設定ファイル更新"
 git push -u origin update-xxx
