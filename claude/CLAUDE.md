@@ -32,6 +32,13 @@
 - ブランチの削除: プルリクエストがマージ済みだと `gh pr list --head <ブランチ> --state merged` で確かめたブランチは、指示がなくても手元から消してよい（`main` に切り替えて最新にしてから `git branch -D`、`git fetch --prune`）。リモートのブランチは、GitHub の「Automatically delete head branches」が有効ならマージ時に消える。それ以外のブランチの削除は、ユーザーの指示があったときだけ行う。
 
 ## 自動レビュー
+- 新しいリポジトリを作ったとき、またはワークフローがないリポジトリで開発を始めるときは、`.github/workflows/pr-review.yml` を導入する。雛形は dotfiles（`ysk1to/dotfiles`）のものを使い、リポジトリに合わせて次を変える。
+  - Lint とテストのステップ: そのリポジトリの標準コマンドにする（言語ごとの標準コマンドを参照）。OS 依存のコマンドがあればランナーを合わせる。
+  - レビューのプロンプト: 冒頭のリポジトリの説明を書き換え、見ることに、リポジトリに載せてはいけないもの（データ、個人情報など）や独自の決まりを書く。
+  - 自動でマージしない対象: `.github/` と、Claude への指示（`CLAUDE.md`・`.claude/` など）がある場所。
+- 導入の PR を作ったら、Secret の `CLAUDE_CODE_OAUTH_TOKEN` の登録を本人に頼む（`claude setup-token` で作り、`gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <リポジトリ>` で登録）。導入の PR は `.github/` の変更なので、本人がマージする。
+- 試作や使い捨てのリポジトリでは導入しない。
+
 リポジトリに `.github/workflows/pr-review.yml` がある場合、プルリクエストを作ると GitHub Actions で Claude がレビューする。問題がなければそのままマージされ、判断が必要なときは PR にコメントしてユーザーをメンションする。
 - プルリクエストを作ったら、レビューの実行が終わるまでバックグラウンドで待つ（例: `gh pr checks <PR番号> --watch`）。
 - 終わったら、`gh pr view --json state,comments` で結果を確かめる。
