@@ -302,4 +302,47 @@ setup
 FAKE_CLAUDE_BRANCH=feature FAKE_CLAUDE_COMMIT=1 FAKE_DECISION_TEXT= FAKE_PR_TEXT=$'タイトル\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "PR にできないときも needs-decision にする" "yes" "$(issue_edits | grep -q -- '--add-label needs-decision' && echo yes || echo no)"
 
+# Bash のコマンドはサンドボックスで囲み、worktree の外に書けないようにする
+# （git diff --output やテストのコマンドは、許可のルールだけでは書き込み先を限れないため）
+setup
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+settings=$(args_after --settings)
+assert_eq "サンドボックスを有効にする" "true" "$(echo "$settings" | jq -r '.sandbox.enabled')"
+assert_eq "サンドボックスの外での再実行を許さない" "false" "$(echo "$settings" | jq -r '.sandbox.allowUnsandboxedCommands')"
+assert_eq "コミットできるよう、元のリポジトリの .git には書ける" "true" "$(echo "$settings" | jq --arg g "$(git -C "$repo" rev-parse --absolute-git-dir)" '.sandbox.filesystem.allowWrite | index($g) != null')"
+assert_eq "gh はサンドボックスの外で動かす（中では証明書を検証できない）" "true" "$(echo "$settings" | jq '.sandbox.excludedCommands | index("gh *") != null')"
+
+# リポジトリごとのサンドボックスの設定を足せる（配列は既定のものに足す）
+setup
+echo '{"excludedCommands":["docker *"],"filesystem":{"allowWrite":["~/.npm"]},"network":{"allowedDomains":["registry.npmjs.org"]}}' > "$CLAUDE_AUTO_DEV_CONFIG_DIR/my-app.sandbox.json"
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+settings=$(args_after --settings)
+assert_eq "リポジトリごとの除外コマンドを足す" '["gh *","docker *"]' "$(echo "$settings" | jq -c '.sandbox.excludedCommands')"
+assert_eq "リポジトリごとの書き込み先を足す" "true" "$(echo "$settings" | jq '.sandbox.filesystem.allowWrite | (index("~/.npm") != null) and length == 2')"
+assert_eq "リポジトリごとの通信先を足す" '["registry.npmjs.org"]' "$(echo "$settings" | jq -c '.sandbox.network.allowedDomains')"
+assert_eq "リポジトリごとの設定でサンドボックスは切れない" "true" "$(echo "$settings" | jq -r '.sandbox.enabled')"
+setup
+echo '{"enabled":false,"allowUnsandboxedCommands":true}' > "$CLAUDE_AUTO_DEV_CONFIG_DIR/my-app.sandbox.json"
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+settings=$(args_after --settings)
+assert_eq "enabled を false にしても有効のまま" "true" "$(echo "$settings" | jq -r '.sandbox.enabled')"
+assert_eq "外での再実行を許す設定も通さない" "false" "$(echo "$settings" | jq -r '.sandbox.allowUnsandboxedCommands')"
+
+# サンドボックスの設定が壊れていたら、claude を起動せず、判断待ちにして知らせる（作業中のまま黙って止まらない）
+setup
+echo '{壊れた JSON' > "$CLAUDE_AUTO_DEV_CONFIG_DIR/my-app.sandbox.json"
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "設定が壊れていたら失敗で終わる" "1" "$?"
+assert_eq "設定が壊れていたら claude を起動しない" "0" "$(claude_calls)"
+assert_eq "設定が壊れていたら needs-decision にする" "yes" "$(issue_edits | grep -q -- '--add-label needs-decision' && echo yes || echo no)"
+assert_eq "設定が壊れていたら通知する" "1" "$(grep -c '^osascript' "$FAKE_LOG")"
+setup
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+
+# Notion と Todoist は、足す操作だけを許す。既存のページの書き換えは許さない
+allowed=$(args_after --allowedTools)
+assert_eq "Notion にページを足せる" "yes" "$(has_line "$allowed" 'mcp__claude_ai_Notion__notion-create-pages')"
+assert_eq "Notion の既存のページは書き換えられない" "no" "$(has_line "$allowed" 'mcp__claude_ai_Notion__notion-update-page')"
+assert_eq "Todoist のタスクを完了にできる" "yes" "$(has_line "$allowed" 'mcp__claude_ai_Todoist__complete-tasks')"
+
 [ "$failures" -eq 0 ] || exit 1

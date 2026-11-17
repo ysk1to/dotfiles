@@ -104,6 +104,7 @@ GitHub への書き込み（push、PR の作成、ラベルの変更、コメン
 $(cat "$config")"
 
 # 人が確認できないので、使ってよいツールを列挙して絞る。ファイルの編集は worktree と結果のファイルだけ。
+# Notion と Todoist は足す操作だけを許し、既存のページの書き換えは許さない。
 # リポジトリごとのテストのコマンドなどは <リポジトリ名>.tools に1行1つで足す
 allowed=(
   Read Glob Grep ToolSearch TodoWrite "Edit(/$work/**)" "Edit(/$pr_file)" "Edit(/$decision_file)"
@@ -114,7 +115,6 @@ allowed=(
   'Bash(ls:*)'
   mcp__claude_ai_Notion__notion-fetch mcp__claude_ai_Notion__notion-search
   mcp__claude_ai_Notion__notion-query-data-sources mcp__claude_ai_Notion__notion-create-pages
-  mcp__claude_ai_Notion__notion-update-page
   mcp__claude_ai_Todoist__find-projects mcp__claude_ai_Todoist__find-sections mcp__claude_ai_Todoist__find-tasks
   mcp__claude_ai_Todoist__add-tasks mcp__claude_ai_Todoist__complete-tasks
 )
@@ -128,11 +128,28 @@ disallowed=(
   'Bash(gh issue comment:*)' 'Bash(gh issue create:*)' 'Bash(gh api:*)' 'Bash(git reset --hard:*)'
 )
 
-cd "$work" || exit 1
+# Bash のコマンドはサンドボックスで囲み、worktree の外に書けないようにする。git diff --output やテストのコマンドは、
+# 許可のルールだけでは書き込み先を限れないため。コミットのために元のリポジトリの .git には書けるようにし、
+# gh は中では証明書を検証できないので外で動かす（許しているのは読むものだけ）。
+# リポジトリごとの設定（Docker を外で動かす、キャッシュの場所、通信先など）は <リポジトリ名>.sandbox.json で足す
+sandbox_extra='{}'
+[ ! -f "$config_dir/$name.sandbox.json" ] || sandbox_extra=$(cat "$config_dir/$name.sandbox.json")
+settings=$(jq -cn --arg git_dir "$(git -C "$repo" rev-parse --absolute-git-dir)" --argjson extra "$sandbox_extra" '
+  def merge($a; $b):
+    if ($a | type) == "object" and ($b | type) == "object" then
+      reduce ($b | keys[]) as $k ($a; .[$k] = (if has($k) then merge($a[$k]; $b[$k]) else $b[$k] end))
+    elif ($a | type) == "array" and ($b | type) == "array" then $a + $b
+    else $b end;
+  {sandbox: (merge({excludedCommands: ["gh *"], filesystem: {allowWrite: [$git_dir]}}; $extra)
+    + {enabled: true, allowUnsandboxedCommands: false})}' 2>> "$log") ||
+  fail "サンドボックスの設定を組み立てられません（$name.sandbox.json を確かめてください）"
+
+cd "$work" || fail "worktree に移動できません"
 # --allowedTools などは値を複数とるので、プロンプトを先に渡す
 claude -p "$prompt" \
   --model "${CLAUDE_AUTO_DEV_MODEL:-opus}" \
   --max-turns "${CLAUDE_AUTO_DEV_MAX_TURNS:-150}" \
+  --settings "$settings" \
   --allowedTools "${allowed[@]}" \
   --disallowedTools "${disallowed[@]}" \
   >> "$log" 2>&1
