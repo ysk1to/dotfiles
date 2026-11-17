@@ -113,14 +113,22 @@ brew bundle check --verbose
 
 ## 📝 メンテナンス
 
-設定ファイルを変更した場合：
+設定ファイルを変更した場合は、作業ブランチを切ってプルリクエストで取り込む：
 ```bash
-# 構文チェックしてからコミット
-make lint
+git switch -c update-xxx
+make lint                      # 構文チェック
+for t in tests/*.test.sh; do "$t"; done   # テスト
 git add .
 git commit -m "[update] 設定ファイル更新"
-git push origin master
+git push -u origin update-xxx
+gh pr create
 ```
+
+プルリクエストは GitHub Actions（`.github/workflows/pr-review.yml`）で自動レビューされる。
+macOS で `make lint` と `tests/*.test.sh` を実行し、Claude が差分を読んで、問題がなければそのままマージする。
+判断が必要なときはマージせず、PR にコメントして作成者をメンションする。
+- `.github/` と `claude/`（Claude Code の設定）を変える PR、`no-auto-merge` ラベルを付けた PR は自動ではマージしない。
+- 認証には Secret の `CLAUDE_CODE_OAUTH_TOKEN`（`claude setup-token` で作る）を使う。
 
 他の環境で同期：
 ```bash
