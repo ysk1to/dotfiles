@@ -1,0 +1,114 @@
+#!/bin/bash
+# launchd などから定期的に呼ばれ、リポジトリの auto-ready の Issue を1件、Claude Code（claude -p）に PR にさせる。
+# 手順の本体はリポジトリの .claude/auto-dev.md。個人の情報（Notion の URL など）は設定ファイルに置く。
+# 使い方: claude-auto-dev <リポジトリのパス>
+# 設定ファイル: $CLAUDE_AUTO_DEV_CONFIG_DIR/<リポジトリ名>.md（既定 ~/.config/claude-auto-dev）
+
+repo="$1"
+name=$(basename "$repo")
+config_dir="${CLAUDE_AUTO_DEV_CONFIG_DIR:-$HOME/.config/claude-auto-dev}"
+config="$config_dir/$name.md"
+state_dir="${CLAUDE_AUTO_DEV_STATE_DIR:-$HOME/.local/state/claude-auto-dev}"
+work="$state_dir/worktrees/$name"
+
+if [ ! -f "$config" ]; then
+  echo "設定ファイルがありません: $config" >&2
+  exit 1
+fi
+
+cd "$repo" || exit 1
+
+# 前の回がまだ動いていれば何もしない。落ちてロックだけ残っていれば引き継ぐ
+lock="$state_dir/locks/$name"
+mkdir -p "$state_dir/locks"
+if ! mkdir "$lock" 2>/dev/null; then
+  if kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then
+    exit 0
+  fi
+  rm -rf "$lock"
+  mkdir "$lock" || exit 1
+fi
+echo $$ > "$lock/pid"
+work_created=no
+# shellcheck disable=SC2329 # trap から呼ぶ
+on_exit() {
+  [ "$work_created" = no ] || cleanup
+  rm -rf "$lock"
+}
+trap on_exit EXIT
+
+# やることがない回は Claude を起動しない（使用量を消費しない）。
+# レビュー待ちの PR が2件以上あるときも、積み上げないよう着手しない
+ready=$(gh issue list --label auto-ready --state open --json number,labels |
+  jq '[.[] | select([.labels[].name] | index("needs-decision") or index("auto-in-progress") | not)] | length') || exit 1
+[ "$ready" -gt 0 ] || exit 0
+open_prs=$(gh pr list --label auto-dev --state open --json number | jq length) || exit 1
+[ "$open_prs" -lt 2 ] || exit 0
+
+# 手元で作業中のブランチには触らないよう、リモートの最新から専用の worktree を作る
+git -C "$repo" fetch -q origin || exit 1
+base=$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
+mkdir -p "$state_dir/worktrees"
+
+# worktree と、claude が作った手元のブランチを消す。push 済みのブランチはリモートに残る。
+# 本人のブランチを消さないよう、消すのは auto- で始まるものだけ
+cleanup() {
+  cd "$repo" || return
+  branch=$(git -C "$work" branch --show-current 2>/dev/null)
+  git worktree remove --force "$work" 2>/dev/null
+  git worktree prune
+  case "$branch" in auto-*) git branch -q -D "$branch" ;; esac
+}
+cleanup  # 前の回が途中で止まって残ったものを消す
+work_created=yes
+git -C "$repo" worktree add -q --detach "$work" "$base" || exit 1
+
+prompt="このリポジトリの自動開発ワークフローとして起動された。.claude/auto-dev.md を読み、その手順どおりに進める。
+人は見ていないので、確認を待たずに進め、判断が要るところでは手順どおりに止める。
+
+$(cat "$config")"
+
+# 人が確認できないので、使ってよいツールを列挙して絞る。リポジトリごとのテストのコマンドなどは
+# <リポジトリ名>.tools に1行1つで足す
+allowed=(
+  Read Edit Write Glob Grep ToolSearch TodoWrite
+  'Bash(git status:*)' 'Bash(git diff:*)' 'Bash(git log:*)' 'Bash(git show:*)' 'Bash(git rev-parse:*)'
+  'Bash(git add:*)' 'Bash(git commit:*)' 'Bash(git switch:*)' 'Bash(git branch:*)' 'Bash(git fetch:*)'
+  'Bash(git rm:*)' 'Bash(git mv:*)' 'Bash(git restore:*)'
+  'Bash(git push -u origin auto-:*)' 'Bash(git push origin auto-:*)'
+  'Bash(gh issue list:*)' 'Bash(gh issue view:*)' 'Bash(gh issue comment:*)' 'Bash(gh issue edit:*)'
+  'Bash(gh pr list:*)' 'Bash(gh pr view:*)' 'Bash(gh pr create:*)' 'Bash(gh label list:*)'
+  'Bash(ls:*)' 'Bash(mkdir:*)'
+  mcp__claude_ai_Notion__notion-fetch mcp__claude_ai_Notion__notion-search
+  mcp__claude_ai_Notion__notion-query-data-sources mcp__claude_ai_Notion__notion-create-pages
+  mcp__claude_ai_Notion__notion-update-page
+  mcp__claude_ai_Todoist__find-projects mcp__claude_ai_Todoist__find-sections mcp__claude_ai_Todoist__find-tasks
+  mcp__claude_ai_Todoist__add-tasks mcp__claude_ai_Todoist__complete-tasks
+)
+if [ -f "$config_dir/$name.tools" ]; then
+  while IFS= read -r tool; do
+    [ -n "$tool" ] && allowed+=("$tool")
+  done < "$config_dir/$name.tools"
+fi
+disallowed=(
+  'Bash(gh pr merge:*)' 'Bash(git push --force:*)' 'Bash(git push -f:*)'
+  'Bash(git push origin main:*)' 'Bash(git push origin master:*)' 'Bash(git reset --hard:*)'
+)
+
+mkdir -p "$state_dir/logs"
+log="$state_dir/logs/$name-$(date +%Y%m%d-%H%M%S).log"
+cd "$work" || exit 1
+# --allowedTools などは値を複数とるので、プロンプトを先に渡す
+claude -p "$prompt" \
+  --model "${CLAUDE_AUTO_DEV_MODEL:-opus}" \
+  --max-turns "${CLAUDE_AUTO_DEV_MAX_TURNS:-150}" \
+  --allowedTools "${allowed[@]}" \
+  --disallowedTools "${disallowed[@]}" \
+  >> "$log" 2>&1
+status=$?
+
+# 人は見ていないので、失敗したら通知で知らせる
+if [ "$status" -ne 0 ]; then
+  osascript -e "display notification \"終了コード ${status}。ログ: ${log}\" with title \"claude-auto-dev: $name が失敗\""
+fi
+exit "$status"
