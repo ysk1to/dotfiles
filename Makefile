@@ -9,6 +9,10 @@ ITERM_DIR  := $(HOME)/Library/Application Support/iTerm2/DynamicProfiles
 # Claude Code のスキル。~/.claude/skills には Claude が管理するディレクトリ（synced）もあるので、スキルごとにリンクする
 SKILLS := $(notdir $(wildcard claude/skills/*))
 
+# ほかの人が公開しているスキル。中身はリポジトリに入れず、コミットを決めて取得する（bin/claude-skill-install）
+# 「名前,リポジトリの URL,コミット,リポジトリの中のフォルダ」の形で持つ。更新するときは、中身を確かめてからコミットを書き換える
+EXTERNAL_SKILLS := yomiyasu,https://github.com/nanaism/yomiyasu,3042154ee537c1b7093eefed00a97b40aae9446d,skills/yomiyasu # v3.2.0
+
 # リンク元とリンク先の対応（check で使う）。「元,先」の形で持ち、パスの空白は @ に置き換える
 LINKS := $(foreach val, $(DOTFILES), $(DOTPATH)/$(val),$(HOME)/$(val)) \
          $(foreach val, keybindings.json settings.json CLAUDE.md, $(DOTPATH)/claude/$(val),$(HOME)/.claude/$(val)) \
@@ -47,6 +51,9 @@ deploy-claude: ## Create symlink of Claude Code settings
 	@$(foreach val, keybindings.json settings.json CLAUDE.md, ln -sfnv $(DOTPATH)/claude/$(val) $(HOME)/.claude/$(val);)
 	@mkdir -p $(HOME)/.claude/skills
 	@$(foreach val, $(SKILLS), ln -sfnv $(DOTPATH)/claude/skills/$(val) $(HOME)/.claude/skills/$(val);)
+	@for skill in $(EXTERNAL_SKILLS); do \
+	  $(DOTPATH)/bin/claude-skill-install $$(echo "$$skill" | tr ',' ' ') || exit 1; \
+	done
 
 deploy-iterm: ## Create symlink of iTerm2 dynamic profile
 	@echo '==> Start to deploy iTerm2 dynamic profile.'
@@ -66,6 +73,12 @@ check: ## Check symlinks and Homebrew packages
 	  src=$${pair%%,*}; dst=$$(printf '%s' "$${pair#*,}" | tr '@' ' '); \
 	  if [ "$$(readlink "$$dst")" = "$$src" ]; then echo "  ok  $$dst"; \
 	  else echo "  NG  $$dst（make install で作り直せます）"; ng=1; fi; \
+	done; \
+	echo ''; echo '==> Checking external Claude Code skills.'; \
+	for skill in $(EXTERNAL_SKILLS); do \
+	  name=$$(echo "$$skill" | cut -d, -f1); commit=$$(echo "$$skill" | cut -d, -f3); \
+	  if $(DOTPATH)/bin/claude-skill-install --check "$$name" "$$commit"; then echo "  ok  $$name"; \
+	  else echo "  NG  $$name（make deploy-claude で置き直せます）"; ng=1; fi; \
 	done; \
 	echo ''; echo '==> Checking Homebrew packages.'; \
 	brew bundle check --no-upgrade --file=$(DOTPATH)/Brewfile || ng=1; \

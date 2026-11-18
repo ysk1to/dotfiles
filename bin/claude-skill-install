@@ -1,0 +1,62 @@
+#!/bin/bash
+# ほかの人が公開している Claude Code のスキルを、コミットを決めて ~/.claude/skills に置く。
+# スキルの中身は dotfiles に入れず、どのコミットを使うかだけを Makefile に書いて管理する。
+# 使い方:
+#   claude-skill-install <スキル名> <リポジトリの URL> <コミット> <リポジトリの中のフォルダ>
+#   claude-skill-install --check <スキル名> <コミット>   置いてあるコミットが同じなら 0、違えば 1（取得しない）
+# 置いたコミットは <スキル名>/.source-commit に記録する。同じコミットが置いてあれば取得しない。
+# 記録のないフォルダ（このスクリプトが置いたのではないもの）は消さずに止まる。
+# 置き場所は CLAUDE_SKILLS_DIR（既定 ~/.claude/skills）で変更できる
+
+skills="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+
+if [ "$1" = "--check" ]; then
+  [ $# -eq 3 ] || { echo "使い方: claude-skill-install --check <スキル名> <コミット>" >&2; exit 2; }
+  [ "$(cat "$skills/$2/.source-commit" 2>/dev/null)" = "$3" ]
+  exit $?
+fi
+
+[ $# -eq 4 ] || { echo "使い方: claude-skill-install <スキル名> <リポジトリの URL> <コミット> <リポジトリの中のフォルダ>" >&2; exit 2; }
+name="$1" url="$2" commit="$3" path="$4"
+dest="$skills/$name"
+
+if [ -e "$dest" ] || [ -L "$dest" ]; then
+  if [ ! -f "$dest/.source-commit" ] || [ -L "$dest" ]; then
+    echo "$dest はこのスクリプトが置いたものではないので、置き換えません。要らなければ消してから、もう一度実行してください" >&2
+    exit 1
+  fi
+  if [ "$(cat "$dest/.source-commit")" = "$commit" ]; then
+    echo "$name: $commit を置いてあります"
+    exit 0
+  fi
+fi
+
+# 取得と展開は置き場所と同じディレクトリの一時フォルダで行い、そろってから入れ替える（途中で失敗しても前の中身が残る）
+mkdir -p "$skills" || exit 1
+work=$(mktemp -d "$skills/.$name.XXXXXX") || exit 1
+trap 'rm -rf "$work"' EXIT
+
+if ! { git init -q "$work/repo" &&
+  git -C "$work/repo" fetch -q --depth 1 "$url" "$commit" &&
+  git -C "$work/repo" checkout -q FETCH_HEAD; }; then
+  echo "$name: $url の $commit を取得できませんでした" >&2
+  exit 1
+fi
+
+# 枝やタグの名前ではなく、指定したコミットそのものを取り出せたかを確かめる
+if [ "$(git -C "$work/repo" rev-parse HEAD)" != "$commit" ]; then
+  echo "$name: 取り出したコミットが $commit と違います（コミットは40桁で指定してください）" >&2
+  exit 1
+fi
+if [ ! -f "$work/repo/$path/SKILL.md" ]; then
+  echo "$name: $path に SKILL.md がありません" >&2
+  exit 1
+fi
+
+mv "$work/repo/$path" "$work/new" || exit 1
+echo "$commit" > "$work/new/.source-commit" || exit 1
+if [ -e "$dest" ]; then
+  mv "$dest" "$work/old" || exit 1
+fi
+mv "$work/new" "$dest" || exit 1
+echo "$name: $commit を $dest に置きました"

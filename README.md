@@ -23,6 +23,9 @@ macOS用の設定ファイル管理リポジトリ
   - `skills/` - 全プロジェクト共通のスキル（スキルごとに`~/.claude/skills/`へシンボリックリンク。`~/.claude/skills/synced`はClaudeが管理するので触らない）
     - `kindle-capture/` - Kindleの本を1ページずつ撮影してPDFにする（撮影スクリプト本体も含む）
     - `book-summary/` - 書籍PDFを章ごとに要約する
+  - ほかの人が公開しているスキルは中身をリポジトリに入れず、`Makefile`の`EXTERNAL_SKILLS`にコミットを書いて`make deploy-claude`で取得する
+    - [yomiyasu](https://github.com/nanaism/yomiyasu) - AIが書いた日本語を推敲する
+    - 更新するときは、新しい版の中身を確かめてから`EXTERNAL_SKILLS`のコミットを書き換え、`make deploy-claude`を実行する
   - PCごとの設定は Git 管理外の `~/.claude/settings.local.json` に書く
   - 個人の情報は Git 管理外のファイルに書き、`CLAUDE.md` から `@` で読み込む
     - `~/.claude/notion-hub.local.md` - Notion のハブと DB の URL
@@ -40,6 +43,7 @@ macOS用の設定ファイル管理リポジトリ
 - `bin/claude-context-guard` - Claude Codeのフック。コンテキストが自動圧縮に近づいたら（既定25万トークン）、圧縮前にNotionへ途中経過を記録するよう促す
 - `bin/claude-auto-dev` - launchdなどから定期的に呼ばれ、リポジトリの`auto-ready`のIssueを1件、Claude Code（`claude -p`）にPRにさせる。手順の本体はリポジトリの`.claude/auto-dev.md`。Issueがない回はClaudeを起動しない。`.claude/auto-plan.md`があるリポジトリでは、決まった間隔で次の作業を企画してIssueにし、`.claude/auto-plan-review.md`があれば、企画したIssueとマージされたPRを別の回で精査する
 - `bin/claude-auto-dev-status` - `claude-auto-dev`の状況をまとめて出す（本人待ちの判断・PR、実行中の回、作業中と次に着手するIssue、今日の回と費用、次の起動と起動の見落とし、直近にClaudeが作った・決めたもの、消えた通知）。Claudeは起動せず、GitHubと`claude-auto-dev`が残したファイルだけを読む。`--json`で集計をJSONで出す
+- `bin/claude-skill-install` - ほかの人が公開しているClaude Codeのスキルを、コミットを決めて`~/.claude/skills/`に置く。同じコミットが置いてあれば取得しない。自分が置いたのではないフォルダは置き換えない
 - `bin/claude-usage-refresh` - usage APIからプラン使用率を取得してキャッシュ（Claude Codeを起動していない間の利用もtmuxに反映する）
 - `bin/tmux-claude-auto-dev` - `claude-auto-dev-status`の結果を、tmuxのステータスバーの2行目にリポジトリごとの絵文字と件数で表示（例: `🔧 kbi  🏃 #14 12m  🙋 1  🔀 2  │  foo  ✓  │  ⏩ 20:00  🔁 4  💰 2.50`）。結果は5分キャッシュし、古くなったら裏で取り直す。実行中の回は毎回ロックから読む。`--popup`で凡例と状況の全文を出す（`C-q + A`）
 - `bin/claude-auto-dev-watch` - 自動開発の監視用のペイン。リポジトリごとの状況（実行中の回、判断待ちとPRの番号、次の起動、今日の回と費用、見落とし・失敗）、実行中の回の手順（最後の5回のツールの呼び出し）と、全リポジトリのできごとを新しい順に流し続ける。判断待ちや失敗があればペインの枠を赤くする。`C-q + M`で右下のペインを左右に割って開け閉めする
@@ -75,12 +79,12 @@ make check
 ### Makeターゲット
 - `make` / `make help` - ターゲット一覧を表示
 - `make install` - すべての設定を展開し、Homebrewパッケージをインストール
-- `make check` - シンボリックリンクとHomebrewパッケージが揃っているか確認（古いだけのパッケージは問題なしとみなす）
+- `make check` - シンボリックリンク、外部のスキル、Homebrewパッケージが揃っているか確認（古いだけのパッケージは問題なしとみなす）
 - `make lint` - `bin/`のスクリプトをshellcheck、JSONファイルを構文チェック
 - `make list` - リポジトリ内のdotfilesを一覧表示
 - `make deploy` - dotfilesをホームディレクトリにシンボリックリンク作成
 - `make deploy-vscode` - VSCode設定をアプリケーションディレクトリにシンボリックリンク作成
-- `make deploy-claude` - Claude Code設定を`~/.claude/`にシンボリックリンク作成
+- `make deploy-claude` - Claude Code設定を`~/.claude/`にシンボリックリンク作成し、外部のスキルを取得
 - `make deploy-iterm` - iTerm2のdynamic profileをシンボリックリンク作成
 
 ### カスタムスクリプト
