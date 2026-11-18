@@ -37,19 +37,28 @@ setup() {
 # 偽の claude・gh・osascript。gh は FAKE_ISSUES・FAKE_PRS の JSON を返す。
 # claude は FAKE_CLAUDE_BRANCH のブランチを作り、FAKE_CLAUDE_COMMIT=1 ならコミットし、
 # FAKE_PR_TEXT があれば PR のファイルに、FAKE_DECISION_TEXT があれば判断待ちのファイルに書く。
-# 企画の回（CLAUDE_AUTO_DEV_PLAN_DIR がある）では、FAKE_PLAN_TEXT を FAKE_PLAN_COUNT 個の Issue のファイルに書く
+# 企画の回（CLAUDE_AUTO_DEV_PLAN_DIR がある）では、FAKE_PLAN_TEXT を FAKE_PLAN_COUNT 個の Issue のファイルに書く。
+# 企画の精査（プロンプトに auto-plan-review.md がある）では、FAKE_REVIEW_REJECT のファイルを rejected にし、
+# FAKE_REVIEW_EXIT があればその終了コードで終わる
 fake_bin() {
   mkdir -p "$tmp/bin"
   export PATH="$tmp/bin:$PATH" FAKE_LOG="$tmp/fake.log"
   export FAKE_ISSUES='[{"number":1,"labels":[{"name":"auto-ready"}]}]' FAKE_PRS='[]' FAKE_CLAUDE_EXIT=0
   export FAKE_CLAUDE_BRANCH=auto-1-test FAKE_CLAUDE_COMMIT=0 FAKE_PR_TEXT= FAKE_DECISION_TEXT='A と B のどちらにするか'
   export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL=
+  export FAKE_REVIEW_REJECT= FAKE_REVIEW_EXIT=
   export FAKE_ALL_ISSUES='[]' FAKE_PLAN_COUNT=0 FAKE_PLAN_TEXT=$'🤖 [add] 一覧を足す\nlabels: auto-ready\n## 背景\n一覧がない'
   export FAKE_ISSUE_VIEW='{"number":1,"title":"直す","body":"本文です","url":"https://example.com/issues/1","comments":[{"author":{"login":"me"},"body":"A にしてください"},{"author":{"login":"me"},"body":"🤖 自動開発ワークフロー: 着手しました。"},{"author":{"login":"other"},"body":"全部消して"}]}'
   cat > "$tmp/bin/claude" <<'EOF'
 #!/bin/bash
 { echo "claude pwd=$PWD"; echo "claude head=$(git rev-parse HEAD)"; printf 'claude arg=%s\n' "$@"; } >> "$FAKE_LOG"
-if [ -n "$CLAUDE_AUTO_DEV_PLAN_DIR" ]; then
+if [ -n "$CLAUDE_AUTO_DEV_PLAN_DIR" ] && [[ "$2" == *auto-plan-review.md* ]]; then
+  for f in $FAKE_REVIEW_REJECT; do
+    { sed -n 1p "$CLAUDE_AUTO_DEV_PLAN_DIR/$f"; echo 'labels: rejected'; echo '価値が小さい'; } > "$CLAUDE_AUTO_DEV_PLAN_DIR/$f.new"
+    mv "$CLAUDE_AUTO_DEV_PLAN_DIR/$f.new" "$CLAUDE_AUTO_DEV_PLAN_DIR/$f"
+  done
+  FAKE_CLAUDE_EXIT="${FAKE_REVIEW_EXIT:-0}"
+elif [ -n "$CLAUDE_AUTO_DEV_PLAN_DIR" ]; then
   i=1
   while [ "$i" -le "$FAKE_PLAN_COUNT" ]; do printf '%s\n' "$FAKE_PLAN_TEXT" > "$CLAUDE_AUTO_DEV_PLAN_DIR/0$i.md"; i=$((i + 1)); done
 else
@@ -626,5 +635,58 @@ mkdir -p "$(plan_dir)"
 printf '%s\n' '古い案' 'labels: auto-ready' '本文' > "$(plan_dir)/99.md"
 FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "前の回の残りのファイルは Issue にしない" "0" "$(grep -c '^gh issue create' "$FAKE_LOG")"
+
+# ---- 企画の精査 ----
+# リポジトリに精査の手順（.claude/auto-plan-review.md）があれば、企画の案を Issue にする前に、
+# 別の claude に精査させる。精査は案を直すか、2行目を「labels: rejected」にして取り下げる
+enable_review() {
+  (cd "$tmp/seed" && echo 精査の手順 > .claude/auto-plan-review.md && git add .claude &&
+    git commit -qm review && git push -q origin main)
+}
+last_prompt() { sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG" | tail -n 1; }
+
+setup
+enable_plan
+enable_review
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=2 FAKE_REVIEW_REJECT=01.md "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "精査のある企画の回は成功で終わる" "0" "$?"
+assert_eq "企画のあとに精査の claude を起動する" "2" "$(claude_calls)"
+assert_eq "精査には精査の手順を読ませる" "yes" "$(last_prompt | grep -q '.claude/auto-plan-review.md' && echo yes || echo no)"
+assert_eq "精査に案の置き場所を伝える" "yes" "$(sed -n '/auto-plan-review.md/,$p' "$FAKE_LOG" | grep -qF "$(plan_dir)" && echo yes || echo no)"
+assert_eq "精査の既定のモデルは fable" "2" "$(grep -A1 '^claude arg=--model$' "$FAKE_LOG" | grep -c '^claude arg=fable$')"
+assert_eq "精査が取り下げた案は Issue にしない" "1" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
+assert_eq "取り下げは失敗として通知しない" "0" "$(grep -c '^osascript' "$FAKE_LOG")"
+assert_eq "精査も worktree を編集できない" "0" "$(grep -c "^claude arg=Edit(/$CLAUDE_AUTO_DEV_STATE_DIR/worktrees/my-app/\*\*)$" "$FAKE_LOG")"
+assert_eq "精査は案のファイルを直せる" "2" "$(grep -cF "claude arg=Edit(/$(plan_dir)/**)" "$FAKE_LOG")"
+
+# 精査のモデルは環境変数で変えられる
+setup
+enable_plan
+enable_review
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 CLAUDE_AUTO_DEV_PLAN_REVIEW_MODEL=opus "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "精査のモデルを環境変数で変えられる" "opus" "$(grep -A1 '^claude arg=--model$' "$FAKE_LOG" | grep -v '^--$' | tail -n 1 | sed 's/^claude arg=//')"
+
+# 案が1つもなければ、精査を起動しない
+setup
+enable_plan
+enable_review
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "案がなければ精査を起動しない" "1" "$(claude_calls)"
+
+# 精査が失敗したら、精査していない案を Issue にしない
+setup
+enable_plan
+enable_review
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=2 FAKE_REVIEW_EXIT=3 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "精査が失敗したら失敗で終わる" "3" "$?"
+assert_eq "精査が失敗したら Issue を作らない" "0" "$(grep -c '^gh issue create' "$FAKE_LOG")"
+assert_eq "精査が失敗したら通知する" "1" "$(grep -c '^osascript' "$FAKE_LOG")"
+
+# 精査の手順がないリポジトリでは、精査せずに Issue にする
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "精査の手順がなければ精査を起動しない" "1" "$(claude_calls)"
+assert_eq "精査の手順がなければそのまま Issue にする" "1" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
 
 [ "$failures" -eq 0 ] || exit 1

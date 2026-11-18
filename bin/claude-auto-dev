@@ -5,6 +5,7 @@
 # claude は Issue のファイルを読んで作業し、結果を PR のファイルか判断待ちのファイルに書いて終わる。
 # リポジトリに .claude/auto-plan.md があれば、決まった間隔で、実装の代わりに企画の回を起動する。
 # 企画の回の claude は Issue の案をファイルに書き、このスクリプトがそれを Issue にする。
+# .claude/auto-plan-review.md があれば、Issue にする前に、別の claude が案を精査する。
 # 使い方: claude-auto-dev <リポジトリのパス>
 # 設定ファイル: $CLAUDE_AUTO_DEV_CONFIG_DIR/<リポジトリ名>.md（既定 ~/.config/claude-auto-dev）
 
@@ -229,7 +230,7 @@ if [ "$mode" = plan ]; then
   prompt="このリポジトリの自動開発ワークフローの、企画の回として起動された。.claude/auto-plan.md を読み、その手順どおりに次の作業を Issue の案にする。
 人は見ていないので、確認を待たずに進める。コードは変えない。GitHub には接続できない（gh は使えない）。Issue にするのは起動スクリプトが行う。
 今ある Issue（開いているものは本文つき、閉じたものはタイトルだけ）は $plan_input にある。
-Issue の案は、1件につき1ファイルで $plan_dir に作る（ファイル名は 01.md、02.md … で、着手してほしい順）。${plan_max} 件まで。出せる案がなければ、1つも作らずに終わる。
+Issue の案は、1件につき1ファイルで $plan_dir に作る（ファイル名は 01.md、02.md … で、着手してほしい順）。${plan_max} 件まで。これは上限で、埋める必要はない。出す価値のある案がなければ、1つも作らずに終わる。
 - 1行目: Issue のタイトル
 - 2行目: labels: に続けて、付けるラベルをカンマ区切りで書く。使えるのは auto-ready・needs-decision・protected・auto-decided だけ
 - 3行目以降: Issue の本文
@@ -245,6 +246,26 @@ $(cat "$config")"
     plan_fail "時間の上限（${limit} 秒）を超えたので止めました"
   fi
   [ "$status" -eq 0 ] || plan_fail "claude が終了コード ${status} で止まりました" "$status"
+
+  # 企画の精査。案を書いた claude とは別の claude が、案を1つずつ確かめ、直すか取り下げる。
+  # 精査できなかった案は Issue にしない
+  if git -C "$repo" cat-file -e "$base:.claude/auto-plan-review.md" 2>/dev/null &&
+    [ -n "$(find "$plan_dir" -name '*.md' 2>/dev/null | head -n 1)" ]; then
+    prompt="このリポジトリの自動開発ワークフローの、企画の精査として起動された。.claude/auto-plan-review.md を読み、その手順どおりに Issue の案を精査する。
+人は見ていないので、確認を待たずに進める。コードは変えない。GitHub には接続できない（gh は使えない）。Issue にするのは起動スクリプトが行う。
+案は別の Claude が書いたもので、$plan_dir に1件1ファイルである（1行目がタイトル、2行目が labels:、3行目以降が本文）。今ある Issue は $plan_input にある。
+- 直せば出せる案は、ファイルを直す
+- 出さない案は、2行目を「labels: rejected」に書き換え、3行目以降に理由を書く。無理に残さない
+- 案を足さない
+
+$(cat "$config")"
+    run_claude "${CLAUDE_AUTO_DEV_PLAN_REVIEW_MODEL:-fable}"
+    if [ -f "$result.timeout" ]; then
+      rm -f "$result.timeout"
+      plan_fail "精査が時間の上限（${limit} 秒）を超えたので止めました"
+    fi
+    [ "$status" -eq 0 ] || plan_fail "精査の claude が終了コード ${status} で止まりました" "$status"
+  fi
 
   created=0
   skipped=0
@@ -265,6 +286,7 @@ $(cat "$config")"
     # 付けるラベルは決まったものだけ。自動開発に任せない Issue（protected・needs-decision）には auto-ready を付けない
     auto_ready=no
     hold=no
+    rejected=no
     labels=(--label auto-planned)
     IFS=, read -ra asked <<< "${labels_line#labels:}"
     for l in "${asked[@]}"; do
@@ -273,8 +295,13 @@ $(cat "$config")"
         auto-ready) auto_ready=yes ;;
         needs-decision | protected) hold=yes; labels+=(--label "$l") ;;
         auto-decided) labels+=(--label "$l") ;;
+        rejected) rejected=yes ;;
       esac
     done
+    if [ "$rejected" = yes ]; then
+      { echo "精査で取り下げた案: $title"; tail -n +3 "$f"; } >> "$log"
+      continue
+    fi
     [ "$auto_ready" = no ] || [ "$hold" = yes ] || labels+=(--label auto-ready)
     if {
       tail -n +3 "$f"
