@@ -147,4 +147,10 @@ assert_eq "ポップアップに凡例を出す" "yes" "$(echo "$popup" | grep -
 assert_eq "凡例に次の起動と今日の回数・費用も出す" "yes" "$(echo "$popup" | grep -q '⏭ 次の起動' && echo "$popup" | grep -q '💲' && echo yes || echo no)"
 assert_eq "ポップアップに状況の全文を出す" "yes" "$(echo "$popup" | grep -q '状況の全文' && echo yes || echo no)"
 
+# ---- 実行中の回だけ出す（claude-auto-dev-watch が使う） ----
+setup
+running my-app '{"mode":"plan","issue":null,"started_at":1}'
+assert_eq "--running で実行中の回を名前ごとに JSON で出す" '{"my-app":{"mode":"plan","issue":null,"started_at":1}}' "$("$bin/tmux-claude-auto-dev" --running)"
+assert_eq "--running では gh を呼ばない" "0" "$(calls)"
+
 [ "$failures" -eq 0 ] || exit 1

@@ -1,0 +1,104 @@
+#!/bin/bash
+# claude-auto-dev の状況を、tmux の監視用のペインに流し続ける。上にリポジトリごとの状況、下に全リポジトリのできごと
+# （claude-auto-dev が残す events.tsv）を新しい順に出す。判断待ちや見落とし・失敗があれば、ペインを待機中
+# （@claude_state = waiting。ほかの Claude のペインと同じ赤い枠）にする。
+# 使い方: claude-auto-dev-watch [--once | --toggle]
+#   --once で1回だけ出して終わる / --toggle で監視用のペインを開け閉めする（C-q + M）
+# 状況は tmux-claude-auto-dev と同じキャッシュを読み、古ければ tmux-claude-auto-dev に裏で取り直させる。
+# 書き直す間隔は CLAUDE_AUTO_DEV_WATCH_INTERVAL（秒、既定 10）、開くときの幅は CLAUDE_AUTO_DEV_WATCH_WIDTH（既定 60）
+
+bar="$(dirname "$0")/tmux-claude-auto-dev"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-auto-dev-status.json"
+state_dir="${CLAUDE_AUTO_DEV_STATE_DIR:-$HOME/.local/state/claude-auto-dev}"
+
+# 印（@auto_dev_watch）の付いたペインがあれば閉じ、なければ右下のペインを左右に割って開く
+if [ "$1" = --toggle ]; then
+  pane=$(tmux list-panes -F '#{pane_id} #{@auto_dev_watch}' | awk '$2 == 1 { print $1; exit }')
+  if [ -n "$pane" ]; then
+    tmux kill-pane -t "$pane"
+  else
+    tmux split-window -d -h -l "${CLAUDE_AUTO_DEV_WATCH_WIDTH:-60}" -t '{bottom-right}' "$0"
+  fi
+  exit 0
+fi
+
+if [ -n "$TMUX_PANE" ]; then
+  tmux set -p -t "$TMUX_PANE" @auto_dev_watch 1
+  printf '\033]2;%s\033\134' auto-dev
+fi
+
+frame() {
+  local now rows cols running events
+  now="${CLAUDE_AUTO_DEV_NOW:-$(date +%s)}"
+  rows="${LINES:-$(tput lines)}"
+  cols="${COLUMNS:-$(tput cols)}"
+  "$bar" > /dev/null
+  running=$("$bar" --running)
+  events=$(tail -n 200 "$state_dir/events.tsv" 2>/dev/null)
+  if [ ! -s "$cache" ] || [ "$(jq length "$cache" 2>/dev/null)" = 0 ]; then
+    echo "claude-auto-dev はまだ動いていません"
+    return
+  fi
+  jq -r --argjson running "$running" --argjson now "$now" --argjson rows "$rows" --argjson cols "$cols" \
+    --arg events "$events" '
+    def money: (. * 100 | round) as $c | "\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)";
+    def elapsed: (($now - .) / 60 | floor) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" else "\($m)m" end;
+    # 今日なら時刻、それより前なら日付
+    def when: if strflocaltime("%Y%m%d") == ($now | strflocaltime("%Y%m%d")) then strflocaltime("%H:%M") else strflocaltime("%m/%d") end;
+    # 端末での幅（全角は2、絵文字の異体字セレクタは0）で切る
+    def cw: if . == 65039 then 0 elif . > 4351 then 2 else 1 end;
+    def trunc($w):
+      if (explode | map(cw) | add // 0) <= $w then .
+      else (reduce explode[] as $c ({s: [], w: 0, full: false};
+          if .full or .w + ($c | cw) > $w - 1 then .full = true else .s += [$c] | .w += ($c | cw) end) | .s | implode) + "…" end;
+    def run: if .mode == "implement" then "#\(.issue) の実装" elif .mode == "plan" then "企画" else "精査" end + " \(.started_at | elapsed)";
+    def repo:
+      ($running[.name] // null) as $r
+      | [if $r then "🏃 \($r | run)" else empty end,
+         if (.decisions | length) > 0 then "🙋 " + ([.decisions[] | "#\(.number)"] | join(" ")) else empty end,
+         if (.prs | length) > 0 then "🔀 " + ([.prs[] | "#\(.number)"] | join(" ")) else empty end,
+         if .ready > 0 then "📥 \(.ready)" else empty end] as $items
+      | [if .schedule.missed_at then "⚠️ \(.schedule.missed_at | when) の起動が記録されていません" else empty end,
+         if .error then "⚠️ \(.error)" else empty end,
+         (.notices[] | select(.title | test("失敗")) | "⚠️ \(.at | when) \(.message)")] as $warns
+      | [if .schedule.next_at then "⏭ \(.schedule.next_at | strflocaltime("%H:%M"))" else empty end,
+         if .runs.today.count > 0 then "🔁 \(.runs.today.count)  💲 \(.runs.today.cost | money)" else empty end] as $plan
+      | "\(.label)  " + (if ($items + $warns | length) == 0 then "✓" else $items | join("   ") end),
+        ($warns[] | "     " + .),
+        (if ($plan | length) > 0 then "     " + ($plan | join("  ")) else empty end);
+    (map({key: .name, value: .label}) | from_entries) as $labels
+    | (["auto-dev  \($now | strflocaltime("%H:%M"))", (.[] | repo)] | map(trunc($cols))) as $head
+    | {start: "🏃", end: "🏁", pr: "🔀", issue: "📝", decision: "🙋", fail: "⚠️", notice: "💬"} as $icons
+    | [$events | split("\n")[] | select(. != "") | split("\t") | select(length >= 4) | .[0] |= tonumber]
+    | [sort_by(.[0])[] | "\(.[0] | when) \($labels[.[1]] // .[1][0:3]) \($icons[.[2]] // "・") \(.[3:] | join(" "))" | trunc($cols)]
+      | reverse | .[:([$rows - ($head | length) - 2, 0] | max)] as $lines
+    | $head[], "── できごと " + ("─" * ([$cols - 12, 0] | max)), $lines[]' "$cache"
+}
+
+# 判断待ち・見落とし・gh の失敗・失敗の通知があれば、ペインを待機中（赤い枠）にする
+mark() {
+  [ -n "$TMUX_PANE" ] || return 0
+  if jq -e 'any(.[]; (.decisions | length) > 0 or .schedule.missed_at or .error or any(.notices[]; .title | test("失敗")))' \
+    "$cache" > /dev/null 2>&1; then
+    tmux set -p -t "$TMUX_PANE" @claude_state waiting
+  else
+    tmux set -p -t "$TMUX_PANE" -u @claude_state
+  fi
+}
+
+if [ "$1" = --once ]; then
+  frame
+  mark
+  exit 0
+fi
+
+tput civis
+trap 'tput cnorm; exit 0' INT TERM
+while true; do
+  out=$(frame)
+  tput cup 0 0
+  printf '%s' "$out" | sed $'s/$/\033[K/'
+  tput ed
+  mark
+  sleep "${CLAUDE_AUTO_DEV_WATCH_INTERVAL:-10}"
+done

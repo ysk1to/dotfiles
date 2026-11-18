@@ -6,8 +6,9 @@
 #   ⚠️ 起動の見落とし・gh の失敗・直近の失敗の通知
 #   最後に、全リポジトリで ⏭ いちばん近い次の起動 / 🔁 今日の回数 / 💲 今日の費用（ドル）
 #   自動開発のリポジトリがなければ何も出さない
-# 使い方: tmux-claude-auto-dev [--popup]
+# 使い方: tmux-claude-auto-dev [--popup | --running]
 #   --popup で凡例と状況の全文を出す（tmux の display-popup から呼ぶ）
+#   --running で実行中の回だけを、{ リポジトリ名: ロックの run } の JSON で出す（claude-auto-dev-watch が使う）
 # status-interval ごとに gh を呼ばないよう、結果をキャッシュし、古くなったら裏で取り直す（待たせない）。
 # キャッシュの有効期間は TMUX_AUTO_DEV_TTL（秒、既定 300）で変更できる。
 # 実行中の回はすぐ変わるので、キャッシュでなく claude-auto-dev のロックを毎回読む
@@ -27,6 +28,20 @@ if [ "$1" = --popup ]; then
   exit 0
 fi
 
+# 実行中の回を { 名前: run の JSON } にまとめる。落ちてロックだけ残っているもの（pid のプロセスがない）は除く
+running='{}'
+for lock in "$state_dir"/locks/*; do
+  if [ ! -f "$lock/run" ] || ! kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then
+    continue
+  fi
+  running=$(jq -c --arg name "$(basename "$lock")" --slurpfile run "$lock/run" '.[$name] = $run[0]' <<< "$running" 2>/dev/null) ||
+    running='{}'
+done
+if [ "$1" = --running ]; then
+  echo "$running"
+  exit 0
+fi
+
 # 前回取り直してから有効期間がたっていれば、裏で取り直す。取り直しを始めた時刻を記録して、
 # 失敗が続いても gh を呼びすぎないようにする。失敗したときは前のキャッシュを残す
 age() { echo $(($(date +%s) - $(stat -f %m "$1" 2>/dev/null || echo 0))); }
@@ -39,16 +54,6 @@ if [ "$(age "$cache")" -ge "$ttl" ] && [ "$(age "$stamp")" -ge "$ttl" ]; then
 fi
 
 [ -f "$cache" ] || { echo "🛠 …"; exit 0; }
-
-# 実行中の回を { 名前: run の JSON } にまとめる。落ちてロックだけ残っているもの（pid のプロセスがない）は除く
-running='{}'
-for lock in "$state_dir"/locks/*; do
-  if [ ! -f "$lock/run" ] || ! kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then
-    continue
-  fi
-  running=$(jq -c --arg name "$(basename "$lock")" --slurpfile run "$lock/run" '.[$name] = $run[0]' <<< "$running" 2>/dev/null) ||
-    running='{}'
-done
 
 jq -r --argjson running "$running" --argjson now "$now" '
   def money: (. * 100 | round) as $c | "\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)";
