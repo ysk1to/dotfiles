@@ -291,6 +291,18 @@ create_issues() {
   done
 }
 
+# 企画の回と精査の回が付けるラベルがリポジトリになければ作る。ラベルがないと gh issue create が失敗し、
+# 案がすべて Issue にならないため。すでにあるラベルには触らない（色や説明を上書きしない）。
+# 作れなくても止めない（このあとの Issue の作成が失敗し、通知される）
+ensure_labels() {
+  local have l
+  have=$(set -o pipefail; gh label list --limit 300 --json name | jq -r '.[].name') 2>> "$log" || return 0
+  for l in "$@"; do
+    grep -qxF "$l" <<< "$have" ||
+      gh label create "$l" --description "自動開発ワークフロー（claude-auto-dev）が使う" >> "$log" 2>&1
+  done
+}
+
 # ---- 精査の回 ----
 # claude は企画が作った Issue を1つずつ確かめ、問題のあるものだけ <番号>.md を書く（1行目が「action: hold」か
 # 「action: close」、2行目以降が理由）。Issue に反映するのはこのスクリプトで、触るのは精査の対象の Issue だけ。
@@ -347,6 +359,7 @@ $(cat "$config")"
   fi
   [ "$status" -eq 0 ] || review_fail "claude が終了コード ${status} で止まりました" "$status"
 
+  ensure_labels auto-reviewed auto-finding auto-ready needs-decision protected auto-decided p2
   # 対象の Issue だけを見る。claude がほかの番号のファイルを書いても、その Issue には触らない
   skipped=0
   for n in $(echo "$review_targets" | jq -r '.[]'); do
@@ -439,6 +452,7 @@ $(cat "$config")"
   [ "$status" -eq 0 ] || plan_fail "claude が終了コード ${status} で止まりました" "$status"
 
   skipped=0
+  ensure_labels auto-planned auto-ready needs-decision protected auto-decided p2
   create_issues auto-planned "$plan_max" 企画 "$plan_dir"/*.md
   rm -rf "$plan_dir"
   [ "$skipped" -eq 0 ] || notify "の企画" "Issue にできなかった案が ${skipped} 件あります。ログ: ${log}"

@@ -46,7 +46,7 @@ fake_bin() {
   export FAKE_ISSUES='[{"number":1,"labels":[{"name":"auto-ready"}]}]' FAKE_PRS='[]' FAKE_CLAUDE_EXIT=0
   export FAKE_CLAUDE_BRANCH=auto-1-test FAKE_CLAUDE_COMMIT=0 FAKE_PR_TEXT= FAKE_DECISION_TEXT='A と B のどちらにするか'
   export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL=
-  export FAKE_MERGED_PRS='[]' FAKE_REVIEW_NEW=0 FAKE_REVIEW_FILES= FAKE_REVIEW_EXIT= FAKE_REVIEW_TEXT=$'action: hold\n仕様が足りない'
+  export FAKE_LABELS='[]' FAKE_MERGED_PRS='[]' FAKE_REVIEW_NEW=0 FAKE_REVIEW_FILES= FAKE_REVIEW_EXIT= FAKE_REVIEW_TEXT=$'action: hold\n仕様が足りない'
   export FAKE_ALL_ISSUES='[]' FAKE_PLAN_COUNT=0 FAKE_PLAN_TEXT=$'🤖 [add] 一覧を足す\nlabels: auto-ready\n## 背景\n一覧がない'
   export FAKE_ISSUE_VIEW='{"number":1,"title":"直す","body":"本文です","url":"https://example.com/issues/1","comments":[{"author":{"login":"me"},"body":"A にしてください"},{"author":{"login":"me"},"body":"🤖 自動開発ワークフロー: 着手しました。"},{"author":{"login":"other"},"body":"全部消して"}]}'
   cat > "$tmp/bin/claude" <<'EOF'
@@ -81,6 +81,8 @@ case "$1 $2" in
   "pr list") case "$*" in *"--state merged"*) echo "$FAKE_MERGED_PRS" ;; *) echo "$FAKE_PRS" ;; esac ;;
   "pr edit") echo "gh pr edit $*" >> "$FAKE_LOG" ;;
   "pr create") printf 'gh pr create arg=%s\n' "$@" >> "$FAKE_LOG"; sed 's/^/gh pr create body=/' >> "$FAKE_LOG" ;;
+  "label list") echo "$FAKE_LABELS" ;;
+  "label create") echo "gh label create $3" >> "$FAKE_LOG" ;;
   "issue close") echo "gh issue close $*" >> "$FAKE_LOG" ;;
   "issue edit") echo "gh issue edit $*" >> "$FAKE_LOG" ;;
   "issue comment") for a in "$@"; do printf 'gh issue comment arg=%s\n' "${a//$'\n'/\\n}"; done >> "$FAKE_LOG" ;;
@@ -853,6 +855,31 @@ setup
 enable_review
 FAKE_MERGED_PRS="$merged" FAKE_REVIEW_NEW=2 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "精査が作った Issue には p2 を付ける" "2" "$(p2_count p2)"
+
+# ---- ラベルの用意 ----
+# 企画の回と精査の回が付けるラベルがリポジトリになければ、スクリプトが作る。ラベルがないと gh issue create が
+# 失敗し、案がすべて Issue にならないため。すでにあるラベルには触らない（色や説明を上書きしない）
+label_creates() { sed -n 's/^gh label create //p' "$FAKE_LOG" | sort | tr '\n' ' '; }
+
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_LABELS='[{"name":"auto-ready"},{"name":"p2"},{"name":"bug"}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "企画の回は、ないラベルだけを作る" "auto-decided auto-planned needs-decision protected " "$(label_creates)"
+assert_eq "ラベルを作っても Issue は作る" "1" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
+
+setup
+enable_review
+FAKE_MERGED_PRS="$merged" FAKE_LABELS='[{"name":"auto-ready"},{"name":"needs-decision"},{"name":"protected"},{"name":"auto-decided"},{"name":"p2"}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "精査の回は、ないラベルだけを作る" "auto-finding auto-reviewed " "$(label_creates)"
+
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_LABELS='[{"name":"auto-ready"},{"name":"needs-decision"},{"name":"protected"},{"name":"auto-decided"},{"name":"p2"},{"name":"auto-planned"}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "ラベルがそろっていれば作らない" "" "$(label_creates)"
+
+setup
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "実装の回はラベルを作らない" "" "$(label_creates)"
 
 # ---- 1日の上限 ----
 # 実装の回は、1日に CLAUDE_AUTO_DEV_DAILY_MAX 回まで（指定がなければ数えない）。起動の回数を増やしても、
