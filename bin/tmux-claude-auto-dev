@@ -1,0 +1,45 @@
+#!/bin/bash
+# claude-auto-dev の状況（claude-auto-dev-status --json）を、tmux のステータスバー向けに絵文字と件数で出力する。
+# 例: 🛠 🙋2 🔀1 🏃#8 📥19 ⚠️（0件のものは出さない。何もなければ 🛠 ✓、自動開発のリポジトリがなければ何も出さない）
+#   🙋 判断待ちの Issue / 🔀 開いている PR / 🏃 自動開発が作業中の Issue / 📥 着手できる Issue
+#   ⚠️ 起動の見落とし・gh の失敗・直近の失敗の通知
+# 使い方: tmux-claude-auto-dev [--popup]
+#   --popup で凡例と状況の全文を出す（tmux の display-popup から呼ぶ）
+# status-interval ごとに gh を呼ばないよう、結果をキャッシュし、古くなったら裏で取り直す（待たせない）。
+# キャッシュの有効期間は TMUX_AUTO_DEV_TTL（秒、既定 300）で変更できる
+
+status="${TMUX_AUTO_DEV_STATUS:-$(dirname "$0")/claude-auto-dev-status}"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-auto-dev-status.json"
+ttl="${TMUX_AUTO_DEV_TTL:-300}"
+
+if [ "$1" = --popup ]; then
+  echo "🙋 判断待ちの Issue  🔀 開いている PR  🏃 作業中の Issue  📥 着手できる Issue"
+  echo "⚠️  起動の見落とし・gh の失敗・直近の失敗の通知"
+  echo
+  "$status"
+  exit 0
+fi
+
+# 前回取り直してから有効期間がたっていれば、裏で取り直す。取り直しを始めた時刻を記録して、
+# 失敗が続いても gh を呼びすぎないようにする。失敗したときは前のキャッシュを残す
+age() { echo $(($(date +%s) - $(stat -f %m "$1" 2>/dev/null || echo 0))); }
+stamp="$cache.checked"
+if [ "$(age "$cache")" -ge "$ttl" ] && [ "$(age "$stamp")" -ge "$ttl" ]; then
+  mkdir -p "$(dirname "$cache")"
+  touch "$stamp"
+  ( { "$status" --json > "$cache.tmp" && jq -e 'type == "array"' "$cache.tmp" > /dev/null && mv "$cache.tmp" "$cache"; } \
+    > /dev/null 2>&1 & )
+fi
+
+[ -f "$cache" ] || { echo "🛠 …"; exit 0; }
+
+jq -r 'if length == 0 then empty else
+  (map(.decisions | length) | add) as $d
+  | (map(.prs | length) | add) as $p
+  | ([.[].in_progress[].number]) as $w
+  | (map(.ready) | add) as $r
+  | any(.[]; .schedule.missed_at or .error or any(.notices[]; .title | test("失敗"))) as $warn
+  | [if $d > 0 then "🙋\($d)" else empty end, if $p > 0 then "🔀\($p)" else empty end,
+     ($w[] | "🏃#\(.)"), if $r > 0 then "📥\($r)" else empty end, if $warn then "⚠️" else empty end]
+  | "🛠 " + (if length == 0 then "✓" else join(" ") end)
+  end' "$cache" 2>/dev/null
