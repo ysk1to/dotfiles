@@ -434,20 +434,23 @@ setup
 assert_eq "判断待ちを通知する" "1" "$(grep -c '^osascript.*判断待ち' "$FAKE_LOG")"
 
 # ---- 企画の回 ----
-# リポジトリに企画の手順（.claude/auto-plan.md）があり、auto-ready の Issue が少なくなったら、
-# 実装の代わりに企画の回を起動する。claude は Issue の案をファイルに書き、スクリプトが Issue にする
+# リポジトリに企画の手順（.claude/auto-plan.md）があれば、決まった間隔（既定は6時間）で、
+# 実装の代わりに企画の回を起動する。claude は Issue の案をファイルに書き、スクリプトが Issue にする。
+# 作る件数は、着手できる auto-ready の Issue が目標の件数（既定は12件）になるまで
 enable_plan() {
   (cd "$tmp/seed" && mkdir -p .claude && echo 企画の手順 > .claude/auto-plan.md && git add .claude &&
     git commit -qm plan && git push -q origin main)
 }
 issue_creates() { sed -n 's/^gh issue create arg=//p' "$FAKE_LOG" 2>/dev/null; }
 plan_dir() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/plan/my-app"; }
+plan_last() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/plan-last/my-app"; }
+ready_issues() { jq -cn --argjson n "$1" '[range(1; $n + 1) | {number: ., labels: [{name: "auto-ready"}]}]'; }
 
 setup
 enable_plan
 FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "企画の回は成功で終わる" "0" "$?"
-assert_eq "auto-ready がなく企画の手順があれば、企画の回を起動する" "1" "$(claude_calls)"
+assert_eq "企画の手順があれば、企画の回を起動する" "1" "$(claude_calls)"
 prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
 assert_eq "企画の回は企画の手順を読ませる" "yes" "$(echo "$prompt" | grep -q '.claude/auto-plan.md' && echo yes || echo no)"
 assert_eq "企画の回の既定のモデルは fable" "fable" "$(args_after --model)"
@@ -477,41 +480,55 @@ setup
 FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "企画の手順がなければ企画の回を起動しない" "0" "$(claude_calls)"
 
-# auto-ready が足りていれば（既定は3件以上）、企画せずに実装する
+# 着手できる Issue が目標の件数（既定は12件）に足りていれば、企画せずに実装する。目標は環境変数で変えられる
 setup
 enable_plan
-FAKE_ISSUES='[{"number":1,"labels":[{"name":"auto-ready"}]},{"number":2,"labels":[{"name":"auto-ready"}]},{"number":3,"labels":[{"name":"auto-ready"}]}]' \
-  "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+FAKE_ISSUES=$(ready_issues 12) "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
-assert_eq "auto-ready が3件あれば実装の回にする" "yes" "$(echo "$prompt" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+assert_eq "auto-ready が12件あれば実装の回にする" "yes" "$(echo "$prompt" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
 assert_eq "実装の回の既定のモデルは opus のまま" "opus" "$(args_after --model)"
-
-# auto-ready が残っていても、少なければ先に企画する（使い切る前に足す）。件数は環境変数で変えられる
 setup
 enable_plan
+FAKE_ISSUES=$(ready_issues 11) "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
+assert_eq "auto-ready が11件なら企画する（少なくなるのを待たない）" "yes" "$(echo "$prompt" | grep -q '.claude/auto-plan.md' && echo yes || echo no)"
+setup
+enable_plan
+CLAUDE_AUTO_DEV_PLAN_TARGET=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
+assert_eq "目標の件数を環境変数で変えられる" "yes" "$(echo "$prompt" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+
+# 企画は決まった間隔で起動する。前の企画から間隔（既定は6時間）がたっていなければ、main が進んでいても企画しない
+setup
+enable_plan
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+(cd "$tmp/seed" && echo merged >> README.md && git commit -qam merged && git push -q origin main)
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "間隔がたっていなければ企画しない" "1" "$(claude_calls)"
 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
-assert_eq "auto-ready が1件なら先に企画する" "yes" "$(echo "$prompt" | grep -q '.claude/auto-plan.md' && echo yes || echo no)"
-setup
-enable_plan
-CLAUDE_AUTO_DEV_PLAN_BELOW=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
-assert_eq "企画を始める件数を環境変数で変えられる" "yes" "$(echo "$prompt" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+assert_eq "間隔がたっていない回は、auto-ready があれば実装する" "yes" "$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+echo $(($(date +%s) - 21601)) > "$(plan_last)"
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "6時間たったら、もう一度企画する" "3" "$(claude_calls)"
+echo $(($(date +%s) - 100)) > "$(plan_last)"
+(cd "$tmp/seed" && echo again >> README.md && git commit -qam again && git push -q origin main)
+FAKE_ISSUES='[]' CLAUDE_AUTO_DEV_PLAN_INTERVAL=60 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "間隔を環境変数（秒）で変えられる" "4" "$(claude_calls)"
 
-# 前の企画から何も変わっていなければ（main も Issue も同じ）、企画をくり返さない。
-# 出せる案がないときに、毎回起動して使用量を消費しないため。auto-ready があれば実装に進む
+# 間隔がたっても、前の企画から何も変わっていなければ（main も Issue も同じ）、企画をくり返さない。
+# 出せる案がないときに、毎回起動して使用量を消費しないため
 setup
 enable_plan
+export CLAUDE_AUTO_DEV_PLAN_INTERVAL=0
 FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "何も変わっていなければ企画をくり返さない" "1" "$(claude_calls)"
-"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "企画をくり返さない回は、auto-ready があれば実装する" "yes" "$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
 (cd "$tmp/seed" && echo merged >> README.md && git commit -qam merged && git push -q origin main)
 FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "main が進んだら、もう一度企画する" "3" "$(claude_calls)"
+assert_eq "main が進んだら、もう一度企画する" "2" "$(claude_calls)"
 FAKE_ISSUES='[]' FAKE_ALL_ISSUES='[{"number":9,"title":"閉じた","state":"CLOSED","labels":[],"body":""}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "Issue の状態が変わったら、もう一度企画する" "4" "$(claude_calls)"
+assert_eq "Issue の状態が変わったら、もう一度企画する" "3" "$(claude_calls)"
+unset CLAUDE_AUTO_DEV_PLAN_INTERVAL
 
 # 今ある Issue はスクリプトが取得して、ファイルで渡す（重複した案を出さないため）
 setup
@@ -568,16 +585,22 @@ FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_PLAN_TEXT=$'タイトルだけ\n本文' 
 assert_eq "ラベルの行がなければ Issue にしない" "0" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
 assert_eq "形の違うファイルがあったら通知する" "1" "$(grep -c '^osascript' "$FAKE_LOG")"
 
-# 1回に作る Issue は5件まで（既定）。環境変数で変えられる
+# 1回に作る Issue は、目標の件数に足りない分だけ。多くても8件まで（既定）。上限は環境変数で変えられる
 setup
 enable_plan
-FAKE_ISSUES='[]' FAKE_PLAN_COUNT=7 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "1回に作る Issue は5件まで" "5" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=9 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "1回に作る Issue は8件まで" "8" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
 assert_eq "上限を超えた分のファイルも残さない" "0" "$(find "$(plan_dir)" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "作ってよい件数をプロンプトで伝える" "yes" "$(grep -q '8 件まで' "$FAKE_LOG" && echo yes || echo no)"
 setup
 enable_plan
 FAKE_ISSUES='[]' FAKE_PLAN_COUNT=3 CLAUDE_AUTO_DEV_PLAN_MAX=2 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "1回に作る件数を環境変数で変えられる" "2" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
+assert_eq "1回に作る件数の上限を環境変数で変えられる" "2" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
+setup
+enable_plan
+FAKE_ISSUES=$(ready_issues 10) FAKE_PLAN_COUNT=5 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "目標に足りない分だけ作る（10件あれば2件）" "2" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
+assert_eq "足りない件数をプロンプトで伝える" "yes" "$(grep -q '2 件まで' "$FAKE_LOG" && echo yes || echo no)"
 
 # 企画の回のモデルは環境変数で変えられる
 setup

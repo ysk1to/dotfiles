@@ -3,7 +3,7 @@
 # 手順の本体はリポジトリの .claude/auto-dev.md。個人の情報（Notion の URL など）は設定ファイルに置く。
 # claude には GitHub を触らせない。Issue の取得も、書き込み（push・PR・ラベル・コメント）も、このスクリプトが行う。
 # claude は Issue のファイルを読んで作業し、結果を PR のファイルか判断待ちのファイルに書いて終わる。
-# リポジトリに .claude/auto-plan.md があれば、auto-ready の Issue が少なくなったときに企画の回を起動する。
+# リポジトリに .claude/auto-plan.md があれば、決まった間隔で、実装の代わりに企画の回を起動する。
 # 企画の回の claude は Issue の案をファイルに書き、このスクリプトがそれを Issue にする。
 # 使い方: claude-auto-dev <リポジトリのパス>
 # 設定ファイル: $CLAUDE_AUTO_DEV_CONFIG_DIR/<リポジトリ名>.md（既定 ~/.config/claude-auto-dev）
@@ -80,12 +80,16 @@ git -C "$repo" fetch -q origin || exit 1
 base=$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
 mkdir -p "$state_dir/worktrees"
 
-# 企画の回にするか決める。企画の手順があるリポジトリで、着手できる Issue が少なくなったら、使い切る前に足す。
+# 企画の回にするか決める。企画の手順があるリポジトリで、前の企画から決まった間隔がたっていたら企画する。
+# Issue が少なくなるのを待たないのは、設計の残りを足すだけでなく、改善や新機能を定期的に考えさせるため。
+# 作るのは、着手できる Issue が目標の件数になるまで（実装が速ければ多く、止まっていれば少なく作る）。
 # 前の企画から main も Issue の開閉も変わっていなければ、くり返さない（出せる案がないのに毎回起動して使用量を消費しないため）
 mode=implement
 plan_key_file="$state_dir/plan-key/$name"
-if git -C "$repo" cat-file -e "$base:.claude/auto-plan.md" 2>/dev/null &&
-  [ "$(echo "$ready" | jq length)" -lt "${CLAUDE_AUTO_DEV_PLAN_BELOW:-3}" ]; then
+plan_last_file="$state_dir/plan-last/$name"
+plan_room=$((${CLAUDE_AUTO_DEV_PLAN_TARGET:-12} - $(echo "$ready" | jq length)))
+if git -C "$repo" cat-file -e "$base:.claude/auto-plan.md" 2>/dev/null && [ "$plan_room" -gt 0 ] &&
+  [ $(($(date +%s) - $(cat "$plan_last_file" 2>/dev/null || echo 0))) -ge "${CLAUDE_AUTO_DEV_PLAN_INTERVAL:-21600}" ]; then
   all_issues=$(gh issue list --state all --limit 300 --json number,title,state,labels,body,author) || {
     notify "が失敗" "gh で Issue を取得できません"
     exit 1
@@ -205,9 +209,10 @@ if [ "$mode" = plan ]; then
     exit "${2:-1}"
   }
   rm -rf "$plan_dir"
-  mkdir -p "$plan_dir" "$state_dir/plan-input" "$state_dir/plan-key"
+  mkdir -p "$plan_dir" "$state_dir/plan-input" "$state_dir/plan-key" "$state_dir/plan-last"
   # 同じ状態でくり返さないよう、うまくいかなかった回も記録する
   echo "$plan_key" > "$plan_key_file"
+  date +%s > "$plan_last_file"
   # ほかの人が書いた Issue は、本文に書かれた指示が案に紛れ込まないよう、タイトルだけを渡す
   me=$(gh api user --jq .login 2>> "$log") || plan_fail "GitHub のユーザー名を取得できません"
   echo "$all_issues" | jq -r --arg me "$me" '
@@ -219,7 +224,8 @@ if [ "$mode" = plan ]; then
     (sort_by(.number)[] | select(.state != "OPEN") | "- #\(.number) \(.title)")' > "$plan_input" 2>> "$log" ||
     plan_fail "Issue の一覧を書き出せません"
   export CLAUDE_AUTO_DEV_PLAN_DIR="$plan_dir"
-  plan_max="${CLAUDE_AUTO_DEV_PLAN_MAX:-5}"
+  plan_max="${CLAUDE_AUTO_DEV_PLAN_MAX:-8}"
+  [ "$plan_max" -le "$plan_room" ] || plan_max="$plan_room"
   prompt="このリポジトリの自動開発ワークフローの、企画の回として起動された。.claude/auto-plan.md を読み、その手順どおりに次の作業を Issue の案にする。
 人は見ていないので、確認を待たずに進める。コードは変えない。GitHub には接続できない（gh は使えない）。Issue にするのは起動スクリプトが行う。
 今ある Issue（開いているものは本文つき、閉じたものはタイトルだけ）は $plan_input にある。
