@@ -27,6 +27,7 @@ setup() {
   tmp=$(mktemp -d)
   state="$tmp/state"
   export CLAUDE_AUTO_DEV_STATE_DIR="$state" CLAUDE_AUTO_DEV_LAUNCH_AGENTS="$tmp/agents" CLAUDE_AUTO_DEV_NOW="$now"
+  export CLAUDE_AUTO_DEV_CONFIG_DIR="$tmp/config"
   mkdir -p "$state/repos" "$tmp/agents" "$tmp/my-app" "$tmp/bin"
   echo "$tmp/my-app" > "$state/repos/my-app"
   export PATH="$tmp/bin:$PATH" FAKE_LOG="$tmp/fake.log" FAKE_ISSUES='[]' FAKE_PRS='[]' FAKE_GH_FAIL=
@@ -196,5 +197,33 @@ setup
 agent '[{"Hour":20,"Minute":0}]' "$tmp/other-app"
 assert_eq "ほかのリポジトリの launchd の設定は読まない" "null" "$(q '.[0].schedule.next_at')"
 assert_eq "設定がなければ、見落としも出さない" "null" "$(q '.[0].schedule.missed_at')"
+
+# ---- 実行中の回 ----
+setup
+assert_eq "動いていなければ running は null" "null" "$(q '.[0].running')"
+
+setup
+mkdir -p "$state/locks/my-app"
+echo $$ > "$state/locks/my-app/pid"
+echo '{"mode":"implement","issue":14,"log":"/x.log","started_at":100}' > "$state/locks/my-app/run"
+assert_eq "動いている回の種類・Issue・始まった時刻を出す" '{"mode":"implement","issue":14,"log":"/x.log","started_at":100}' "$(q '.[0].running')"
+assert_eq "テキストでも実行中の回を出す" "yes" "$("$bin/claude-auto-dev-status" 2>/dev/null | grep -q '実行中.*#14' && echo yes || echo no)"
+
+setup
+mkdir -p "$state/locks/my-app"
+sleep 30 & dead=$!
+kill "$dead"; wait "$dead" 2>/dev/null
+echo "$dead" > "$state/locks/my-app/pid"
+echo '{"mode":"plan","issue":null,"log":"/x.log","started_at":100}' > "$state/locks/my-app/run"
+assert_eq "落ちてロックだけ残っていれば running は null" "null" "$(q '.[0].running')"
+
+# ---- 略称 ----
+setup
+assert_eq "略称の設定がなければ、名前の先頭3文字" '"my-"' "$(q '.[0].label')"
+
+setup
+mkdir -p "$tmp/config"
+printf '%s\n' 'other oth' 'my-app app' > "$tmp/config/labels"
+assert_eq "略称の設定があれば、それを使う" '"app"' "$(q '.[0].label')"
 
 [ "$failures" -eq 0 ] || exit 1
