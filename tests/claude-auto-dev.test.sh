@@ -281,6 +281,13 @@ assert_eq "番号のいちばん小さい Issue をプロンプトで渡す" "ye
 assert_eq "着手したら auto-ready を auto-in-progress に付け替える" "yes" "$(issue_edits | grep -qxF 'gh issue edit issue edit 3 --remove-label auto-ready --add-label auto-in-progress' && echo yes || echo no)"
 assert_eq "着手したら目印つきでコメントする" "yes" "$(comments | grep -q '^🤖 自動開発ワークフロー: ' && echo yes || echo no)"
 
+# 対話のセッションが作業中（in-progress）の Issue は、auto-ready が付いていても選ばない
+setup
+FAKE_ISSUES='[{"number":2,"labels":[{"name":"auto-ready"},{"name":"in-progress"}]},{"number":4,"labels":[{"name":"auto-ready"}]}]' \
+  "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "対話のセッションが作業中の Issue を飛ばして次を選ぶ" "yes" "$(issue_edits | grep -qxF 'gh issue edit issue edit 4 --remove-label auto-ready --add-label auto-in-progress' && echo yes || echo no)"
+assert_eq "対話のセッションが作業中の Issue には触らない" "no" "$(issue_edits | grep -q 'edit 2 ' && echo yes || echo no)"
+
 # claude が判断待ちのファイルを書いたら、その中身をコメントし、needs-decision にする。push はしない
 setup
 FAKE_CLAUDE_COMMIT=1 FAKE_DECISION_TEXT='キャッシュを何日持つか決めてください' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1

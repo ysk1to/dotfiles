@@ -66,9 +66,11 @@ for n in $stale; do
 done
 
 # やることがない回は Claude を起動しない（使用量を消費しない）。
-# レビュー待ちの PR が2件以上あるときも、積み上げないよう着手しない
+# レビュー待ちの PR が2件以上あるときも、積み上げないよう着手しない。
+# 対話のセッションが作業中（in-progress）の Issue は、auto-ready が残っていても選ばない
 issue=$(set -o pipefail; gh issue list --label auto-ready --state open --json number,labels |
-  jq '[.[] | select([.labels[].name] | index("needs-decision") or index("auto-in-progress") | not) | .number] | min // empty') || {
+  jq '[.[] | select([.labels[].name] | index("needs-decision") or index("auto-in-progress") or index("in-progress") | not)
+    | .number] | min // empty') || {
   notify "が失敗" "gh で Issue を取得できません"
   exit 1
 }
