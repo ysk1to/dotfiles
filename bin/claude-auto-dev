@@ -183,11 +183,14 @@ settings=$(jq -cn --arg git_dir "$(git -C "$repo" rev-parse --absolute-git-dir)"
 cd "$work" || fail "worktree に移動できません"
 # 固まるとロックを握り続け、以後の起動がすべて見送られるので、時間の上限で止める。
 # --allowedTools などは値を複数とるので、プロンプトを先に渡す
+# --restricted ではグローバルの CLAUDE.md が読まれず、英語の出力が続くと応答が英語になることがあるので、
+# 言語はシステムプロンプトで指示する
 result="${log%.log}.json"
 limit="${CLAUDE_AUTO_DEV_TIMEOUT:-10800}"
 claude -p "$prompt" \
   --model "${CLAUDE_AUTO_DEV_MODEL:-opus}" \
   --max-turns "${CLAUDE_AUTO_DEV_MAX_TURNS:-150}" \
+  --append-system-prompt "応答、コミットメッセージ、PR と判断待ちのファイル、Notion と Todoist に書く文章は、すべて日本語で書く。" \
   --output-format json \
   --permission-mode dontAsk \
   --restricted \

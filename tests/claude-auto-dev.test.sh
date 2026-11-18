@@ -98,6 +98,8 @@ assert_eq "origin/main の最新で起動する（手元の clone は古いま�
 assert_eq "手元のリポジトリの外の worktree で起動する" "no" "$(grep '^claude pwd=' "$FAKE_LOG" | grep -q "^claude pwd=$repo\$" && echo yes || echo no)"
 prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
 assert_eq "プロンプトで手順のファイルを読ませる" "yes" "$(echo "$prompt" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+system_prompt=$(sed -n '/^claude arg=--append-system-prompt$/{n;p;}' "$FAKE_LOG")
+assert_eq "システムプロンプトで日本語で書くよう指示する" "yes" "$(echo "$system_prompt" | grep -q '日本語' && echo yes || echo no)"
 assert_eq "プロンプトに設定ファイルの中身を入れる" "yes" "$(grep -q 'https://example.com/notion' "$FAKE_LOG" && echo yes || echo no)"
 
 # やることがない回は、claude を起動しない（使用量を消費しない）
