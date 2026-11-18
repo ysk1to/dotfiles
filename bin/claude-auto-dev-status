@@ -1,0 +1,147 @@
+#!/bin/bash
+# claude-auto-dev の状況をまとめて出す。Claude は起動せず、GitHub（gh）と claude-auto-dev が残したファイルだけを読む。
+# 出すもの: 本人待ち（判断待ちの Issue・開いている PR）、自動開発の動き（作業中・次に着手・件数）、
+# 直近に Claude が作ったもの・決めたもの。
+# 使い方: claude-auto-dev-status [--json] [リポジトリ名…]
+#   --json で集計を JSON で出す（tmux などの表示はこれを読む）。名前を省くと、記録のあるリポジトリをすべて出す
+# 環境変数: CLAUDE_AUTO_DEV_STATUS_HOURS（直近の幅、既定 24 時間）
+
+state_dir="${CLAUDE_AUTO_DEV_STATE_DIR:-$HOME/.local/state/claude-auto-dev}"
+now="${CLAUDE_AUTO_DEV_NOW:-$(date +%s)}"
+since=$((now - ${CLAUDE_AUTO_DEV_STATUS_HOURS:-24} * 3600))
+
+json=no
+if [ "$1" = --json ]; then
+  json=yes
+  shift
+fi
+names=("$@")
+if [ ${#names[@]} -eq 0 ]; then
+  for f in "$state_dir"/repos/*; do
+    [ -f "$f" ] && names+=("$(basename "$f")")
+  done
+fi
+
+# claude を起動した回の記録（logs/<名前>-<日付>-<時刻>.json）を、1回1行の JSON で出す
+runs() {
+  local f stamp
+  for f in "$state_dir/logs/$1"-[0-9]*-[0-9]*.json; do
+    [ -f "$f" ] || continue
+    stamp=${f%.json}
+    stamp=${stamp: -15}
+    jq -c --argjson at "$(date -j -f '%Y%m%d-%H%M%S' "$stamp" +%s 2>/dev/null || echo 0)" --arg day "${stamp:0:8}" \
+      '{at: $at, day: $day, turns: .num_turns, cost: (.total_cost_usd // 0), denials: (.permission_denials // [] | length)}' "$f" 2>/dev/null
+  done
+}
+
+# launchd の設定のうち、このリポジトリで claude-auto-dev を起動するものから、次の起動と、
+# 予定の時刻に起動されていない（Mac が止まっていた、launchd から外れたなど）ことを出す。
+# 読むのは StartCalendarInterval の時（Hour）と分（Minute）だけ。時を省いた予定は毎時とみなす。
+# 予定の時刻から5分は、起動の途中かもしれないので見落としにしない
+schedule() {
+  local repo="$1" checked="$2" f cal='' midnight
+  for f in "${CLAUDE_AUTO_DEV_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"/*.plist; do
+    [ -f "$f" ] || continue
+    cal=$(plutil -convert json -o - "$f" 2>/dev/null | jq -c --arg repo "$repo" '
+      select(.ProgramArguments // [] | join(" ") | split(" ") | index("claude-auto-dev") and index($repo))
+      | .StartCalendarInterval // empty | if type == "object" then [.] else . end') && [ -n "$cal" ] && break
+    cal=
+  done
+  midnight=$(date -j -f '%Y-%m-%d %H:%M:%S' "$(date -r "$now" +%Y-%m-%d) 00:00:00" +%s)
+  jq -n --argjson cal "${cal:-[]}" --argjson now "$now" --argjson midnight "$midnight" --argjson checked "${checked:-null}" '
+    [$cal[] | (if has("Hour") then [.Hour] else [range(24)] end)[] as $h | (.Minute // 0) as $m
+      | (-1, 0, 1) as $d | $midnight + $d * 86400 + $h * 3600 + $m * 60] as $times
+    | ([$times[] | select(. <= $now - 300)] | max) as $prev
+    | {checked_at: $checked,
+       next_at: ([$times[] | select(. > $now)] | min),
+       missed_at: (if $prev != null and ($checked // 0) < $prev then $prev else null end)}'
+}
+
+# 1つのリポジトリの集計を JSON で出す
+collect() {
+  local name="$1" repo issues prs error='' runs notices schedule
+  repo=$(cat "$state_dir/repos/$name" 2>/dev/null)
+  runs=$(runs "$name" | jq -s .)
+  schedule=$(schedule "$repo" "$(cat "$state_dir/checked/$name" 2>/dev/null)")
+  notices='[]'
+  [ ! -f "$state_dir/notices/$name.tsv" ] ||
+    notices=$(jq -Rn --argjson since "$since" '[inputs | split("\t") | {at: (.[0] | tonumber), title: .[1], message: .[2]}
+      | select(.at >= $since)]' < "$state_dir/notices/$name.tsv" 2>/dev/null) || notices='[]'
+  if ! issues=$(cd "$repo" 2>/dev/null && gh issue list --state all --limit 300 --json number,title,state,labels,createdAt) ||
+    ! prs=$(cd "$repo" && gh pr list --state all --limit 100 --json number,title,state,labels,mergedAt); then
+    error="gh で Issue と PR を取得できません"
+    issues='[]'
+    prs='[]'
+  fi
+  jq -n --arg name "$name" --arg repo "$repo" --arg error "$error" --argjson since "$since" \
+    --arg today "$(date -r "$now" +%Y%m%d)" --argjson runs "$runs" --argjson notices "$notices" --argjson schedule "$schedule" \
+    --argjson issues "$issues" --argjson prs "$prs" '
+    def names: [.labels[].name];
+    def brief: {number, title};
+    def recent($key): select(.[$key] != null and (.[$key] | fromdateiso8601) >= $since);
+    ($issues | map(select(.state == "OPEN"))) as $open
+    # 着手の順は claude-auto-dev と同じ（p1 → p2 → ラベルなし、同じ段階の中では番号の小さい順）
+    | ($open | map(select(names | index("auto-ready") and (index("needs-decision") or index("auto-in-progress") or index("in-progress") | not)))
+        | sort_by([(names | if index("p1") then 0 elif index("p2") then 1 else 2 end), .number])) as $ready
+    | ($issues | map(recent("createdAt")) | sort_by(.number)) as $created
+    | {name: $name, repo: $repo,
+       decisions: [$open[] | select(names | index("needs-decision")) | brief],
+       prs: [$prs[] | select(.state == "OPEN") | {number, title, labels: names}],
+       in_progress: [$open[] | select(names | index("auto-in-progress")) | brief],
+       ready: ($ready | length),
+       next: ($ready[0] // null | if . then brief else null end),
+       recent: {
+         merged: [$prs[] | select(.state == "MERGED" and (names | index("auto-dev"))) | recent("mergedAt") | brief],
+         planned: [$created[] | select(names | index("auto-planned")) | brief],
+         decided: [$created[] | select(names | index("auto-decided")) | brief],
+         findings: [$created[] | select(names | index("auto-finding")) | brief]
+       },
+       runs: {
+         today: ($runs | map(select(.day == $today)) | {count: length, cost: (map(.cost) | add // 0), denials: (map(.denials) | add // 0)}),
+         last: ($runs | max_by(.at) // null | if . then del(.day) else null end)
+       },
+       notices: $notices,
+       schedule: $schedule}
+    + (if $error == "" then {} else {error: $error} end)'
+}
+
+all=$(for name in "${names[@]}"; do collect "$name"; done | jq -s .)
+
+if [ "$json" = yes ]; then
+  echo "$all"
+  exit 0
+fi
+
+if [ "$all" = "[]" ]; then
+  echo "claude-auto-dev はまだ動いていません（$state_dir/repos に記録がありません）"
+  exit 0
+fi
+echo "$all" | jq -r --arg hours "${CLAUDE_AUTO_DEV_STATUS_HOURS:-24}" '
+  def time: strflocaltime("%m/%d %H:%M");
+  def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)";
+  def item: "#\(.number) \(.title)";
+  # 見出しを端末での幅（全角は2）で14にそろえ、行にする
+  def line($label; $text):
+    ($label | explode | map(if . > 4351 then 2 else 1 end) | add) as $w
+    | "    \($label)\(" " * ([14 - $w, 1] | max))  \($text)";
+  # 見出しと項目の一覧。項目がなければ「なし」を出す
+  def list($label; $items): if ($items | length) == 0 then line($label; "なし") else ($items[] | line($label; .)) end;
+  # 項目がなければ、行ごと出さない
+  def some($label; $items): $items[] | line($label; item);
+  (.[] | .name,
+    (if .schedule.missed_at then "  ⚠ \(.schedule.missed_at | time) の起動が記録されていません" else empty end),
+    (if .error then "  ⚠ \(.error)" else empty end),
+    "  本人待ち",
+    list("判断待ち"; [.decisions[] | item]),
+    list("開いている PR"; [.prs[] | item + (if (.labels | length) > 0 then "（\(.labels | join(", "))）" else "" end)]),
+    "  自動開発",
+    list("作業中"; [.in_progress[] | item]),
+    list("次に着手"; [if .next then "\(.next | item)（着手できる Issue \(.ready) 件）" else empty end]),
+    line("起動"; "前回 \(.schedule.checked_at // null | if . then time else "記録なし" end) / 次回 \(.schedule.next_at // null | if . then time else "launchd の設定なし" end)"),
+    line("今日"; "\(.runs.today.count) 回  \(.runs.today.cost | money)  拒否 \(.runs.today.denials)"),
+    (if .runs.last then line("前回の回"; "\(.runs.last.at | time)  \(.runs.last.turns) ターン  \(.runs.last.cost | money)") else empty end),
+    ([some("マージ"; .recent.merged), some("企画"; .recent.planned),
+      some("Claude が決定"; .recent.decided), some("精査で発見"; .recent.findings)] as $recent
+      | if ($recent | length) > 0 then "  直近 \($hours) 時間", $recent[] else empty end),
+    (if (.notices | length) > 0 then "  通知（直近 \($hours) 時間）", (.notices[] | "    \(.at | time)  \(.title)  \(.message)") else empty end),
+    "")'

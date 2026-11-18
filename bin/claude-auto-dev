@@ -23,6 +23,11 @@ fi
 
 cd "$repo" || exit 1
 
+# claude-auto-dev-status が見つけられるよう、リポジトリの場所と、起動した時刻（止まっていないかの目安）を残す
+mkdir -p "$state_dir/repos" "$state_dir/checked" "$state_dir/notices"
+echo "$PWD" > "$state_dir/repos/$name"
+date +%s > "$state_dir/checked/$name"
+
 # 前の回がまだ動いていれば何もしない。落ちてロックだけ残っていれば引き継ぐ
 lock="$state_dir/locks/$name"
 mkdir -p "$state_dir/locks"
@@ -42,8 +47,9 @@ on_exit() {
 }
 trap on_exit EXIT
 
-# 人は見ていないので、通知で知らせる
+# 人は見ていないので、通知で知らせる。通知は消えるので、claude-auto-dev-status で見られるよう残す
 notify() {
+  printf '%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" >> "$state_dir/notices/$name.tsv"
   osascript -e "display notification \"$2\" with title \"claude-auto-dev: $name $1\""
 }
 # ワークフローは本人の GitHub アカウントで動くので、人のコメントと見分けられるよう目印を付ける
