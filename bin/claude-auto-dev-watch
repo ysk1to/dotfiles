@@ -71,11 +71,11 @@ frame() {
          if (.decisions | length) > 0 then "🙋 " + ([.decisions[] | "#\(.number)"] | join(" ")) else empty end,
          if (.prs | length) > 0 then "🔀 " + ([.prs[] | "#\(.number)"] | join(" ")) else empty end,
          if .ready > 0 then "📥 \(.ready)" else empty end] as $items
-      | [if .schedule.missed_at then "⚠️ \(.schedule.missed_at | when) の起動が記録されていません" else empty end,
-         if .error then "⚠️ \(.error)" else empty end,
-         (.notices[] | select(.title | test("失敗")) | "⚠️ \(.at | when) \(.message)")] as $warns
-      | [if .schedule.next_at then "⏭ \(.schedule.next_at | strflocaltime("%H:%M"))" else empty end,
-         if .runs.today.count > 0 then "🔁 \(.runs.today.count)  💲 \(.runs.today.cost | money)" else empty end] as $plan
+      | [if .schedule.missed_at then "🚨 \(.schedule.missed_at | when) の起動が記録されていません" else empty end,
+         if .error then "🚨 \(.error)" else empty end,
+         (.notices[] | select(.title | test("失敗")) | "🚨 \(.at | when) \(.message)")] as $warns
+      | [if .schedule.next_at then "⏩ \(.schedule.next_at | strflocaltime("%H:%M"))" else empty end,
+         if .runs.today.count > 0 then "🔁 \(.runs.today.count)  💰 \(.runs.today.cost | money)" else empty end] as $plan
       | "\(.label)  " + (if ($items + $warns | length) == 0 then "✓" else $items | join("   ") end),
         ($warns[] | "     " + .),
         (if ($plan | length) > 0 then "     " + ($plan | join("  ")) else empty end);
@@ -87,7 +87,7 @@ frame() {
         (($steps[.name] // [])[] | "\(.name)\(" " * ([6 - (.name | length), 0] | max)) \(.target)");
     (map({key: .name, value: .label}) | from_entries) as $labels
     | (["auto-dev  \($now | strflocaltime("%H:%M"))", (.[] | repo), (.[] | live)] | map(trunc($cols))) as $head
-    | {start: "🏃", end: "🏁", pr: "🔀", issue: "📝", decision: "🙋", fail: "⚠️", notice: "💬"} as $icons
+    | {start: "🏃", end: "🏁", pr: "🔀", issue: "📝", decision: "🙋", fail: "🚨", notice: "💬"} as $icons
     | [$events | split("\n")[] | select(. != "") | split("\t") | select(length >= 4) | .[0] |= tonumber]
     | [sort_by(.[0])[] | "\(.[0] | when) \($labels[.[1]] // .[1][0:3]) \($icons[.[2]] // "・") \(.[3:] | join(" "))" | trunc($cols)]
       | reverse | .[:([$rows - ($head | length) - 2, 0] | max)] as $lines
