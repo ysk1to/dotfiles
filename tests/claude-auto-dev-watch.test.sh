@@ -76,13 +76,13 @@ assert_eq "実行中の回は、Issue と経過時間を出す" "yes" "$(has "$(
 setup
 next=$(at '2026-11-18 18:00:00')
 echo "[$(repo ".schedule.next_at = $next | .runs.today.count = 3 | .runs.today.cost = 2.1")]" > "$cache"
-assert_eq "次の起動と今日の回数・費用を出す" "yes" "$(has "$(frame)" '⏭ 18:00  🔁 3  💲 2.10')"
+assert_eq "次の起動と今日の回数・費用を出す" "yes" "$(has "$(frame)" '⏩ 18:00  🔁 3  💰 2.10')"
 
 setup
 echo "[$(repo ".schedule.missed_at = $(at '2026-11-18 16:00:00')")]" > "$cache"
-assert_eq "起動の見落としを出す" "yes" "$(has "$(frame)" '⚠️ 16:00 の起動が記録されていません')"
+assert_eq "起動の見落としを出す" "yes" "$(has "$(frame)" '🚨 16:00 の起動が記録されていません')"
 echo "[$(repo '.error = "gh で Issue と PR を取得できません"')]" > "$cache"
-assert_eq "gh の失敗を出す" "yes" "$(has "$(frame)" '⚠️ gh で Issue と PR を取得できません')"
+assert_eq "gh の失敗を出す" "yes" "$(has "$(frame)" '🚨 gh で Issue と PR を取得できません')"
 
 # ---- 実行中の手順（claude の stream-json の出力） ----
 tool() { # ツール名 入力の JSON
@@ -121,7 +121,7 @@ event "$(at '2026-11-18 15:00:00')" my-app pr '#36 🤖 [add] 一覧を足す'
 event "$(at '2026-11-17 10:00:00')" other fail '#3: 止まりました'
 out=$(frame)
 assert_eq "できごとに時刻・略称・種類の絵文字・本文を出す" "yes" "$(has "$out" '15:00 app 🔀 #36 🤖 [add] 一覧を足す')"
-assert_eq "今日でないできごとは日付を出す" "yes" "$(has "$out" '11/17 oth ⚠️ #3: 止まりました')"
+assert_eq "今日でないできごとは日付を出す" "yes" "$(has "$out" '11/17 oth 🚨 #3: 止まりました')"
 assert_eq "できごとは新しいものが上" "15:00,14:00,11/17" "$(sed -n '/できごと/,$p' <<< "$out" | grep -oE '^[0-9]{2}[:/][0-9]{2}' | paste -sd, -)"
 
 setup
