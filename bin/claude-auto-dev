@@ -47,9 +47,19 @@ on_exit() {
 }
 trap on_exit EXIT
 
+# tmux の表示（claude-auto-dev-watch）が全リポジトリをまとめて流せるよう、できごとを1つのファイルに残す。
+# 1行1件で、時刻・リポジトリ名・種類（start・end・pr・issue・decision・fail・notice）・本文をタブで区切る
+event() {
+  printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$name" "$1" "${2//$'\t'/ }" >> "$state_dir/events.tsv"
+}
 # 人は見ていないので、通知で知らせる。通知は消えるので、claude-auto-dev-status で見られるよう残す
 notify() {
   printf '%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" >> "$state_dir/notices/$name.tsv"
+  case "$1" in
+    *失敗*) event fail "$2" ;;
+    *判断待ち*) event decision "$2" ;;
+    *) event notice "$2" ;;
+  esac
   osascript -e "display notification \"$2\" with title \"claude-auto-dev: $name $1\""
 }
 # ワークフローは本人の GitHub アカウントで動くので、人のコメントと見分けられるよう目印を付ける
@@ -182,6 +192,14 @@ result="${log%.log}.json"
 limit="${CLAUDE_AUTO_DEV_TIMEOUT:-10800}"
 run_claude() {
   local model="$1" claude_pid watchdog
+  # 実行中の回の種類・Issue・ログを、ロックに残す（ロックと一緒に消える）
+  jq -n --arg mode "$mode" --argjson issue "${issue:-null}" --arg log "$log" --argjson at "$(date +%s)" \
+    '{mode: $mode, issue: (if $mode == "implement" then $issue else null end), log: $log, started_at: $at}' > "$lock/run"
+  case "$mode" in
+    implement) event start "#$issue に着手" ;;
+    plan) event start 企画 ;;
+    review) event start 精査 ;;
+  esac
   # 固まるとロックを握り続け、以後の起動がすべて見送られるので、時間の上限で止める。
   # --allowedTools などは値を複数とるので、プロンプトを先に渡す
   # --restricted ではグローバルの CLAUDE.md が読まれず、英語の出力が続くと応答が英語になることがあるので、
@@ -214,6 +232,9 @@ run_claude() {
   jq -r '(.result // ""), "ターン数 \(.num_turns)、費用 \(.total_cost_usd) ドル、拒否されたツール \(.permission_denials | length) 件",
     (.permission_denials[]? | "拒否: \(.tool_name) \(.tool_input | tostring | .[0:200])")' "$result" >> "$log" 2>/dev/null ||
     cat "$result" >> "$log"
+  event end "$(jq -r '(.total_cost_usd * 100 | round) as $c
+    | "\(.num_turns) ターン、$\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)"' "$result" 2>/dev/null ||
+    echo "終了コード $status")"
 }
 
 # Bash のコマンドはサンドボックスで囲み、worktree の外に書けないようにする。git diff --output やテストのコマンドは、
@@ -249,7 +270,7 @@ readonly_tools=(
 # 優先のラベルは p2 まで。p1 は本人だけが付ける（claude が自分の案をいちばん前に差し込めないようにする）。
 # 企画の案に付けるのは1回に1件まで。精査が見つけた問題（auto-finding）には必ず付け、新しい作業より先に直す
 create_issues() {
-  local base_label="$1" max="$2" by="$3" created=0 f title labels_line auto_ready hold labels asked l p2 p2_used=0
+  local base_label="$1" max="$2" by="$3" created=0 f url title labels_line auto_ready hold labels asked l p2 p2_used=0
   shift 3
   for f in "$@"; do
     [ -f "$f" ] || continue
@@ -286,10 +307,12 @@ create_issues() {
       p2_used=$((p2_used + 1))
     fi
     [ "$auto_ready" = no ] || [ "$hold" = yes ] || labels+=(--label auto-ready)
-    if {
+    if url=$({
       tail -n +3 "$f"
       printf '\n---\n🤖 自動開発ワークフロー（%s）が作成\n' "$by"
-    } | gh issue create --title "$title" --body-file - "${labels[@]}" >> "$log" 2>&1; then
+    } | gh issue create --title "$title" --body-file - "${labels[@]}" 2>> "$log"); then
+      echo "$url" >> "$log"
+      event issue "#${url##*/} $title"
       created=$((created + 1))
     else
       skipped=$((skipped + 1))
@@ -567,10 +590,13 @@ esac
 # 慣らしの期間は no-auto-merge も付け、マージは人が行う。CLAUDE_AUTO_DEV_AUTO_MERGE=1 で外す
 labels=(--label auto-dev)
 [ -n "$CLAUDE_AUTO_DEV_AUTO_MERGE" ] || labels+=(--label no-auto-merge)
-{
-  git push -q -u origin "HEAD:refs/heads/$branch" &&
-    tail -n +2 "$pr_file" | gh pr create --head "$branch" --title "$(head -n 1 "$pr_file")" --body-file - "${labels[@]}"
-} >> "$log" 2>&1 || fail "push か PR の作成に失敗しました"
+pr_title=$(head -n 1 "$pr_file")
+pr_url=$({
+  git push -q -u origin "HEAD:refs/heads/$branch" >&2 &&
+    tail -n +2 "$pr_file" | gh pr create --head "$branch" --title "$pr_title" --body-file - "${labels[@]}"
+} 2>> "$log") || fail "push か PR の作成に失敗しました"
+echo "$pr_url" >> "$log"
+event pr "#${pr_url##*/} $pr_title"
 rm -f "$pr_file"
 # PR になったら作業中の印を外す。auto-in-progress が残るのは、回が途中で止まったときだけになる
 gh issue edit "$issue" --remove-label auto-in-progress >> "$log" 2>&1

@@ -39,7 +39,7 @@ macOS用の設定ファイル管理リポジトリ
 - `bin/claude-statusline` - Claude CodeのstatusLine（モデル・effort・トークン数・コンテキスト使用率など）
 - `bin/claude-context-guard` - Claude Codeのフック。コンテキストが自動圧縮に近づいたら（既定25万トークン）、圧縮前にNotionへ途中経過を記録するよう促す
 - `bin/claude-auto-dev` - launchdなどから定期的に呼ばれ、リポジトリの`auto-ready`のIssueを1件、Claude Code（`claude -p`）にPRにさせる。手順の本体はリポジトリの`.claude/auto-dev.md`。Issueがない回はClaudeを起動しない。`.claude/auto-plan.md`があるリポジトリでは、決まった間隔で次の作業を企画してIssueにし、`.claude/auto-plan-review.md`があれば、企画したIssueとマージされたPRを別の回で精査する
-- `bin/claude-auto-dev-status` - `claude-auto-dev`の状況をまとめて出す（本人待ちの判断・PR、作業中と次に着手するIssue、今日の回と費用、次の起動と起動の見落とし、直近にClaudeが作った・決めたもの、消えた通知）。Claudeは起動せず、GitHubと`claude-auto-dev`が残したファイルだけを読む。`--json`で集計をJSONで出す
+- `bin/claude-auto-dev-status` - `claude-auto-dev`の状況をまとめて出す（本人待ちの判断・PR、実行中の回、作業中と次に着手するIssue、今日の回と費用、次の起動と起動の見落とし、直近にClaudeが作った・決めたもの、消えた通知）。Claudeは起動せず、GitHubと`claude-auto-dev`が残したファイルだけを読む。`--json`で集計をJSONで出す
 - `bin/claude-usage-refresh` - usage APIからプラン使用率を取得してキャッシュ（Claude Codeを起動していない間の利用もtmuxに反映する）
 - `bin/tmux-claude-auto-dev` - `claude-auto-dev-status`の結果を、tmuxのステータスバー向けに絵文字と件数で表示（例: `🛠 🙋2 🔀1 🏃#8 📥19 ⚠️`）。結果は5分キャッシュし、古くなったら裏で取り直す。`--popup`で凡例と状況の全文を出す（`C-q + A`）
 - `bin/tmux-claude-notify` - Claude Codeのフック。ペインの状態（許可待ち・完了・作業中）をtmuxに記録し、効果音を鳴らす
@@ -104,9 +104,10 @@ make check
   - `--restricted`と`--permission-mode dontAsk`で起動する。ユーザーの設定（グローバルの`CLAUDE.md`・許可・フック）は読まず、ファイルの読み書きは作業ディレクトリと受け渡し用のファイルに限り、WebFetchは使えない。決まりは各リポジトリの`.claude/auto-dev.md`に書く
   - Bashのコマンドはサンドボックスで囲み、worktreeの外に書けないようにする（コミット用に元のリポジトリの`.git`だけ許す）。リポジトリごとの追加は`<リポジトリ名>.sandbox.json`（`sandbox`設定の中身。例: `{"filesystem":{"allowWrite":["~/.npm"]},"network":{"allowedDomains":["registry.npmjs.org"]}}`）。サンドボックス自体は切れない
   - NotionとTodoistは足す操作だけを許す（Notionの既存ページの書き換えは許さない）
-  - 設定（Git管理外）: `~/.config/claude-auto-dev/<リポジトリ名>.md`（プロンプトに足す内容。NotionのURL、Todoistの登録先など）、`<リポジトリ名>.tools`（追加で許すツール。1行1つ。例: `Bash(go test:*)`）
+  - 設定（Git管理外）: `~/.config/claude-auto-dev/<リポジトリ名>.md`（プロンプトに足す内容。NotionのURL、Todoistの登録先など）、`<リポジトリ名>.tools`（追加で許すツール。1行1つ。例: `Bash(go test:*)`）、`labels`（tmuxなどで並べる略称。「リポジトリ名 略称」を1行1つ。なければ名前の先頭3文字）
   - 環境変数: `CLAUDE_AUTO_DEV_MODEL`（既定 `opus`）、`CLAUDE_AUTO_DEV_MAX_TURNS`（既定 150）、`CLAUDE_AUTO_DEV_TIMEOUT`（秒。既定 10800）、`CLAUDE_AUTO_DEV_DAILY_MAX`（実装の回の1日の上限。既定はなし）、精査の回の`CLAUDE_AUTO_DEV_REVIEW_MODEL`（既定 `fable`）・`CLAUDE_AUTO_DEV_REVIEW_INTERVAL`（精査の間隔の秒数。既定 86400）・`CLAUDE_AUTO_DEV_REVIEW_PRS`（1回に巡回するPRの件数。既定 10）・`CLAUDE_AUTO_DEV_REVIEW_MAX`（1回に作るIssueの上限。既定 5）、企画の回の`CLAUDE_AUTO_DEV_PLAN_MODEL`（既定 `fable`）・`CLAUDE_AUTO_DEV_PLAN_INTERVAL`（企画の間隔の秒数。既定 21600）・`CLAUDE_AUTO_DEV_PLAN_TARGET`（着手できるIssueの目標の件数。既定 8）・`CLAUDE_AUTO_DEV_PLAN_MAX`（1回に作る件数の上限。既定 8）
   - ログは`~/.local/state/claude-auto-dev/logs/`（最後の応答、ターン数・費用・拒否されたツール。`.json`に結果の全体）
+  - できごと（着手・終了・PR・Issue・判断待ち・失敗）は全リポジトリ分を`~/.local/state/claude-auto-dev/events.tsv`に1行1件で残す。実行中の回の種類とIssueは`locks/<リポジトリ名>/run`にある
 
 ## 🔧 カスタマイズ
 

@@ -52,6 +52,7 @@ fake_bin() {
   cat > "$tmp/bin/claude" <<'EOF'
 #!/bin/bash
 { echo "claude pwd=$PWD"; echo "claude head=$(git rev-parse HEAD)"; printf 'claude arg=%s\n' "$@"; } >> "$FAKE_LOG"
+echo "claude run=$(cat "$CLAUDE_AUTO_DEV_STATE_DIR"/locks/*/run 2>/dev/null | tr -d '\n')" >> "$FAKE_LOG"
 if [ -n "$CLAUDE_AUTO_DEV_REVIEW_DIR" ]; then
   for n in $FAKE_REVIEW_FILES; do printf '%s\n' "$FAKE_REVIEW_TEXT" > "$CLAUDE_AUTO_DEV_REVIEW_DIR/$n.md"; done
   i=1
@@ -75,12 +76,14 @@ EOF
 [ -z "$FAKE_GH_FAIL" ] || exit 1
 case "$1 $2" in
   "issue list") case "$*" in *auto-in-progress*) echo "$FAKE_STALE" ;; *"--state all"*) echo "$FAKE_ALL_ISSUES" ;; *) echo "$FAKE_ISSUES" ;; esac ;;
-  "issue create") printf 'gh issue create arg=%s\n' "$@" >> "$FAKE_LOG"; sed 's/^/gh issue create body=/' >> "$FAKE_LOG" ;;
+  "issue create") printf 'gh issue create arg=%s\n' "$@" >> "$FAKE_LOG"; sed 's/^/gh issue create body=/' >> "$FAKE_LOG"
+    echo https://github.com/me/my-app/issues/20 ;;
   "issue view") echo "$FAKE_ISSUE_VIEW" ;;
   "api user") echo me ;;
   "pr list") case "$*" in *"--state merged"*) echo "$FAKE_MERGED_PRS" ;; *) echo "$FAKE_PRS" ;; esac ;;
   "pr edit") echo "gh pr edit $*" >> "$FAKE_LOG" ;;
-  "pr create") printf 'gh pr create arg=%s\n' "$@" >> "$FAKE_LOG"; sed 's/^/gh pr create body=/' >> "$FAKE_LOG" ;;
+  "pr create") printf 'gh pr create arg=%s\n' "$@" >> "$FAKE_LOG"; sed 's/^/gh pr create body=/' >> "$FAKE_LOG"
+    echo https://github.com/me/my-app/pull/12 ;;
   "label list") echo "$FAKE_LABELS" ;;
   "label create") echo "gh label create $3" >> "$FAKE_LOG" ;;
   "issue close") echo "gh issue close $*" >> "$FAKE_LOG" ;;
@@ -936,5 +939,39 @@ assert_eq "通知の見出しと本文を残す" "が失敗	#1: claude が終了
 setup
 FAKE_GH_FAIL=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "起動の前に gh で止まったときも通知を残す" "gh で Issue を取得できません" "$(cut -f3 "$CLAUDE_AUTO_DEV_STATE_DIR/notices/my-app.tsv" 2>/dev/null)"
+
+# tmux の表示が読めるよう、できごと（時刻・リポジトリ・種類・本文）を1つのファイルにタブ区切りで残す
+events() { cut -f2- "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" 2>/dev/null; }
+setup
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "やることがない回は、できごとを残さない" "" "$(events)"
+
+setup
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "着手・claude の終了・判断待ちを残す" "my-app	start	#1 に着手
+my-app	end	3 ターン、\$0.50
+my-app	decision	#1: 判断待ちで止まりました。Issue のコメントを見てください" "$(events)"
+assert_eq "できごとの時刻を残す" "3" "$(cut -f1 "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" 2>/dev/null | grep -cE '^[0-9]+$')"
+run=$(sed -n 's/^claude run=//p' "$FAKE_LOG")
+assert_eq "claude の実行中は、回の種類と Issue をロックに残す" '"implement" 1' "$(echo "$run" | jq -r '"\(.mode | tojson) \(.issue)"')"
+assert_eq "実行中の回のログの場所を残す" "yes" "$(echo "$run" | jq -r .log | grep -q "^$CLAUDE_AUTO_DEV_STATE_DIR/logs/my-app-.*\.log$" && echo yes || echo no)"
+assert_eq "実行中の回が始まった時刻を残す" "yes" "$(echo "$run" | jq -e '.started_at > 0' >/dev/null && echo yes || echo no)"
+assert_eq "終わったらロックごと消す" "no" "$([ -e "$CLAUDE_AUTO_DEV_STATE_DIR/locks/my-app" ] && echo yes || echo no)"
+
+setup
+FAKE_CLAUDE_COMMIT=1 FAKE_DECISION_TEXT= FAKE_PR_TEXT=$'🤖 [fix] 直した\n## 概要\n直した内容' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "PR を作ったら番号とタイトルを残す" "my-app	pr	#12 🤖 [fix] 直した" "$(events | tail -n 1)"
+
+setup
+FAKE_CLAUDE_EXIT=3 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "失敗を残す" "my-app	fail	#1: claude が終了コード 3 で止まりました" "$(events | tail -n 1 | sed 's/。ログ: .*//')"
+
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "企画の回は、開始と作った Issue を残す" "my-app	start	企画
+my-app	end	3 ターン、\$0.50
+my-app	issue	#20 🤖 [add] 一覧を足す" "$(events)"
+assert_eq "企画の回は、回の種類をロックに残す" '"plan" null' "$(sed -n 's/^claude run=//p' "$FAKE_LOG" | jq -r '"\(.mode | tojson) \(.issue)"')"
 
 [ "$failures" -eq 0 ] || exit 1
