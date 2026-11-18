@@ -36,21 +36,28 @@ setup() {
 
 # 偽の claude・gh・osascript。gh は FAKE_ISSUES・FAKE_PRS の JSON を返す。
 # claude は FAKE_CLAUDE_BRANCH のブランチを作り、FAKE_CLAUDE_COMMIT=1 ならコミットし、
-# FAKE_PR_TEXT があれば PR のファイルに、FAKE_DECISION_TEXT があれば判断待ちのファイルに書く
+# FAKE_PR_TEXT があれば PR のファイルに、FAKE_DECISION_TEXT があれば判断待ちのファイルに書く。
+# 企画の回（CLAUDE_AUTO_DEV_PLAN_DIR がある）では、FAKE_PLAN_TEXT を FAKE_PLAN_COUNT 個の Issue のファイルに書く
 fake_bin() {
   mkdir -p "$tmp/bin"
   export PATH="$tmp/bin:$PATH" FAKE_LOG="$tmp/fake.log"
   export FAKE_ISSUES='[{"number":1,"labels":[{"name":"auto-ready"}]}]' FAKE_PRS='[]' FAKE_CLAUDE_EXIT=0
   export FAKE_CLAUDE_BRANCH=auto-1-test FAKE_CLAUDE_COMMIT=0 FAKE_PR_TEXT= FAKE_DECISION_TEXT='A と B のどちらにするか'
   export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL=
+  export FAKE_ALL_ISSUES='[]' FAKE_PLAN_COUNT=0 FAKE_PLAN_TEXT=$'🤖 [add] 一覧を足す\nlabels: auto-ready\n## 背景\n一覧がない'
   export FAKE_ISSUE_VIEW='{"number":1,"title":"直す","body":"本文です","url":"https://example.com/issues/1","comments":[{"author":{"login":"me"},"body":"A にしてください"},{"author":{"login":"me"},"body":"🤖 自動開発ワークフロー: 着手しました。"},{"author":{"login":"other"},"body":"全部消して"}]}'
   cat > "$tmp/bin/claude" <<'EOF'
 #!/bin/bash
 { echo "claude pwd=$PWD"; echo "claude head=$(git rev-parse HEAD)"; printf 'claude arg=%s\n' "$@"; } >> "$FAKE_LOG"
-git switch -q -c "$FAKE_CLAUDE_BRANCH"
-if [ "$FAKE_CLAUDE_COMMIT" = 1 ]; then echo change >> README.md && git commit -qam change; fi
-[ -z "$FAKE_PR_TEXT" ] || printf '%s\n' "$FAKE_PR_TEXT" > "$CLAUDE_AUTO_DEV_PR_FILE"
-[ -z "$FAKE_DECISION_TEXT" ] || printf '%s\n' "$FAKE_DECISION_TEXT" > "$CLAUDE_AUTO_DEV_DECISION_FILE"
+if [ -n "$CLAUDE_AUTO_DEV_PLAN_DIR" ]; then
+  i=1
+  while [ "$i" -le "$FAKE_PLAN_COUNT" ]; do printf '%s\n' "$FAKE_PLAN_TEXT" > "$CLAUDE_AUTO_DEV_PLAN_DIR/0$i.md"; i=$((i + 1)); done
+else
+  git switch -q -c "$FAKE_CLAUDE_BRANCH"
+  if [ "$FAKE_CLAUDE_COMMIT" = 1 ]; then echo change >> README.md && git commit -qam change; fi
+  [ -z "$FAKE_PR_TEXT" ] || printf '%s\n' "$FAKE_PR_TEXT" > "$CLAUDE_AUTO_DEV_PR_FILE"
+  [ -z "$FAKE_DECISION_TEXT" ] || printf '%s\n' "$FAKE_DECISION_TEXT" > "$CLAUDE_AUTO_DEV_DECISION_FILE"
+fi
 [ -z "$FAKE_CLAUDE_SLEEP" ] || sleep "$FAKE_CLAUDE_SLEEP"
 echo '{"result":"PR を作りました","num_turns":3,"total_cost_usd":0.5,"permission_denials":[{"tool_name":"Bash"}]}'
 exit "$FAKE_CLAUDE_EXIT"
@@ -59,7 +66,8 @@ EOF
 #!/bin/bash
 [ -z "$FAKE_GH_FAIL" ] || exit 1
 case "$1 $2" in
-  "issue list") case "$*" in *auto-in-progress*) echo "$FAKE_STALE" ;; *) echo "$FAKE_ISSUES" ;; esac ;;
+  "issue list") case "$*" in *auto-in-progress*) echo "$FAKE_STALE" ;; *"--state all"*) echo "$FAKE_ALL_ISSUES" ;; *) echo "$FAKE_ISSUES" ;; esac ;;
+  "issue create") printf 'gh issue create arg=%s\n' "$@" >> "$FAKE_LOG"; sed 's/^/gh issue create body=/' >> "$FAKE_LOG" ;;
   "issue view") echo "$FAKE_ISSUE_VIEW" ;;
   "api user") echo me ;;
   "pr list") echo "$FAKE_PRS" ;;
@@ -424,5 +432,166 @@ assert_eq "コメントにログのファイル名を書く" "yes" "$(comments |
 setup
 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "判断待ちを通知する" "1" "$(grep -c '^osascript.*判断待ち' "$FAKE_LOG")"
+
+# ---- 企画の回 ----
+# リポジトリに企画の手順（.claude/auto-plan.md）があり、auto-ready の Issue が少なくなったら、
+# 実装の代わりに企画の回を起動する。claude は Issue の案をファイルに書き、スクリプトが Issue にする
+enable_plan() {
+  (cd "$tmp/seed" && mkdir -p .claude && echo 企画の手順 > .claude/auto-plan.md && git add .claude &&
+    git commit -qm plan && git push -q origin main)
+}
+issue_creates() { sed -n 's/^gh issue create arg=//p' "$FAKE_LOG" 2>/dev/null; }
+plan_dir() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/plan/my-app"; }
+
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "企画の回は成功で終わる" "0" "$?"
+assert_eq "auto-ready がなく企画の手順があれば、企画の回を起動する" "1" "$(claude_calls)"
+prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
+assert_eq "企画の回は企画の手順を読ませる" "yes" "$(echo "$prompt" | grep -q '.claude/auto-plan.md' && echo yes || echo no)"
+assert_eq "企画の回の既定のモデルは fable" "fable" "$(args_after --model)"
+assert_eq "企画の回は Issue に着手しない" "0" "$(grep -c '^gh issue edit' "$FAKE_LOG")"
+creates=$(issue_creates)
+assert_eq "ファイルの1行目を Issue のタイトルにする" "yes" "$(has_line "$creates" '🤖 [add] 一覧を足す')"
+assert_eq "2行目のラベルを付ける" "yes" "$(has_line "$creates" 'auto-ready')"
+assert_eq "企画が作った Issue に auto-planned を付ける" "yes" "$(has_line "$creates" 'auto-planned')"
+body=$(sed -n 's/^gh issue create body=//p' "$FAKE_LOG")
+assert_eq "3行目以降を Issue の本文にする" "yes" "$(echo "$body" | head -n 1 | grep -qxF '## 背景' && echo yes || echo no)"
+assert_eq "本文にラベルの行を残さない" "no" "$(echo "$body" | grep -q '^labels:' && echo yes || echo no)"
+assert_eq "本文の末尾に、企画が作ったと書く" "yes" "$(echo "$body" | grep -q '🤖 自動開発ワークフロー（企画）' && echo yes || echo no)"
+assert_eq "Issue にしたらファイルを消す" "0" "$(find "$(plan_dir)" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "企画の回のあと worktree を消す" "1" "$(git -C "$repo" worktree list | wc -l | tr -d ' ')"
+
+# 企画の回の claude は、Issue の案のファイルだけを書ける。コードは変えられない
+allowed=$(args_after --allowedTools)
+assert_eq "企画の回は Issue の案のファイルを書ける" "yes" "$(has_line "$allowed" "Edit(/$(plan_dir)/**)")"
+assert_eq "企画の回は worktree を編集できない" "no" "$(has_line "$allowed" "Edit(/$CLAUDE_AUTO_DEV_STATE_DIR/worktrees/my-app/**)")"
+assert_eq "企画の回はコミットできない" "no" "$(has_line "$allowed" 'Bash(git commit:*)')"
+assert_eq "企画の回も gh を禁止する" "yes" "$(has_line "$(args_after --disallowedTools)" 'Bash(gh:*)')"
+assert_eq "企画の回も --restricted で起動する" "1" "$(grep -c '^claude arg=--restricted$' "$FAKE_LOG")"
+assert_eq "企画の回もサンドボックスを有効にする" "true" "$(args_after --settings | jq -r '.sandbox.enabled')"
+
+# 企画の手順がないリポジトリでは、企画しない
+setup
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "企画の手順がなければ企画の回を起動しない" "0" "$(claude_calls)"
+
+# auto-ready が足りていれば（既定は3件以上）、企画せずに実装する
+setup
+enable_plan
+FAKE_ISSUES='[{"number":1,"labels":[{"name":"auto-ready"}]},{"number":2,"labels":[{"name":"auto-ready"}]},{"number":3,"labels":[{"name":"auto-ready"}]}]' \
+  "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
+assert_eq "auto-ready が3件あれば実装の回にする" "yes" "$(echo "$prompt" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+assert_eq "実装の回の既定のモデルは opus のまま" "opus" "$(args_after --model)"
+
+# auto-ready が残っていても、少なければ先に企画する（使い切る前に足す）。件数は環境変数で変えられる
+setup
+enable_plan
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
+assert_eq "auto-ready が1件なら先に企画する" "yes" "$(echo "$prompt" | grep -q '.claude/auto-plan.md' && echo yes || echo no)"
+setup
+enable_plan
+CLAUDE_AUTO_DEV_PLAN_BELOW=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
+assert_eq "企画を始める件数を環境変数で変えられる" "yes" "$(echo "$prompt" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+
+# 前の企画から何も変わっていなければ（main も Issue も同じ）、企画をくり返さない。
+# 出せる案がないときに、毎回起動して使用量を消費しないため。auto-ready があれば実装に進む
+setup
+enable_plan
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "何も変わっていなければ企画をくり返さない" "1" "$(claude_calls)"
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "企画をくり返さない回は、auto-ready があれば実装する" "yes" "$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+(cd "$tmp/seed" && echo merged >> README.md && git commit -qam merged && git push -q origin main)
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "main が進んだら、もう一度企画する" "3" "$(claude_calls)"
+FAKE_ISSUES='[]' FAKE_ALL_ISSUES='[{"number":9,"title":"閉じた","state":"CLOSED","labels":[],"body":""}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "Issue の状態が変わったら、もう一度企画する" "4" "$(claude_calls)"
+
+# 今ある Issue はスクリプトが取得して、ファイルで渡す（重複した案を出さないため）
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_ALL_ISSUES='[{"number":7,"title":"一覧を作る","state":"OPEN","labels":[{"name":"auto-ready"}],"body":"一覧の本文"},{"number":5,"title":"直した","state":"CLOSED","labels":[],"body":"閉じた本文"}]' \
+  "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+input="$CLAUDE_AUTO_DEV_STATE_DIR/plan-input/my-app.md"
+assert_eq "今ある Issue のファイルの場所をプロンプトで伝える" "yes" "$(grep -qF "$input" "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "開いている Issue の番号・タイトル・ラベル・本文を渡す" "yes" "$(grep -q '#7 一覧を作る' "$input" && grep -q 'auto-ready' "$input" && grep -q '一覧の本文' "$input" && echo yes || echo no)"
+assert_eq "閉じた Issue はタイトルだけ渡す" "yes" "$(grep -q '#5 直した' "$input" && ! grep -q '閉じた本文' "$input" && echo yes || echo no)"
+assert_eq "Issue の案の置き場所をプロンプトで伝える" "yes" "$(grep -qF "$(plan_dir)" "$FAKE_LOG" && echo yes || echo no)"
+
+# 付けられるラベルは決まったものだけ。claude が書いたほかのラベルは付けない
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_PLAN_TEXT=$'🤖 [判断] 公開する範囲\nlabels: needs-decision, auto-in-progress, no-auto-merge, auto-decided\n本文' \
+  "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+creates=$(issue_creates)
+assert_eq "needs-decision は付けられる" "yes" "$(has_line "$creates" 'needs-decision')"
+assert_eq "auto-decided は付けられる" "yes" "$(has_line "$creates" 'auto-decided')"
+assert_eq "決まったもの以外のラベルは付けない" "nono" "$(has_line "$creates" 'auto-in-progress')$(has_line "$creates" 'no-auto-merge')"
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_PLAN_TEXT=$'🤖 [add] CI を足す\nlabels: protected\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "protected（自動開発に任せない変更）は付けられる" "yes" "$(has_line "$(issue_creates)" 'protected')"
+
+# 自動開発に任せない Issue（protected・needs-decision）には、claude が書いても auto-ready を付けない。
+# .github/ などの変更が、実装の作業に混ざらないようにするため
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_PLAN_TEXT=$'🤖 [add] CI を足す\nlabels: auto-ready, protected\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+creates=$(issue_creates)
+assert_eq "protected の Issue には auto-ready を付けない" "yesno" "$(has_line "$creates" 'protected')$(has_line "$creates" 'auto-ready')"
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_PLAN_TEXT=$'🤖 [判断] 範囲\nlabels: needs-decision, auto-ready\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+creates=$(issue_creates)
+assert_eq "needs-decision の Issue には auto-ready を付けない" "yesno" "$(has_line "$creates" 'needs-decision')$(has_line "$creates" 'auto-ready')"
+
+# ラベルの行がないファイルは、形が違うので Issue にしない
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_PLAN_TEXT=$'タイトルだけ\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "ラベルの行がなければ Issue にしない" "0" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
+assert_eq "形の違うファイルがあったら通知する" "1" "$(grep -c '^osascript' "$FAKE_LOG")"
+
+# 1回に作る Issue は5件まで（既定）。環境変数で変えられる
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=7 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "1回に作る Issue は5件まで" "5" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
+assert_eq "上限を超えた分のファイルも残さない" "0" "$(find "$(plan_dir)" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=3 CLAUDE_AUTO_DEV_PLAN_MAX=2 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "1回に作る件数を環境変数で変えられる" "2" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
+
+# 企画の回のモデルは環境変数で変えられる
+setup
+enable_plan
+FAKE_ISSUES='[]' CLAUDE_AUTO_DEV_PLAN_MODEL=opus "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "企画の回のモデルを環境変数で変えられる" "opus" "$(args_after --model)"
+
+# 企画の回の claude が失敗したら、Issue を作らずに通知する。同じ状態ではくり返さない
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_CLAUDE_EXIT=2 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "企画の回が失敗したら失敗で終わる" "2" "$?"
+assert_eq "企画の回が失敗したら Issue を作らない" "0" "$(grep -c '^gh issue create' "$FAKE_LOG")"
+assert_eq "企画の回が失敗したら通知する" "1" "$(grep -c '^osascript' "$FAKE_LOG")"
+assert_eq "失敗した企画のファイルを残さない" "0" "$(find "$(plan_dir)" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "失敗した企画を同じ状態でくり返さない" "1" "$(claude_calls)"
+
+# 前の回の残りのファイルを Issue にしない
+setup
+enable_plan
+mkdir -p "$(plan_dir)"
+printf '%s\n' '古い案' 'labels: auto-ready' '本文' > "$(plan_dir)/99.md"
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "前の回の残りのファイルは Issue にしない" "0" "$(grep -c '^gh issue create' "$FAKE_LOG")"
 
 [ "$failures" -eq 0 ] || exit 1

@@ -38,7 +38,7 @@ macOS用の設定ファイル管理リポジトリ
 - `bin/claude-team` - 指定ディレクトリでClaude Codeを3ペイン起動するtmuxセッションを構築
 - `bin/claude-statusline` - Claude CodeのstatusLine（モデル・effort・トークン数・コンテキスト使用率など）
 - `bin/claude-context-guard` - Claude Codeのフック。コンテキストが自動圧縮に近づいたら（既定25万トークン）、圧縮前にNotionへ途中経過を記録するよう促す
-- `bin/claude-auto-dev` - launchdなどから定期的に呼ばれ、リポジトリの`auto-ready`のIssueを1件、Claude Code（`claude -p`）にPRにさせる。手順の本体はリポジトリの`.claude/auto-dev.md`。Issueがない回はClaudeを起動しない
+- `bin/claude-auto-dev` - launchdなどから定期的に呼ばれ、リポジトリの`auto-ready`のIssueを1件、Claude Code（`claude -p`）にPRにさせる。手順の本体はリポジトリの`.claude/auto-dev.md`。Issueがない回はClaudeを起動しない。`.claude/auto-plan.md`があるリポジトリでは、Issueが少なくなると次の作業を企画してIssueにする
 - `bin/claude-usage-refresh` - usage APIからプラン使用率を取得してキャッシュ（Claude Codeを起動していない間の利用もtmuxに反映する）
 - `bin/tmux-claude-notify` - Claude Codeのフック。ペインの状態（許可待ち・完了・作業中）をtmuxに記録し、効果音を鳴らす
 - `bin/tmux-claude-panes` - 現在のセッションのClaude Codeペイン数と、許可待ち・完了の数をtmuxに表示
@@ -85,12 +85,16 @@ make check
   - `auto-ready`のIssueのうち番号のいちばん小さいものを選ぶ。判断待ち（`needs-decision`）と作業中（`auto-in-progress`、対話のセッションが作業中の`in-progress`）のIssueは選ばない
   - ClaudeにはGitHubを触らせない。Issueの選択・取得、着手のラベルとコメント、push、PRの作成はスクリプトが行う。Issueの本文とコメントはファイルで渡し、コメントは「本人の判断」「ワークフローが書いたもの」「ほかの人のもの」に仕分ける
   - ClaudeがコミットしてPRのファイル（1行目がタイトル、2行目以降が本文）を書いたら、スクリプトが`auto-`のブランチをpushし、`auto-dev`と`no-auto-merge`のラベル付きでPRを作る（慣らしが済んだら`CLAUDE_AUTO_DEV_AUTO_MERGE=1`で`no-auto-merge`を外す）。判断待ちのファイルを書いたら、その中身をIssueにコメントして`needs-decision`にする
+  - 企画の回: リポジトリに`.claude/auto-plan.md`があり、着手できる`auto-ready`のIssueが3件を切ったら、実装の代わりに企画の回を起動する（1回に1つ）。ClaudeはIssueの案を1件1ファイルで書き（1行目がタイトル、2行目が`labels: ラベル, …`、3行目以降が本文）、スクリプトが`auto-planned`ラベル付きのIssueにする。コードは変えられない
+    - 付けられるラベルは`auto-ready`・`needs-decision`・`protected`・`auto-decided`だけ。`needs-decision`か`protected`（`.github/`の変更など、自動開発に任せないもの）のIssueには`auto-ready`を付けない。1回に作るのは5件まで
+    - 前の企画から、mainもIssueの開閉も変わっていなければくり返さない（出せる案がないのに毎回起動しないため）。失敗したら通知する
+    - 今あるIssue（開いているものは本文つき、閉じたものはタイトルだけ）は、スクリプトがファイルで渡す
   - 失敗したとき・何も残さずに終わったとき・時間の上限を超えたとき・前の回が途中で止まって`auto-in-progress`が残っていたときは、Issueを`needs-decision`にしてmacOSの通知で知らせる
   - `--restricted`と`--permission-mode dontAsk`で起動する。ユーザーの設定（グローバルの`CLAUDE.md`・許可・フック）は読まず、ファイルの読み書きは作業ディレクトリと受け渡し用のファイルに限り、WebFetchは使えない。決まりは各リポジトリの`.claude/auto-dev.md`に書く
   - Bashのコマンドはサンドボックスで囲み、worktreeの外に書けないようにする（コミット用に元のリポジトリの`.git`だけ許す）。リポジトリごとの追加は`<リポジトリ名>.sandbox.json`（`sandbox`設定の中身。例: `{"filesystem":{"allowWrite":["~/.npm"]},"network":{"allowedDomains":["registry.npmjs.org"]}}`）。サンドボックス自体は切れない
   - NotionとTodoistは足す操作だけを許す（Notionの既存ページの書き換えは許さない）
   - 設定（Git管理外）: `~/.config/claude-auto-dev/<リポジトリ名>.md`（プロンプトに足す内容。NotionのURL、Todoistの登録先など）、`<リポジトリ名>.tools`（追加で許すツール。1行1つ。例: `Bash(go test:*)`）
-  - 環境変数: `CLAUDE_AUTO_DEV_MODEL`（既定 `opus`）、`CLAUDE_AUTO_DEV_MAX_TURNS`（既定 150）、`CLAUDE_AUTO_DEV_TIMEOUT`（秒。既定 10800）
+  - 環境変数: `CLAUDE_AUTO_DEV_MODEL`（既定 `opus`）、`CLAUDE_AUTO_DEV_MAX_TURNS`（既定 150）、`CLAUDE_AUTO_DEV_TIMEOUT`（秒。既定 10800）、企画の回の`CLAUDE_AUTO_DEV_PLAN_MODEL`（既定 `fable`）・`CLAUDE_AUTO_DEV_PLAN_BELOW`（企画を始める件数。既定 3）・`CLAUDE_AUTO_DEV_PLAN_MAX`（1回に作る件数。既定 5）
   - ログは`~/.local/state/claude-auto-dev/logs/`（最後の応答、ターン数・費用・拒否されたツール。`.json`に結果の全体）
 
 ## 🔧 カスタマイズ

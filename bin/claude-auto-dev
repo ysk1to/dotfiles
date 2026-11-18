@@ -3,6 +3,8 @@
 # 手順の本体はリポジトリの .claude/auto-dev.md。個人の情報（Notion の URL など）は設定ファイルに置く。
 # claude には GitHub を触らせない。Issue の取得も、書き込み（push・PR・ラベル・コメント）も、このスクリプトが行う。
 # claude は Issue のファイルを読んで作業し、結果を PR のファイルか判断待ちのファイルに書いて終わる。
+# リポジトリに .claude/auto-plan.md があれば、auto-ready の Issue が少なくなったときに企画の回を起動する。
+# 企画の回の claude は Issue の案をファイルに書き、このスクリプトがそれを Issue にする。
 # 使い方: claude-auto-dev <リポジトリのパス>
 # 設定ファイル: $CLAUDE_AUTO_DEV_CONFIG_DIR/<リポジトリ名>.md（既定 ~/.config/claude-auto-dev）
 
@@ -65,23 +67,43 @@ for n in $stale; do
   notify "が失敗" "#${n}: 前の回が途中で止まっていました"
 done
 
-# やることがない回は Claude を起動しない（使用量を消費しない）。
-# レビュー待ちの PR が2件以上あるときも、積み上げないよう着手しない。
-# 対話のセッションが作業中（in-progress）の Issue は、auto-ready が残っていても選ばない
-issue=$(set -o pipefail; gh issue list --label auto-ready --state open --json number,labels |
-  jq '[.[] | select([.labels[].name] | index("needs-decision") or index("auto-in-progress") or index("in-progress") | not)
-    | .number] | min // empty') || {
+# 着手できる Issue（auto-ready のうち、判断待ち・作業中でないもの）。番号のいちばん小さいものから着手する
+ready=$(set -o pipefail; gh issue list --label auto-ready --state open --json number,labels |
+  jq -c '[.[] | select([.labels[].name] | index("needs-decision") or index("auto-in-progress") or index("in-progress") | not) | .number]') || {
   notify "が失敗" "gh で Issue を取得できません"
   exit 1
 }
-[ -n "$issue" ] || exit 0
-open_prs=$(gh pr list --label auto-dev --state open --json number | jq length) || exit 1
-[ "$open_prs" -lt 2 ] || exit 0
+issue=$(echo "$ready" | jq 'min // empty')
 
 # 手元で作業中のブランチには触らないよう、リモートの最新から専用の worktree を作る
 git -C "$repo" fetch -q origin || exit 1
 base=$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
 mkdir -p "$state_dir/worktrees"
+
+# 企画の回にするか決める。企画の手順があるリポジトリで、着手できる Issue が少なくなったら、使い切る前に足す。
+# 前の企画から main も Issue の開閉も変わっていなければ、くり返さない（出せる案がないのに毎回起動して使用量を消費しないため）
+mode=implement
+plan_key_file="$state_dir/plan-key/$name"
+if git -C "$repo" cat-file -e "$base:.claude/auto-plan.md" 2>/dev/null &&
+  [ "$(echo "$ready" | jq length)" -lt "${CLAUDE_AUTO_DEV_PLAN_BELOW:-3}" ]; then
+  all_issues=$(gh issue list --state all --limit 300 --json number,title,state,labels,body) || {
+    notify "が失敗" "gh で Issue を取得できません"
+    exit 1
+  }
+  plan_key=$({
+    git -C "$repo" rev-parse "$base"
+    echo "$all_issues" | jq -c '[.[] | [.number, .state]] | sort'
+  } | shasum | cut -d' ' -f1)
+  [ "$plan_key" = "$(cat "$plan_key_file" 2>/dev/null)" ] || mode=plan
+fi
+
+# やることがない回は Claude を起動しない（使用量を消費しない）。
+# レビュー待ちの PR が2件以上あるときも、積み上げないよう着手しない
+if [ "$mode" = implement ]; then
+  [ -n "$issue" ] || exit 0
+  open_prs=$(gh pr list --label auto-dev --state open --json number | jq length) || exit 1
+  [ "$open_prs" -lt 2 ] || exit 0
+fi
 
 # worktree と、claude が作った手元のブランチを消す。push 済みのブランチはリモートに残る。
 # 本人のブランチを消さないよう、消すのは auto- で始まるものだけ
@@ -97,6 +119,169 @@ cleanup  # 前の回が途中で止まって残ったものを消す
 work_created=yes
 git -C "$repo" worktree add -q --detach "$work" "$base" || exit 1
 
+# 人が確認できないので、使ってよいツールを列挙して絞る（allowed）。
+# --restricted でユーザーの設定を読まず、ファイルの読み書きを作業ディレクトリ（と add_dirs）に限る。
+# グローバル設定で許可した Read・WebFetch が効くと、Mac のどのファイルでも読めて外に出せるため。
+# Bash のコマンドはサンドボックスで囲む（settings）。結果は $result、終了コードは $status に入る
+disallowed=(
+  'Bash(git push:*)' 'Bash(gh:*)' 'Bash(gh pr create:*)' 'Bash(gh pr merge:*)' 'Bash(gh issue edit:*)'
+  'Bash(gh issue comment:*)' 'Bash(git reset --hard:*)'
+)
+result="${log%.log}.json"
+limit="${CLAUDE_AUTO_DEV_TIMEOUT:-10800}"
+run_claude() {
+  local model="$1" claude_pid watchdog
+  # 固まるとロックを握り続け、以後の起動がすべて見送られるので、時間の上限で止める。
+  # --allowedTools などは値を複数とるので、プロンプトを先に渡す
+  # --restricted ではグローバルの CLAUDE.md が読まれず、英語の出力が続くと応答が英語になることがあるので、
+  # 言語はシステムプロンプトで指示する
+  claude -p "$prompt" \
+    --model "$model" \
+    --max-turns "${CLAUDE_AUTO_DEV_MAX_TURNS:-150}" \
+    --append-system-prompt "応答、コミットメッセージ、PR と判断待ちのファイル、Issue の案、Notion と Todoist に書く文章は、すべて日本語で書く。" \
+    --output-format json \
+    --permission-mode dontAsk \
+    --restricted \
+    --tools "Bash,Read,Edit,Write,Glob,Grep,ToolSearch" \
+    --settings "$settings" \
+    --add-dir "${add_dirs[@]}" \
+    --allowedTools "${allowed[@]}" \
+    --disallowedTools "${disallowed[@]}" \
+    > "$result" 2>> "$log" &
+  claude_pid=$!
+  (
+    sleep "$limit" &
+    trap 'kill $! 2>/dev/null' TERM
+    wait $! && kill "$claude_pid" 2>/dev/null && touch "$result.timeout"
+  ) &
+  watchdog=$!
+  wait "$claude_pid"
+  status=$?
+  kill "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null
+  # 最後の応答と、使用量の目安（ターン数・費用・拒否されたツールの数）をログに残す
+  jq -r '(.result // ""), "ターン数 \(.num_turns)、費用 \(.total_cost_usd) ドル、拒否されたツール \(.permission_denials | length) 件",
+    (.permission_denials[]? | "拒否: \(.tool_name) \(.tool_input | tostring | .[0:200])")' "$result" >> "$log" 2>/dev/null ||
+    cat "$result" >> "$log"
+}
+
+# Bash のコマンドはサンドボックスで囲み、worktree の外に書けないようにする。git diff --output やテストのコマンドは、
+# 許可のルールだけでは書き込み先を限れないため。コミットのために元のリポジトリの .git には書けるようにする。
+# リポジトリごとの設定（Docker を外で動かす、キャッシュの場所、通信先など）は <リポジトリ名>.sandbox.json で足す
+sandbox_settings() {
+  local extra='{}'
+  [ ! -f "$config_dir/$name.sandbox.json" ] || extra=$(cat "$config_dir/$name.sandbox.json")
+  jq -cn --arg git_dir "$(git -C "$repo" rev-parse --absolute-git-dir)" --argjson extra "$extra" '
+    def merge($a; $b):
+      if ($a | type) == "object" and ($b | type) == "object" then
+        reduce ($b | keys[]) as $k ($a; .[$k] = (if has($k) then merge($a[$k]; $b[$k]) else $b[$k] end))
+      elif ($a | type) == "array" and ($b | type) == "array" then $a + $b
+      else $b end;
+    {sandbox: (merge({filesystem: {allowWrite: [$git_dir]}}; $extra)
+      + {enabled: true, allowUnsandboxedCommands: false})}' 2>> "$log"
+}
+
+# Notion と Todoist は足す操作だけを許し、既存のページの書き換えは許さない
+readonly_tools=(
+  Read Glob Grep ToolSearch
+  'Bash(git status:*)' 'Bash(git diff:*)' 'Bash(git log:*)' 'Bash(git show:*)' 'Bash(git rev-parse:*)'
+  'Bash(ls:*)'
+  mcp__claude_ai_Notion__notion-fetch mcp__claude_ai_Notion__notion-search
+  mcp__claude_ai_Notion__notion-query-data-sources mcp__claude_ai_Notion__notion-create-pages
+  mcp__claude_ai_Todoist__find-projects mcp__claude_ai_Todoist__find-sections mcp__claude_ai_Todoist__find-tasks
+  mcp__claude_ai_Todoist__add-tasks
+)
+
+# ---- 企画の回 ----
+# claude は今ある Issue・コード・Notion を読み、Issue の案を1件1ファイルで書く（1行目がタイトル、
+# 2行目が「labels: ラベル, …」、3行目以降が本文）。コードは変えられない。Issue にするのはこのスクリプトで、
+# 件数の上限と付けてよいラベルをここで守る
+if [ "$mode" = plan ]; then
+  plan_dir="$state_dir/plan/$name"
+  plan_input="$state_dir/plan-input/$name.md"
+  plan_fail() {
+    rm -rf "$plan_dir"
+    notify "の企画が失敗" "${1}。ログ: ${log}"
+    exit "${2:-1}"
+  }
+  rm -rf "$plan_dir"
+  mkdir -p "$plan_dir" "$state_dir/plan-input" "$state_dir/plan-key"
+  # 同じ状態でくり返さないよう、うまくいかなかった回も記録する
+  echo "$plan_key" > "$plan_key_file"
+  echo "$all_issues" | jq -r '
+    "# 今ある Issue\n\n## 開いている Issue\n",
+    (sort_by(.number)[] | select(.state == "OPEN")
+      | "### #\(.number) \(.title)\nラベル: \([.labels[].name] | join(", "))\n\n\(.body)\n"),
+    "## 閉じた Issue（タイトルだけ）\n",
+    (sort_by(.number)[] | select(.state != "OPEN") | "- #\(.number) \(.title)")' > "$plan_input" 2>> "$log" ||
+    plan_fail "Issue の一覧を書き出せません"
+  export CLAUDE_AUTO_DEV_PLAN_DIR="$plan_dir"
+  plan_max="${CLAUDE_AUTO_DEV_PLAN_MAX:-5}"
+  prompt="このリポジトリの自動開発ワークフローの、企画の回として起動された。.claude/auto-plan.md を読み、その手順どおりに次の作業を Issue の案にする。
+人は見ていないので、確認を待たずに進める。コードは変えない。GitHub には接続できない（gh は使えない）。Issue にするのは起動スクリプトが行う。
+今ある Issue（開いているものは本文つき、閉じたものはタイトルだけ）は $plan_input にある。
+Issue の案は、1件につき1ファイルで $plan_dir に作る（ファイル名は 01.md、02.md … で、着手してほしい順）。${plan_max} 件まで。出せる案がなければ、1つも作らずに終わる。
+- 1行目: Issue のタイトル
+- 2行目: labels: に続けて、付けるラベルをカンマ区切りで書く。使えるのは auto-ready・needs-decision・protected・auto-decided だけ
+- 3行目以降: Issue の本文
+
+$(cat "$config")"
+  allowed=("${readonly_tools[@]}" "Edit(/$plan_dir/**)")
+  add_dirs=("$state_dir/plan-input" "$plan_dir")
+  settings=$(sandbox_settings) || plan_fail "サンドボックスの設定を組み立てられません（$name.sandbox.json を確かめてください）"
+  cd "$work" || plan_fail "worktree に移動できません"
+  run_claude "${CLAUDE_AUTO_DEV_PLAN_MODEL:-fable}"
+  if [ -f "$result.timeout" ]; then
+    rm -f "$result.timeout"
+    plan_fail "時間の上限（${limit} 秒）を超えたので止めました"
+  fi
+  [ "$status" -eq 0 ] || plan_fail "claude が終了コード ${status} で止まりました" "$status"
+
+  created=0
+  skipped=0
+  for f in "$plan_dir"/*.md; do
+    [ -f "$f" ] || continue
+    [ "$created" -lt "$plan_max" ] || break
+    title=$(sed -n 1p "$f")
+    labels_line=$(sed -n 2p "$f")
+    case "$labels_line" in
+      labels:*) ;;
+      *) labels_line= ;;
+    esac
+    if [ -z "$title" ] || [ -z "$labels_line" ]; then
+      echo "形が違うので Issue にしません: $(basename "$f")" >> "$log"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    # 付けるラベルは決まったものだけ。自動開発に任せない Issue（protected・needs-decision）には auto-ready を付けない
+    auto_ready=no
+    hold=no
+    labels=(--label auto-planned)
+    IFS=, read -ra asked <<< "${labels_line#labels:}"
+    for l in "${asked[@]}"; do
+      l="${l// /}"
+      case "$l" in
+        auto-ready) auto_ready=yes ;;
+        needs-decision | protected) hold=yes; labels+=(--label "$l") ;;
+        auto-decided) labels+=(--label "$l") ;;
+      esac
+    done
+    [ "$auto_ready" = no ] || [ "$hold" = yes ] || labels+=(--label auto-ready)
+    if {
+      tail -n +3 "$f"
+      printf '\n---\n🤖 自動開発ワークフロー（企画）が作成\n'
+    } | gh issue create --title "$title" --body-file - "${labels[@]}" >> "$log" 2>&1; then
+      created=$((created + 1))
+    else
+      skipped=$((skipped + 1))
+    fi
+  done
+  rm -rf "$plan_dir"
+  [ "$skipped" -eq 0 ] || notify "の企画" "Issue にできなかった案が ${skipped} 件あります。ログ: ${log}"
+  exit 0
+fi
+
+# ---- 実装の回 ----
 # うまくいかなかったら Issue を判断待ちにし、通知で知らせる。auto-ready に戻すと、同じ失敗を毎回くり返して
 # 使用量を消費するため。コメントには手元のパスを書かない。終了コードは2つ目の引数（既定 1）
 fail() {
@@ -141,83 +326,25 @@ GitHub への書き込み（push、PR の作成、ラベルの変更、コメン
 
 $(cat "$config")"
 
-# 人が確認できないので、使ってよいツールを列挙して絞る。ファイルの編集は worktree と結果のファイルだけ。
-# --restricted でユーザーの設定を読まず、ファイルの読み書きを作業ディレクトリ（と --add-dir）に限る。
-# グローバル設定で許可した Read・WebFetch が効くと、Mac のどのファイルでも読めて外に出せるため。
-# Notion と Todoist は足す操作だけを許し、既存のページの書き換えは許さない。
+# ファイルの編集は worktree と結果のファイルだけ。
 # リポジトリごとのテストのコマンドなどは <リポジトリ名>.tools に1行1つで足す
 allowed=(
-  Read Glob Grep ToolSearch "Edit(/$work/**)" "Edit(/$pr_file)" "Edit(/$decision_file)"
-  'Bash(git status:*)' 'Bash(git diff:*)' 'Bash(git log:*)' 'Bash(git show:*)' 'Bash(git rev-parse:*)'
+  "${readonly_tools[@]}" "Edit(/$work/**)" "Edit(/$pr_file)" "Edit(/$decision_file)"
   'Bash(git add:*)' 'Bash(git commit:*)' 'Bash(git switch:*)' 'Bash(git branch:*)' 'Bash(git fetch:*)'
   'Bash(git rm:*)' 'Bash(git mv:*)' 'Bash(git restore:*)'
-  'Bash(ls:*)'
-  mcp__claude_ai_Notion__notion-fetch mcp__claude_ai_Notion__notion-search
-  mcp__claude_ai_Notion__notion-query-data-sources mcp__claude_ai_Notion__notion-create-pages
-  mcp__claude_ai_Todoist__find-projects mcp__claude_ai_Todoist__find-sections mcp__claude_ai_Todoist__find-tasks
-  mcp__claude_ai_Todoist__add-tasks mcp__claude_ai_Todoist__complete-tasks
+  mcp__claude_ai_Todoist__complete-tasks
 )
 if [ -f "$config_dir/$name.tools" ]; then
   while IFS= read -r tool; do
     [ -n "$tool" ] && allowed+=("$tool")
   done < "$config_dir/$name.tools"
 fi
-disallowed=(
-  'Bash(git push:*)' 'Bash(gh:*)' 'Bash(gh pr create:*)' 'Bash(gh pr merge:*)' 'Bash(gh issue edit:*)'
-  'Bash(gh issue comment:*)' 'Bash(git reset --hard:*)'
-)
-
-# Bash のコマンドはサンドボックスで囲み、worktree の外に書けないようにする。git diff --output やテストのコマンドは、
-# 許可のルールだけでは書き込み先を限れないため。コミットのために元のリポジトリの .git には書けるようにする。
-# リポジトリごとの設定（Docker を外で動かす、キャッシュの場所、通信先など）は <リポジトリ名>.sandbox.json で足す
-sandbox_extra='{}'
-[ ! -f "$config_dir/$name.sandbox.json" ] || sandbox_extra=$(cat "$config_dir/$name.sandbox.json")
-settings=$(jq -cn --arg git_dir "$(git -C "$repo" rev-parse --absolute-git-dir)" --argjson extra "$sandbox_extra" '
-  def merge($a; $b):
-    if ($a | type) == "object" and ($b | type) == "object" then
-      reduce ($b | keys[]) as $k ($a; .[$k] = (if has($k) then merge($a[$k]; $b[$k]) else $b[$k] end))
-    elif ($a | type) == "array" and ($b | type) == "array" then $a + $b
-    else $b end;
-  {sandbox: (merge({filesystem: {allowWrite: [$git_dir]}}; $extra)
-    + {enabled: true, allowUnsandboxedCommands: false})}' 2>> "$log") ||
+add_dirs=("$state_dir/issue" "$state_dir/pr" "$state_dir/decision")
+settings=$(sandbox_settings) ||
   fail "サンドボックスの設定を組み立てられません（$name.sandbox.json を確かめてください）"
 
 cd "$work" || fail "worktree に移動できません"
-# 固まるとロックを握り続け、以後の起動がすべて見送られるので、時間の上限で止める。
-# --allowedTools などは値を複数とるので、プロンプトを先に渡す
-# --restricted ではグローバルの CLAUDE.md が読まれず、英語の出力が続くと応答が英語になることがあるので、
-# 言語はシステムプロンプトで指示する
-result="${log%.log}.json"
-limit="${CLAUDE_AUTO_DEV_TIMEOUT:-10800}"
-claude -p "$prompt" \
-  --model "${CLAUDE_AUTO_DEV_MODEL:-opus}" \
-  --max-turns "${CLAUDE_AUTO_DEV_MAX_TURNS:-150}" \
-  --append-system-prompt "応答、コミットメッセージ、PR と判断待ちのファイル、Notion と Todoist に書く文章は、すべて日本語で書く。" \
-  --output-format json \
-  --permission-mode dontAsk \
-  --restricted \
-  --tools "Bash,Read,Edit,Write,Glob,Grep,ToolSearch" \
-  --settings "$settings" \
-  --add-dir "$state_dir/issue" "$state_dir/pr" "$state_dir/decision" \
-  --allowedTools "${allowed[@]}" \
-  --disallowedTools "${disallowed[@]}" \
-  > "$result" 2>> "$log" &
-claude_pid=$!
-(
-  sleep "$limit" &
-  trap 'kill $! 2>/dev/null' TERM
-  wait $! && kill "$claude_pid" 2>/dev/null && touch "$result.timeout"
-) &
-watchdog=$!
-wait "$claude_pid"
-status=$?
-kill "$watchdog" 2>/dev/null
-wait "$watchdog" 2>/dev/null
-
-# 最後の応答と、使用量の目安（ターン数・費用・拒否されたツールの数）をログに残す
-jq -r '(.result // ""), "ターン数 \(.num_turns)、費用 \(.total_cost_usd) ドル、拒否されたツール \(.permission_denials | length) 件",
-  (.permission_denials[]? | "拒否: \(.tool_name) \(.tool_input | tostring | .[0:200])")' "$result" >> "$log" 2>/dev/null ||
-  cat "$result" >> "$log"
+run_claude "${CLAUDE_AUTO_DEV_MODEL:-opus}"
 if [ -f "$result.timeout" ]; then
   rm -f "$result.timeout"
   fail "時間の上限（${limit} 秒）を超えたので止めました"
