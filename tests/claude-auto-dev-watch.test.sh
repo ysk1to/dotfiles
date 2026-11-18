@@ -84,6 +84,35 @@ assert_eq "起動の見落としを出す" "yes" "$(has "$(frame)" '⚠️ 16:00
 echo "[$(repo '.error = "gh で Issue と PR を取得できません"')]" > "$cache"
 assert_eq "gh の失敗を出す" "yes" "$(has "$(frame)" '⚠️ gh で Issue と PR を取得できません')"
 
+# ---- 実行中の手順（claude の stream-json の出力） ----
+tool() { # ツール名 入力の JSON
+  jq -cn --arg name "$1" --argjson input "$2" '{type: "assistant", message: {content: [{type: "tool_use", name: $name, input: $input}]}}'
+}
+setup
+echo "[$(repo)]" > "$cache"
+stream="$state/logs/my-app.stream.jsonl"
+mkdir -p "$state/logs"
+{
+  echo '{"type":"system","subtype":"init"}'
+  for i in 1 2 3 4 5 6; do tool Read "{\"file_path\": \"$state/worktrees/my-app/src/f$i.php\"}"; done
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"考え中"}]}}'
+  tool Bash '{"command": "make test", "description": "テストを実行"}'
+  tool Grep '{"pattern": "TODO"}'
+  echo '{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}'
+} > "$stream"
+running my-app '{"mode":"implement","issue":14,"log":"/x.log","stream":"'"$stream"'","started_at":'"$now"'}'
+out=$(frame)
+assert_eq "実行中の回の見出しを出す" "yes" "$(has "$out" '── 実行中 app #14')"
+assert_eq "ツールの呼び出しを、ツール名と対象で出す" "yes" "$(has "$out" 'Bash   make test')"
+assert_eq "worktree の中のパスは、worktree からの相対で出す" "yes" "$(has "$out" 'Read   src/f6.php')"
+assert_eq "新しい呼び出しが下" "Read,Bash,Grep" "$(sed -n '/実行中 app/,/できごと/p' <<< "$out" | grep -oE '^(Read|Bash|Grep)' | paste -sd, - | sed 's/^\(Read,\)*/Read,/')"
+assert_eq "出すのは最後の5回まで" "5" "$(sed -n '/実行中 app/,/できごと/p' <<< "$out" | grep -cE '^(Read|Bash|Grep) ')"
+
+setup
+echo "[$(repo)]" > "$cache"
+running my-app '{"mode":"plan","issue":null,"log":"/x.log","stream":"/nonexistent.jsonl","started_at":'"$now"'}'
+assert_eq "出力がまだなければ、見出しだけ出す" "yes" "$(has "$(frame)" '── 実行中 app 企画')"
+
 # ---- できごと ----
 setup
 echo "[$(repo)]" > "$cache"
@@ -101,6 +130,11 @@ event "$now" my-app pr "#36 $(printf 'あ%.0s' $(seq 1 60))"
 line=$(frame | grep '#36')
 width=$(printf '%s' "$line" | perl -CS -ne 'my $w = 0; $w += /[\x{1100}-\x{FFFF}]/ ? 2 : 1 for split //; print $w')
 assert_eq "長いできごとはペインの幅で切る" "yes" "$([ "$width" -le 60 ] && echo yes || echo no)"
+
+setup
+echo "[$(repo)]" > "$cache"
+rule=$(frame | grep '^── できごと')
+assert_eq "見出しの罫線はペインの幅ちょうど（罫線は幅1、全角は幅2で数える）" "60" "$(printf '%s' "$rule" | perl -CS -ne 'my $w = 0; $w += /[\x{3000}-\x{FFFF}]/ ? 2 : 1 for split //; print $w')"
 
 setup
 echo "[$(repo)]" > "$cache"

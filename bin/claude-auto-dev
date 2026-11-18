@@ -183,18 +183,21 @@ git -C "$repo" worktree add -q --detach "$work" "$base" || exit 1
 # 人が確認できないので、使ってよいツールを列挙して絞る（allowed）。
 # --restricted でユーザーの設定を読まず、ファイルの読み書きを作業ディレクトリ（と add_dirs）に限る。
 # グローバル設定で許可した Read・WebFetch が効くと、Mac のどのファイルでも読めて外に出せるため。
-# Bash のコマンドはサンドボックスで囲む（settings）。結果は $result、終了コードは $status に入る
+# Bash のコマンドはサンドボックスで囲む（settings）。結果は $result、終了コードは $status に入る。
+# 出力は stream-json で $stream に流す（claude-auto-dev-watch が実行中の手順を出す）。最後の結果の行だけを $result に残す
 disallowed=(
   'Bash(git push:*)' 'Bash(gh:*)' 'Bash(gh pr create:*)' 'Bash(gh pr merge:*)' 'Bash(gh issue edit:*)'
   'Bash(gh issue comment:*)' 'Bash(git reset --hard:*)'
 )
 result="${log%.log}.json"
+stream="${log%.log}.stream.jsonl"
 limit="${CLAUDE_AUTO_DEV_TIMEOUT:-10800}"
 run_claude() {
   local model="$1" claude_pid watchdog
-  # 実行中の回の種類・Issue・ログを、ロックに残す（ロックと一緒に消える）
-  jq -n --arg mode "$mode" --argjson issue "${issue:-null}" --arg log "$log" --argjson at "$(date +%s)" \
-    '{mode: $mode, issue: (if $mode == "implement" then $issue else null end), log: $log, started_at: $at}' > "$lock/run"
+  # 実行中の回の種類・Issue・ログと流れている出力の場所を、ロックに残す（ロックと一緒に消える）
+  jq -n --arg mode "$mode" --argjson issue "${issue:-null}" --arg log "$log" --arg stream "$stream" --argjson at "$(date +%s)" \
+    '{mode: $mode, issue: (if $mode == "implement" then $issue else null end), log: $log, stream: $stream, started_at: $at}' \
+    > "$lock/run"
   case "$mode" in
     implement) event start "#$issue に着手" ;;
     plan) event start 企画 ;;
@@ -208,7 +211,8 @@ run_claude() {
     --model "$model" \
     --max-turns "${CLAUDE_AUTO_DEV_MAX_TURNS:-150}" \
     --append-system-prompt "応答、コミットメッセージ、PR と判断待ちのファイル、Issue の案、Notion と Todoist に書く文章は、すべて日本語で書く。" \
-    --output-format json \
+    --output-format stream-json \
+    --verbose \
     --permission-mode dontAsk \
     --restricted \
     --tools "Bash,Read,Edit,Write,Glob,Grep,ToolSearch" \
@@ -216,7 +220,7 @@ run_claude() {
     --add-dir "${add_dirs[@]}" \
     --allowedTools "${allowed[@]}" \
     --disallowedTools "${disallowed[@]}" \
-    > "$result" 2>> "$log" &
+    > "$stream" 2>> "$log" &
   claude_pid=$!
   (
     sleep "$limit" &
@@ -228,13 +232,19 @@ run_claude() {
   status=$?
   kill "$watchdog" 2>/dev/null
   wait "$watchdog" 2>/dev/null
-  # 最後の応答と、使用量の目安（ターン数・費用・拒否されたツールの数）をログに残す
-  jq -r '(.result // ""), "ターン数 \(.num_turns)、費用 \(.total_cost_usd) ドル、拒否されたツール \(.permission_denials | length) 件",
-    (.permission_denials[]? | "拒否: \(.tool_name) \(.tool_input | tostring | .[0:200])")' "$result" >> "$log" 2>/dev/null ||
-    cat "$result" >> "$log"
-  event end "$(jq -r '(.total_cost_usd * 100 | round) as $c
-    | "\(.num_turns) ターン、$\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)"' "$result" 2>/dev/null ||
-    echo "終了コード $status")"
+  jq -c 'select(.type == "result")' "$stream" 2>/dev/null | tail -n 1 > "$result"
+  # 最後の応答と、使用量の目安（ターン数・費用・拒否されたツールの数）をログに残す。
+  # 結果の行がない（時間の上限で止めたなど）ときは、流れた出力の最後をログに残す
+  if [ -s "$result" ]; then
+    jq -r '(.result // ""), "ターン数 \(.num_turns)、費用 \(.total_cost_usd) ドル、拒否されたツール \(.permission_denials | length) 件",
+      (.permission_denials[]? | "拒否: \(.tool_name) \(.tool_input | tostring | .[0:200])")' "$result" >> "$log" 2>/dev/null ||
+      cat "$result" >> "$log"
+    event end "$(jq -r '(.total_cost_usd * 100 | round) as $c
+      | "\(.num_turns) ターン、$\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)"' "$result" 2>/dev/null)"
+  else
+    tail -n 5 "$stream" >> "$log" 2>/dev/null
+    event end "終了コード $status"
+  fi
 }
 
 # Bash のコマンドはサンドボックスで囲み、worktree の外に書けないようにする。git diff --output やテストのコマンドは、
