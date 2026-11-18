@@ -103,11 +103,21 @@ if git -C "$repo" cat-file -e "$base:.claude/auto-plan.md" 2>/dev/null && [ "$pl
 fi
 
 # やることがない回は Claude を起動しない（使用量を消費しない）。
-# レビュー待ちの PR が2件以上あるときも、積み上げないよう着手しない
+# レビュー待ちの PR が2件以上あるときも、積み上げないよう着手しない。
+# 実装の回は1日に CLAUDE_AUTO_DEV_DAILY_MAX 回まで（指定がなければ数えない）。企画の回は数えない
 if [ "$mode" = implement ]; then
   [ -n "$issue" ] || exit 0
   open_prs=$(gh pr list --label auto-dev --state open --json number | jq length) || exit 1
   [ "$open_prs" -lt 2 ] || exit 0
+  if [ -n "$CLAUDE_AUTO_DEV_DAILY_MAX" ]; then
+    daily_file="$state_dir/daily/$name"
+    today=$(date +%Y-%m-%d)
+    read -r daily_date daily_count < "$daily_file" 2>/dev/null
+    [ "$daily_date" = "$today" ] || daily_count=0
+    [ "$daily_count" -lt "$CLAUDE_AUTO_DEV_DAILY_MAX" ] || exit 0
+    mkdir -p "$state_dir/daily"
+    echo "$today $((daily_count + 1))" > "$daily_file"
+  fi
 fi
 
 # worktree と、claude が作った手元のブランチを消す。push 済みのブランチはリモートに残る。

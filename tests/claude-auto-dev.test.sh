@@ -689,4 +689,41 @@ FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&
 assert_eq "精査の手順がなければ精査を起動しない" "1" "$(claude_calls)"
 assert_eq "精査の手順がなければそのまま Issue にする" "1" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
 
+# ---- 1日の上限 ----
+# 実装の回は、1日に CLAUDE_AUTO_DEV_DAILY_MAX 回まで（指定がなければ数えない）。起動の回数を増やしても、
+# 使用量とレビュー待ちが増えすぎないようにする。企画の回は数えない
+daily_file() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/daily/my-app"; }
+
+setup
+export CLAUDE_AUTO_DEV_DAILY_MAX=2
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "上限で見送った回は成功で終わる" "0" "$?"
+assert_eq "1日の上限に達したら、実装の回を起動しない" "2" "$(claude_calls)"
+assert_eq "上限で見送った回は Issue に着手しない" "2" "$(grep -c -- '--remove-label auto-ready --add-label auto-in-progress' "$FAKE_LOG")"
+echo "2000-01-01 2" > "$(daily_file)"
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "日付が変わったら、また起動する" "3" "$(claude_calls)"
+assert_eq "日付が変わったら数え直す" "$(date +%Y-%m-%d) 1" "$(cat "$(daily_file)")"
+
+setup
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "やることがない回は数えない" "no" "$([ -f "$(daily_file)" ] && echo yes || echo no)"
+
+setup
+enable_plan
+mkdir -p "$CLAUDE_AUTO_DEV_STATE_DIR/daily"
+echo "$(date +%Y-%m-%d) 2" > "$(daily_file)"
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "上限に達していても、企画の回は起動する" "1" "$(claude_calls)"
+assert_eq "企画の回は数えない" "$(date +%Y-%m-%d) 2" "$(cat "$(daily_file)")"
+unset CLAUDE_AUTO_DEV_DAILY_MAX
+
+setup
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "上限の指定がなければ、何回でも起動する" "3" "$(claude_calls)"
+
 [ "$failures" -eq 0 ] || exit 1
