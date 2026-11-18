@@ -190,6 +190,11 @@ jobs:
             echo >> "$RUNNER_TEMP/comment.md"
             echo "問題がないため、自動でマージしました。" >> "$RUNNER_TEMP/comment.md"
             gh pr comment "$PR" --body-file "$RUNNER_TEMP/comment.md"
+            # GITHUB_TOKEN でマージすると、本文の Closes #<番号> があっても Issue が閉じないので、ここで閉じる
+            gh pr view "$PR" --json closingIssuesReferences -q '.closingIssuesReferences[].url' |
+              while read -r issue; do
+                gh issue close "$issue" --reason completed --comment "PR #$PR の自動マージで完了しました。" || true
+              done
           else
             {
               echo
