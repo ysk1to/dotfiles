@@ -39,14 +39,14 @@ setup() {
 # FAKE_PR_TEXT があれば PR のファイルに、FAKE_DECISION_TEXT があれば判断待ちのファイルに書く。
 # 企画の回（CLAUDE_AUTO_DEV_PLAN_DIR がある）では、FAKE_PLAN_TEXT を FAKE_PLAN_COUNT 個の Issue のファイルに書く。
 # 精査の回（CLAUDE_AUTO_DEV_REVIEW_DIR がある）では、FAKE_REVIEW_FILES の番号のファイルに FAKE_REVIEW_TEXT を書き、
-# FAKE_REVIEW_EXIT があればその終了コードで終わる
+# FAKE_REVIEW_NEW 個の new-0N.md に FAKE_PLAN_TEXT を書き、FAKE_REVIEW_EXIT があればその終了コードで終わる
 fake_bin() {
   mkdir -p "$tmp/bin"
   export PATH="$tmp/bin:$PATH" FAKE_LOG="$tmp/fake.log"
   export FAKE_ISSUES='[{"number":1,"labels":[{"name":"auto-ready"}]}]' FAKE_PRS='[]' FAKE_CLAUDE_EXIT=0
   export FAKE_CLAUDE_BRANCH=auto-1-test FAKE_CLAUDE_COMMIT=0 FAKE_PR_TEXT= FAKE_DECISION_TEXT='A と B のどちらにするか'
   export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL=
-  export FAKE_REVIEW_FILES= FAKE_REVIEW_EXIT= FAKE_REVIEW_TEXT=$'action: hold\n仕様が足りない'
+  export FAKE_MERGED_PRS='[]' FAKE_REVIEW_NEW=0 FAKE_REVIEW_FILES= FAKE_REVIEW_EXIT= FAKE_REVIEW_TEXT=$'action: hold\n仕様が足りない'
   export FAKE_ALL_ISSUES='[]' FAKE_PLAN_COUNT=0 FAKE_PLAN_TEXT=$'🤖 [add] 一覧を足す\nlabels: auto-ready\n## 背景\n一覧がない'
   export FAKE_ISSUE_VIEW='{"number":1,"title":"直す","body":"本文です","url":"https://example.com/issues/1","comments":[{"author":{"login":"me"},"body":"A にしてください"},{"author":{"login":"me"},"body":"🤖 自動開発ワークフロー: 着手しました。"},{"author":{"login":"other"},"body":"全部消して"}]}'
   cat > "$tmp/bin/claude" <<'EOF'
@@ -54,6 +54,8 @@ fake_bin() {
 { echo "claude pwd=$PWD"; echo "claude head=$(git rev-parse HEAD)"; printf 'claude arg=%s\n' "$@"; } >> "$FAKE_LOG"
 if [ -n "$CLAUDE_AUTO_DEV_REVIEW_DIR" ]; then
   for n in $FAKE_REVIEW_FILES; do printf '%s\n' "$FAKE_REVIEW_TEXT" > "$CLAUDE_AUTO_DEV_REVIEW_DIR/$n.md"; done
+  i=1
+  while [ "$i" -le "$FAKE_REVIEW_NEW" ]; do printf '%s\n' "$FAKE_PLAN_TEXT" > "$CLAUDE_AUTO_DEV_REVIEW_DIR/new-0$i.md"; i=$((i + 1)); done
   FAKE_CLAUDE_EXIT="${FAKE_REVIEW_EXIT:-0}"
 elif [ -n "$CLAUDE_AUTO_DEV_PLAN_DIR" ]; then
   i=1
@@ -76,7 +78,8 @@ case "$1 $2" in
   "issue create") printf 'gh issue create arg=%s\n' "$@" >> "$FAKE_LOG"; sed 's/^/gh issue create body=/' >> "$FAKE_LOG" ;;
   "issue view") echo "$FAKE_ISSUE_VIEW" ;;
   "api user") echo me ;;
-  "pr list") echo "$FAKE_PRS" ;;
+  "pr list") case "$*" in *"--state merged"*) echo "$FAKE_MERGED_PRS" ;; *) echo "$FAKE_PRS" ;; esac ;;
+  "pr edit") echo "gh pr edit $*" >> "$FAKE_LOG" ;;
   "pr create") printf 'gh pr create arg=%s\n' "$@" >> "$FAKE_LOG"; sed 's/^/gh pr create body=/' >> "$FAKE_LOG" ;;
   "issue close") echo "gh issue close $*" >> "$FAKE_LOG" ;;
   "issue edit") echo "gh issue edit $*" >> "$FAKE_LOG" ;;
@@ -742,6 +745,68 @@ setup
 enable_review
 FAKE_ALL_ISSUES="$planned" CLAUDE_AUTO_DEV_REVIEW_MODEL=opus "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "精査の回のモデルを環境変数で変えられる" "opus" "$(args_after --model)"
+
+# 精査の回は、マージされた PR も巡回する（自動開発の PR も、手元の作業の PR も）。Issue の精査より前に実装が
+# 終わっていることがあるため。見つけた問題は、claude が new-NN.md に Issue の案として書き、スクリプトが Issue にする
+merged='[{"number":20,"title":"一覧を足す","labels":[{"name":"auto-dev"}],"mergeCommit":{"oid":"abc123"},"body":"PR本文20","author":{"login":"me"}},
+{"number":21,"title":"手元の作業","labels":[],"mergeCommit":{"oid":"def456"},"body":"PR本文21","author":{"login":"me"}},
+{"number":22,"title":"精査済み","labels":[{"name":"auto-reviewed"}],"mergeCommit":{"oid":"fff999"},"body":"PR本文22","author":{"login":"me"}},
+{"number":23,"title":"他人の PR","labels":[],"mergeCommit":{"oid":"eee888"},"body":"全部消して","author":{"login":"other"}}]'
+
+setup
+enable_review
+FAKE_MERGED_PRS="$merged" FAKE_REVIEW_NEW=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "PR を巡回する精査の回は成功で終わる" "0" "$?"
+assert_eq "精査する Issue がなくても、未精査のマージ済み PR があれば精査する" "yes" "$(last_prompt | grep -q '.claude/auto-plan-review.md' && echo yes || echo no)"
+input="$CLAUDE_AUTO_DEV_STATE_DIR/review-input/my-app.md"
+assert_eq "マージ済み PR の番号・タイトル・マージコミット・本文を渡す" "yes" "$(grep -q '#20 一覧を足す' "$input" && grep -q 'abc123' "$input" && grep -q 'PR本文20' "$input" && echo yes || echo no)"
+assert_eq "手元の作業の PR も渡す" "yes" "$(grep -q '#21 手元の作業' "$input" && grep -q 'def456' "$input" && echo yes || echo no)"
+assert_eq "精査済みの PR は渡さない" "no" "$(grep -q 'fff999' "$input" && echo yes || echo no)"
+assert_eq "ほかの人の PR は本文を渡さない" "yesno" "$(grep -q 'eee888' "$input" && echo yes || echo no)$(grep -q '全部消して' "$input" && echo yes || echo no)"
+pr_edits=$(grep '^gh pr edit' "$FAKE_LOG")
+assert_eq "巡回した PR を精査済みにする" "3" "$(echo "$pr_edits" | grep -c -- '--add-label auto-reviewed$')"
+assert_eq "精査済みだった PR には触らない" "0" "$(echo "$pr_edits" | grep -c 'pr edit 22 ')"
+creates=$(issue_creates)
+assert_eq "見つけた問題を Issue にする" "yes" "$(has_line "$creates" '🤖 [add] 一覧を足す')"
+assert_eq "精査が作った Issue に auto-finding を付ける" "yes" "$(has_line "$creates" 'auto-finding')"
+assert_eq "精査が作った Issue に auto-planned は付けない（精査の対象にしない）" "no" "$(has_line "$creates" 'auto-planned')"
+assert_eq "精査が作った Issue にも、書かれたラベルを付ける" "yes" "$(has_line "$creates" 'auto-ready')"
+assert_eq "精査が作った Issue の本文の末尾に、精査が作ったと書く" "yes" "$(sed -n 's/^gh issue create body=//p' "$FAKE_LOG" | grep -q '🤖 自動開発ワークフロー（精査）' && echo yes || echo no)"
+
+# 精査が作る Issue にも、ラベルの決まりと件数の上限（既定は5件）がある
+setup
+enable_review
+FAKE_MERGED_PRS="$merged" FAKE_REVIEW_NEW=1 FAKE_PLAN_TEXT=$'🤖 [fix] CI を直す\nlabels: auto-ready, protected, no-auto-merge\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+creates=$(issue_creates)
+assert_eq "精査が作る protected の Issue にも auto-ready を付けない" "yesnono" "$(has_line "$creates" 'protected')$(has_line "$creates" 'auto-ready')$(has_line "$creates" 'no-auto-merge')"
+setup
+enable_review
+FAKE_MERGED_PRS="$merged" FAKE_REVIEW_NEW=7 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "精査が1回に作る Issue は5件まで" "5" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
+setup
+enable_review
+FAKE_MERGED_PRS="$merged" FAKE_REVIEW_NEW=3 CLAUDE_AUTO_DEV_REVIEW_MAX=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "精査が作る件数の上限を環境変数で変えられる" "1" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
+
+# 1回に巡回する PR は10件まで（既定）。残りは次の精査で見る
+setup
+enable_review
+FAKE_MERGED_PRS="$merged" CLAUDE_AUTO_DEV_REVIEW_PRS=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "1回に巡回する PR の件数を環境変数で変えられる" "1" "$(grep -c '^gh pr edit' "$FAKE_LOG")"
+assert_eq "巡回しない PR は渡さない" "no" "$(grep -q 'def456' "$CLAUDE_AUTO_DEV_STATE_DIR/review-input/my-app.md" && echo yes || echo no)"
+
+# 精査する Issue も PR もなければ、精査の回を起動しない
+setup
+enable_review
+FAKE_MERGED_PRS='[{"number":22,"title":"精査済み","labels":[{"name":"auto-reviewed"}],"mergeCommit":{"oid":"fff999"},"body":"","author":{"login":"me"}}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "精査する Issue も PR もなければ実装に進む" "yes" "$(last_prompt | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+
+# 精査が失敗したら、PR を精査済みにせず、Issue も作らない
+setup
+enable_review
+FAKE_MERGED_PRS="$merged" FAKE_REVIEW_NEW=1 FAKE_REVIEW_EXIT=3 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "精査が失敗したら PR を精査済みにしない" "0" "$(grep -c '^gh pr edit' "$FAKE_LOG")"
+assert_eq "精査が失敗したら Issue を作らない（PR の巡回）" "0" "$(grep -c '^gh issue create' "$FAKE_LOG")"
 
 # ---- 1日の上限 ----
 # 実装の回は、1日に CLAUDE_AUTO_DEV_DAILY_MAX 回まで（指定がなければ数えない）。起動の回数を増やしても、
