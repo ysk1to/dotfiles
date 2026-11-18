@@ -891,4 +891,23 @@ setup
 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "上限の指定がなければ、何回でも起動する" "3" "$(claude_calls)"
 
+# claude-auto-dev-status が読めるよう、リポジトリの場所と起動した時刻を残す（やることがない回も）
+setup
+before=$(date +%s)
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "リポジトリの場所を残す" "$repo" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/repos/my-app" 2>/dev/null)"
+checked=$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/checked/my-app" 2>/dev/null)
+assert_eq "起動した時刻を残す" "yes" "$([ "${checked:-0}" -ge "$before" ] && echo yes || echo no)"
+
+# 通知は消えるので、時刻・見出し・本文をタブ区切りで残す
+setup
+FAKE_CLAUDE_EXIT=3 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+notice=$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/notices/my-app.tsv" 2>/dev/null)
+assert_eq "通知を1行残す" "1" "$(printf '%s' "$notice" | grep -c .)"
+assert_eq "通知の見出しと本文を残す" "が失敗	#1: claude が終了コード 3 で止まりました" "$(printf '%s' "$notice" | cut -f2- | sed 's/。ログ: .*//')"
+
+setup
+FAKE_GH_FAIL=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "起動の前に gh で止まったときも通知を残す" "gh で Issue を取得できません" "$(cut -f3 "$CLAUDE_AUTO_DEV_STATE_DIR/notices/my-app.tsv" 2>/dev/null)"
+
 [ "$failures" -eq 0 ] || exit 1
