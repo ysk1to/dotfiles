@@ -53,24 +53,24 @@ export CLAUDE_AUTO_DEV_NOW="$now"
 # ---- 表示 ----
 setup
 echo "[$(repo '.decisions = [1, 2] | .prs = [1] | .ready = 19')]" > "$cache"
-assert_eq "略称のあとに件数を絵文字で出す" "🔧 app 🙋2 🔀1 📥19" "$(show)"
+assert_eq "略称のあとに件数を絵文字で出す" "🔧 app  🙋 2  🔀 1  📥 19" "$(show)"
 
 setup
 echo "[$(repo)]" > "$cache"
-assert_eq "何もなければ ✓ だけ" "🔧 app ✓" "$(show)"
+assert_eq "何もなければ ✓ だけ" "🔧 app  ✓" "$(show)"
 
 setup
 echo "[$(repo '.ready = 3'), $(repo '.name = "foo" | .label = "foo" | .decisions = [1]')]" > "$cache"
-assert_eq "リポジトリごとに区切って並べる" "🔧 app 📥3 │ foo 🙋1" "$(show)"
+assert_eq "リポジトリごとに区切って並べる" "🔧 app  📥 3  │  foo  🙋 1" "$(show)"
 
 setup
 echo "[$(repo)]" > "$cache"
 running my-app '{"mode":"implement","issue":14,"started_at":'"$((now - 750))"'}'
-assert_eq "実行中の回は、Issue と経過時間を出す" "🔧 app 🏃#14 12m" "$(show)"
+assert_eq "実行中の回は、Issue と経過時間を出す" "🔧 app  🏃 #14 12m" "$(show)"
 running my-app '{"mode":"plan","issue":null,"started_at":'"$((now - 3900))"'}'
-assert_eq "企画の回は 🏃企画（1時間を超えたら時間も）" "🔧 app 🏃企画 1h05m" "$(show)"
+assert_eq "企画の回は 🏃企画（1時間を超えたら時間も）" "🔧 app  🏃 企画 1h05m" "$(show)"
 running my-app '{"mode":"review","issue":null,"started_at":'"$now"'}'
-assert_eq "精査の回は 🏃精査" "🔧 app 🏃精査 0m" "$(show)"
+assert_eq "精査の回は 🏃精査" "🔧 app  🏃 精査 0m" "$(show)"
 
 setup
 echo "[$(repo)]" > "$cache"
@@ -78,28 +78,28 @@ running my-app '{"mode":"implement","issue":14,"started_at":1}'
 sleep 30 & dead=$!
 kill "$dead"; wait "$dead" 2>/dev/null
 echo "$dead" > "$CLAUDE_AUTO_DEV_STATE_DIR/locks/my-app/pid"
-assert_eq "落ちてロックだけ残っていれば 🏃 を出さない" "🔧 app ✓" "$(show)"
+assert_eq "落ちてロックだけ残っていれば 🏃 を出さない" "🔧 app  ✓" "$(show)"
 
 setup
 echo "[$(repo '.in_progress = [{number: 8}]')]" > "$cache"
-assert_eq "作業中のラベルだけで実行中でなければ 🏃 を出さない" "🔧 app ✓" "$(show)"
+assert_eq "作業中のラベルだけで実行中でなければ 🏃 を出さない" "🔧 app  ✓" "$(show)"
 
 setup
 next=$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-11-18 18:00:00' +%s)
 later=$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-11-18 20:00:00' +%s)
 echo "[$(repo ".schedule.next_at = $later | .runs.today.count = 1 | .runs.today.cost = 0.4"),
   $(repo ".name = \"foo\" | .label = \"foo\" | .schedule.next_at = $next | .runs.today.count = 2 | .runs.today.cost = 1.7")]" > "$cache"
-assert_eq "最後に、いちばん近い次の起動と今日の回数・費用をまとめて出す" "🔧 app ✓ │ foo ✓ │ ⏩18:00 🔁3 💰2.10" "$(show)"
+assert_eq "最後に、いちばん近い次の起動と今日の回数・費用をまとめて出す" "🔧 app  ✓  │  foo  ✓  │  ⏩ 18:00  🔁 3  💰 2.10" "$(show)"
 
 setup
 echo "[$(repo '.schedule.missed_at = 1')]" > "$cache"
-assert_eq "起動の見落としは 🚨" "🔧 app 🚨" "$(show)"
+assert_eq "起動の見落としは 🚨" "🔧 app  🚨" "$(show)"
 echo "[$(repo '.error = "gh で取得できません"')]" > "$cache"
-assert_eq "gh の失敗は 🚨" "🔧 app 🚨" "$(show)"
+assert_eq "gh の失敗は 🚨" "🔧 app  🚨" "$(show)"
 echo "[$(repo '.notices = [{at: 1, title: "が失敗", message: "m"}]')]" > "$cache"
-assert_eq "失敗の通知は 🚨" "🔧 app 🚨" "$(show)"
+assert_eq "失敗の通知は 🚨" "🔧 app  🚨" "$(show)"
 echo "[$(repo '.notices = [{at: 1, title: "が判断待ち", message: "m"}]')]" > "$cache"
-assert_eq "失敗でない通知は 🚨 にしない" "🔧 app ✓" "$(show)"
+assert_eq "失敗でない通知は 🚨 にしない" "🔧 app  ✓" "$(show)"
 
 # tmux は幅が狭い（East Asian Width が W でない）絵文字を1桁と数え、iTerm2 は2桁で描くので、後ろの文字に重なる。
 # 絵文字は幅が広いものだけを使う（✓ と区切りの │ は1桁で描かれるので除く）
@@ -125,16 +125,16 @@ echo "[$(repo '.ready = 1')]" > "$cache"
 touch -t 202601010000 "$cache"
 FAKE_STATUS="[$(repo '.ready = 7')]"
 export FAKE_STATUS
-assert_eq "古いキャッシュでも、待たずにそれを出す" "🔧 app 📥1" "$("$bin/tmux-claude-auto-dev")"
+assert_eq "古いキャッシュでも、待たずにそれを出す" "🔧 app  📥 1" "$("$bin/tmux-claude-auto-dev")"
 for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q '"ready":7' "$cache" 2>/dev/null && break; sleep 0.2; done
-assert_eq "古いキャッシュは裏で取り直す" "🔧 app 📥7" "$("$bin/tmux-claude-auto-dev")"
+assert_eq "古いキャッシュは裏で取り直す" "🔧 app  📥 7" "$("$bin/tmux-claude-auto-dev")"
 
 setup
 FAKE_STATUS="[$(repo '.decisions = [1]')]"
 export FAKE_STATUS
 assert_eq "キャッシュがなければ、取り直している間は … を出す" "🔧 …" "$("$bin/tmux-claude-auto-dev")"
 wait_cache
-assert_eq "取り直したら件数を出す" "🔧 app 🙋1" "$("$bin/tmux-claude-auto-dev")"
+assert_eq "取り直したら件数を出す" "🔧 app  🙋 1" "$("$bin/tmux-claude-auto-dev")"
 
 setup
 cat > "$tmp/status" <<'EOF'
@@ -146,7 +146,7 @@ echo "[$(repo '.ready = 1')]" > "$cache"
 touch -t 202601010000 "$cache"
 "$bin/tmux-claude-auto-dev" >/dev/null
 sleep 0.5
-assert_eq "取り直しに失敗したら、前のキャッシュを残す" "🔧 app 📥1" "$("$bin/tmux-claude-auto-dev")"
+assert_eq "取り直しに失敗したら、前のキャッシュを残す" "🔧 app  📥 1" "$("$bin/tmux-claude-auto-dev")"
 
 # ---- ポップアップ ----
 setup

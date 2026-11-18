@@ -1,6 +1,6 @@
 #!/bin/bash
 # claude-auto-dev の状況（claude-auto-dev-status --json）を、tmux のステータスバー（2行目）向けに絵文字と件数で出力する。
-# 例: 🔧 kbi 🏃#14 12m 🙋1 🔀2 │ foo ✓ │ ⏩20:00 🔁4 💰2.50
+# 例: 🔧 kbi  🏃 #14 12m  🙋 1  🔀 2  │  foo  ✓  │  ⏩ 20:00  🔁 4  💰 2.50
 #   リポジトリごとに略称と件数を並べる（0件のものは出さない。何もなければ ✓）
 #   🏃 実行中の回（#Issue・企画・精査と経過時間）/ 🙋 判断待ちの Issue / 🔀 開いている PR / 📥 着手できる Issue
 #   🚨 起動の見落とし・gh の失敗・直近の失敗の通知
@@ -62,17 +62,17 @@ jq -r --argjson running "$running" --argjson now "$now" '
   def segment:
     ($running[.name] // null) as $r | .label as $label
     | (.schedule.missed_at or .error or any(.notices[]; .title | test("失敗"))) as $warn
-    | [if $r then "🏃\($r | run)" else empty end,
-       (.decisions | length) as $d | if $d > 0 then "🙋\($d)" else empty end,
-       (.prs | length) as $p | if $p > 0 then "🔀\($p)" else empty end,
-       if .ready > 0 then "📥\(.ready)" else empty end,
+    | [if $r then "🏃 \($r | run)" else empty end,
+       (.decisions | length) as $d | if $d > 0 then "🙋 \($d)" else empty end,
+       (.prs | length) as $p | if $p > 0 then "🔀 \($p)" else empty end,
+       if .ready > 0 then "📥 \(.ready)" else empty end,
        if $warn then "🚨" else empty end]
-    | "\($label) " + (if length == 0 then "✓" else join(" ") end);
+    | "\($label)  " + (if length == 0 then "✓" else join("  ") end);
   if length == 0 then empty else
     ([.[].schedule.next_at // empty] | min) as $next
     | (map(.runs.today.count) | add) as $count
     | (map(.runs.today.cost) | add) as $cost
-    | [if $next then "⏩\($next | strflocaltime("%H:%M"))" else empty end,
-       if $count > 0 then "🔁\($count) 💰\($cost | money)" else empty end] as $total
-    | "🔧 " + ([.[] | segment] + (if ($total | length) > 0 then [$total | join(" ")] else [] end) | join(" │ "))
+    | [if $next then "⏩ \($next | strflocaltime("%H:%M"))" else empty end,
+       if $count > 0 then "🔁 \($count)  💰 \($cost | money)" else empty end] as $total
+    | "🔧 " + ([.[] | segment] + (if ($total | length) > 0 then [$total | join("  ")] else [] end) | join("  │  "))
   end' "$cache" 2>/dev/null
