@@ -17,22 +17,23 @@ assert_eq() {
   fi
 }
 
-# 偽の claude-auto-dev-status は FAKE_STATUS を出す
+# 偽の claude-auto-dev-status は FAKE_STATUS を出す。FAKE_DELAY（秒）があれば、出す前にその分だけ待つ
 setup() {
   tmp=$(mktemp -d)
-  export XDG_CACHE_HOME="$tmp" FAKE_LOG="$tmp/fake.log" FAKE_STATUS='[]' CLAUDE_AUTO_DEV_STATE_DIR="$tmp/state"
+  export XDG_CACHE_HOME="$tmp" FAKE_LOG="$tmp/fake.log" FAKE_STATUS='[]' FAKE_DELAY=0 CLAUDE_AUTO_DEV_STATE_DIR="$tmp/state"
   cache="$tmp/claude-auto-dev-status.json"
   cat > "$tmp/status" <<'EOF'
 #!/bin/bash
 echo "status $*" >> "$FAKE_LOG"
+sleep "$FAKE_DELAY"
 if [ "$1" = --json ]; then echo "$FAKE_STATUS"; else echo "状況の全文"; fi
 EOF
   chmod +x "$tmp/status"
   export TMUX_AUTO_DEV_STATUS="$tmp/status"
 }
 calls() { if [ -f "$FAKE_LOG" ]; then grep -c '^status --json' "$FAKE_LOG"; else echo 0; fi; }
-# 裏で取り直すので、キャッシュができるまで少し待つ
-wait_cache() { for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$cache" ] && return; sleep 0.2; done; }
+# 裏で取り直すので、キャッシュができるまで少し待つ（最長5秒）
+wait_cache() { for _ in $(seq 25); do [ -s "$cache" ] && return; sleep 0.2; done; }
 
 # リポジトリ1つ分の集計。引数の jq の式で項目を上書きする（例: repo '.decisions = [1, 2]'）
 repo() {
@@ -124,14 +125,17 @@ setup
 echo "[$(repo '.ready = 1')]" > "$cache"
 touch -t 202601010000 "$cache"
 FAKE_STATUS="[$(repo '.ready = 7')]"
-export FAKE_STATUS
+# 取り直しに時間がかかるようにする。すぐ終わると、古いキャッシュを読む前に新しいキャッシュに入れ替わることがあり、
+# 待たずに出したのかを確かめられない
+export FAKE_STATUS FAKE_DELAY=2
 assert_eq "古いキャッシュでも、待たずにそれを出す" "🔧 app  📥 1" "$("$bin/tmux-claude-auto-dev")"
-for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q '"ready":7' "$cache" 2>/dev/null && break; sleep 0.2; done
+for _ in $(seq 35); do grep -q '"ready":7' "$cache" 2>/dev/null && break; sleep 0.2; done
 assert_eq "古いキャッシュは裏で取り直す" "🔧 app  📥 7" "$("$bin/tmux-claude-auto-dev")"
 
 setup
 FAKE_STATUS="[$(repo '.decisions = [1]')]"
-export FAKE_STATUS
+# 上と同じ理由で、取り直しに時間がかかるようにする
+export FAKE_STATUS FAKE_DELAY=2
 assert_eq "キャッシュがなければ、取り直している間は … を出す" "🔧 …" "$("$bin/tmux-claude-auto-dev")"
 wait_cache
 assert_eq "取り直したら件数を出す" "🔧 app  🙋 1" "$("$bin/tmux-claude-auto-dev")"
