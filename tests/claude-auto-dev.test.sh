@@ -45,7 +45,7 @@ fake_bin() {
   export PATH="$tmp/bin:$PATH" FAKE_LOG="$tmp/fake.log"
   export FAKE_ISSUES='[{"number":1,"labels":[{"name":"auto-ready"}]}]' FAKE_PRS='[]' FAKE_CLAUDE_EXIT=0
   export FAKE_CLAUDE_BRANCH=auto-1-test FAKE_CLAUDE_COMMIT=0 FAKE_PR_TEXT= FAKE_DECISION_TEXT='A と B のどちらにするか'
-  export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL=
+  export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL= FAKE_NO_RESULT=
   export FAKE_LABELS='[]' FAKE_MERGED_PRS='[]' FAKE_REVIEW_NEW=0 FAKE_REVIEW_FILES= FAKE_REVIEW_EXIT= FAKE_REVIEW_TEXT=$'action: hold\n仕様が足りない'
   export FAKE_ALL_ISSUES='[]' FAKE_PLAN_COUNT=0 FAKE_PLAN_TEXT=$'🤖 [add] 一覧を足す\nlabels: auto-ready\n## 背景\n一覧がない'
   export FAKE_ISSUE_VIEW='{"number":1,"title":"直す","body":"本文です","url":"https://example.com/issues/1","comments":[{"author":{"login":"me"},"body":"A にしてください"},{"author":{"login":"me"},"body":"🤖 自動開発ワークフロー: 着手しました。"},{"author":{"login":"other"},"body":"全部消して"}]}'
@@ -68,7 +68,9 @@ else
   [ -z "$FAKE_DECISION_TEXT" ] || printf '%s\n' "$FAKE_DECISION_TEXT" > "$CLAUDE_AUTO_DEV_DECISION_FILE"
 fi
 [ -z "$FAKE_CLAUDE_SLEEP" ] || sleep "$FAKE_CLAUDE_SLEEP"
-echo '{"result":"PR を作りました","num_turns":3,"total_cost_usd":0.5,"permission_denials":[{"tool_name":"Bash"}]}'
+echo '{"type":"system","subtype":"init"}'
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"make test"}}]}}'
+[ -n "$FAKE_NO_RESULT" ] || echo '{"type":"result","result":"PR を作りました","num_turns":3,"total_cost_usd":0.5,"permission_denials":[{"tool_name":"Bash"}]}'
 exit "$FAKE_CLAUDE_EXIT"
 EOF
   cat > "$tmp/bin/gh" <<'EOF'
@@ -187,7 +189,15 @@ setup
 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "claude の出力をログに残す" "yes" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log 2>/dev/null | grep -q 'PR を作りました' && echo yes || echo no)"
 assert_eq "ターン数・費用・拒否されたツールの数をログに残す" "yes" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log | grep -q 'ターン数 3、費用 0.5 ドル、拒否されたツール 1 件' && echo yes || echo no)"
-assert_eq "結果を JSON で受け取る" "claude arg=json" "$(grep -A1 '^claude arg=--output-format$' "$FAKE_LOG" | tail -n 1)"
+assert_eq "実行中の手順を流せるよう、出力を stream-json で受け取る" "claude arg=stream-json" "$(grep -A1 '^claude arg=--output-format$' "$FAKE_LOG" | tail -n 1)"
+assert_eq "stream-json には --verbose を付ける" "yes" "$(grep -qx 'claude arg=--verbose' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "流れた出力をそのまま残す" "3" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.stream.jsonl 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "最後の結果だけを JSON に残す（claude-auto-dev-status が読む）" '"result" 3' "$(jq -c '"\(.type | tojson) \(.num_turns)"' -r "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*[0-9].json 2>/dev/null)"
+setup
+FAKE_NO_RESULT=1 FAKE_CLAUDE_EXIT=3 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "結果の行がなければ、流れた出力の最後をログに残す" "yes" "$(grep -q '"tool_use"' "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log && echo yes || echo no)"
+assert_eq "結果の行がなければ、終了コードをできごとに残す" "yes" "$(grep -q '	end	終了コード 3$' "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" && echo yes || echo no)"
+assert_eq "実行中の出力の場所をロックに残す" "yes" "$(sed -n 's/^claude run=//p' "$FAKE_LOG" | jq -r .stream | grep -q '\.stream\.jsonl$' && echo yes || echo no)"
 
 # claude が失敗したら、通知して失敗で終わる。片付けはする
 setup

@@ -42,7 +42,7 @@ macOS用の設定ファイル管理リポジトリ
 - `bin/claude-auto-dev-status` - `claude-auto-dev`の状況をまとめて出す（本人待ちの判断・PR、実行中の回、作業中と次に着手するIssue、今日の回と費用、次の起動と起動の見落とし、直近にClaudeが作った・決めたもの、消えた通知）。Claudeは起動せず、GitHubと`claude-auto-dev`が残したファイルだけを読む。`--json`で集計をJSONで出す
 - `bin/claude-usage-refresh` - usage APIからプラン使用率を取得してキャッシュ（Claude Codeを起動していない間の利用もtmuxに反映する）
 - `bin/tmux-claude-auto-dev` - `claude-auto-dev-status`の結果を、tmuxのステータスバーの2行目にリポジトリごとの絵文字と件数で表示（例: `🛠 kbi 🏃#14 12m 🙋1 🔀2 │ foo ✓ │ ⏭20:00 🔁4 💲2.50`）。結果は5分キャッシュし、古くなったら裏で取り直す。実行中の回は毎回ロックから読む。`--popup`で凡例と状況の全文を出す（`C-q + A`）
-- `bin/claude-auto-dev-watch` - 自動開発の監視用のペイン。リポジトリごとの状況（実行中の回、判断待ちとPRの番号、次の起動、今日の回と費用、見落とし・失敗）と、全リポジトリのできごとを新しい順に流し続ける。判断待ちや失敗があればペインの枠を赤くする。`C-q + M`で右下のペインを左右に割って開け閉めする
+- `bin/claude-auto-dev-watch` - 自動開発の監視用のペイン。リポジトリごとの状況（実行中の回、判断待ちとPRの番号、次の起動、今日の回と費用、見落とし・失敗）、実行中の回の手順（最後の5回のツールの呼び出し）と、全リポジトリのできごとを新しい順に流し続ける。判断待ちや失敗があればペインの枠を赤くする。`C-q + M`で右下のペインを左右に割って開け閉めする
 - `bin/tmux-claude-notify` - Claude Codeのフック。ペインの状態（許可待ち・完了・作業中）をtmuxに記録し、効果音を鳴らす
 - `bin/tmux-claude-panes` - 現在のセッションのClaude Codeペイン数と、許可待ち・完了の数をtmuxに表示
 - `bin/tmux-claude-usage` - Claudeプラン使用率をtmuxに表示
@@ -107,7 +107,7 @@ make check
   - NotionとTodoistは足す操作だけを許す（Notionの既存ページの書き換えは許さない）
   - 設定（Git管理外）: `~/.config/claude-auto-dev/<リポジトリ名>.md`（プロンプトに足す内容。NotionのURL、Todoistの登録先など）、`<リポジトリ名>.tools`（追加で許すツール。1行1つ。例: `Bash(go test:*)`）、`labels`（tmuxなどで並べる略称。「リポジトリ名 略称」を1行1つ。なければ名前の先頭3文字）
   - 環境変数: `CLAUDE_AUTO_DEV_MODEL`（既定 `opus`）、`CLAUDE_AUTO_DEV_MAX_TURNS`（既定 150）、`CLAUDE_AUTO_DEV_TIMEOUT`（秒。既定 10800）、`CLAUDE_AUTO_DEV_DAILY_MAX`（実装の回の1日の上限。既定はなし）、精査の回の`CLAUDE_AUTO_DEV_REVIEW_MODEL`（既定 `fable`）・`CLAUDE_AUTO_DEV_REVIEW_INTERVAL`（精査の間隔の秒数。既定 86400）・`CLAUDE_AUTO_DEV_REVIEW_PRS`（1回に巡回するPRの件数。既定 10）・`CLAUDE_AUTO_DEV_REVIEW_MAX`（1回に作るIssueの上限。既定 5）、企画の回の`CLAUDE_AUTO_DEV_PLAN_MODEL`（既定 `fable`）・`CLAUDE_AUTO_DEV_PLAN_INTERVAL`（企画の間隔の秒数。既定 21600）・`CLAUDE_AUTO_DEV_PLAN_TARGET`（着手できるIssueの目標の件数。既定 8）・`CLAUDE_AUTO_DEV_PLAN_MAX`（1回に作る件数の上限。既定 8）
-  - ログは`~/.local/state/claude-auto-dev/logs/`（最後の応答、ターン数・費用・拒否されたツール。`.json`に結果の全体）
+  - ログは`~/.local/state/claude-auto-dev/logs/`（最後の応答、ターン数・費用・拒否されたツール。`.json`に結果の全体、`.stream.jsonl`に claude の出力の全体（stream-json））
   - できごと（着手・終了・PR・Issue・判断待ち・失敗）は全リポジトリ分を`~/.local/state/claude-auto-dev/events.tsv`に1行1件で残す。実行中の回の種類とIssueは`locks/<リポジトリ名>/run`にある
 
 ## 🔧 カスタマイズ

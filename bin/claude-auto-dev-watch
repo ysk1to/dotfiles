@@ -1,5 +1,6 @@
 #!/bin/bash
-# claude-auto-dev の状況を、tmux の監視用のペインに流し続ける。上にリポジトリごとの状況、下に全リポジトリのできごと
+# claude-auto-dev の状況を、tmux の監視用のペインに流し続ける。上にリポジトリごとの状況、中に実行中の回の手順
+# （claude の stream-json の出力から、最後の5回のツールの呼び出し）、下に全リポジトリのできごと
 # （claude-auto-dev が残す events.tsv）を新しい順に出す。判断待ちや見落とし・失敗があれば、ペインを待機中
 # （@claude_state = waiting。ほかの Claude のペインと同じ赤い枠）にする。
 # 使い方: claude-auto-dev-watch [--once | --toggle]
@@ -28,25 +29,37 @@ if [ -n "$TMUX_PANE" ]; then
 fi
 
 frame() {
-  local now rows cols running events
+  local now rows cols running events steps name file
   now="${CLAUDE_AUTO_DEV_NOW:-$(date +%s)}"
   rows="${LINES:-$(tput lines)}"
   cols="${COLUMNS:-$(tput cols)}"
   "$bar" > /dev/null
   running=$("$bar" --running)
   events=$(tail -n 200 "$state_dir/events.tsv" 2>/dev/null)
+  # 実行中の回ごとに、最後の5回のツールの呼び出し（ツール名と対象）。書きかけの行は読み飛ばす
+  steps='{}'
+  for name in $(jq -r 'keys[]' <<< "$running"); do
+    file=$(jq -r --arg name "$name" '.[$name].stream // empty' <<< "$running")
+    [ -f "$file" ] || continue
+    steps=$(tail -n 200 "$file" | jq -Rnc --arg name "$name" --arg wt "$state_dir/worktrees/$name/" --argjson steps "$steps" '
+      [inputs | fromjson? | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")
+        | {name: (.name | sub("^mcp__claude_ai_"; "")),
+           target: (.input | .file_path // .command // .pattern // .path // .url // .description // "" | tostring
+             | ltrimstr($wt) | gsub("\n"; " "))}]
+      | $steps + {($name): .[-5:]}') || steps='{}'
+  done
   if [ ! -s "$cache" ] || [ "$(jq length "$cache" 2>/dev/null)" = 0 ]; then
     echo "claude-auto-dev はまだ動いていません"
     return
   fi
-  jq -r --argjson running "$running" --argjson now "$now" --argjson rows "$rows" --argjson cols "$cols" \
+  jq -r --argjson running "$running" --argjson steps "$steps" --argjson now "$now" --argjson rows "$rows" --argjson cols "$cols" \
     --arg events "$events" '
     def money: (. * 100 | round) as $c | "\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)";
     def elapsed: (($now - .) / 60 | floor) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" else "\($m)m" end;
     # 今日なら時刻、それより前なら日付
     def when: if strflocaltime("%Y%m%d") == ($now | strflocaltime("%Y%m%d")) then strflocaltime("%H:%M") else strflocaltime("%m/%d") end;
-    # 端末での幅（全角は2、絵文字の異体字セレクタは0）で切る
-    def cw: if . == 65039 then 0 elif . > 4351 then 2 else 1 end;
+    # 端末での幅（全角は2、罫線は1、絵文字の異体字セレクタは0）で切る
+    def cw: if . == 65039 then 0 elif . >= 9472 and . <= 9599 then 1 elif . > 4351 then 2 else 1 end;
     def trunc($w):
       if (explode | map(cw) | add // 0) <= $w then .
       else (reduce explode[] as $c ({s: [], w: 0, full: false};
@@ -66,13 +79,19 @@ frame() {
       | "\(.label)  " + (if ($items + $warns | length) == 0 then "✓" else $items | join("   ") end),
         ($warns[] | "     " + .),
         (if ($plan | length) > 0 then "     " + ($plan | join("  ")) else empty end);
+    def rule($title): $title + " " + ("─" * ([$cols - ($title | explode | map(cw) | add) - 1, 0] | max));
+    # 実行中の回の見出しと、ツールの呼び出し（新しいものが下）
+    def live:
+      .label as $label | ($running[.name] // empty) as $r
+      | rule("── 実行中 \($label) \($r | run)"),
+        (($steps[.name] // [])[] | "\(.name)\(" " * ([6 - (.name | length), 0] | max)) \(.target)");
     (map({key: .name, value: .label}) | from_entries) as $labels
-    | (["auto-dev  \($now | strflocaltime("%H:%M"))", (.[] | repo)] | map(trunc($cols))) as $head
+    | (["auto-dev  \($now | strflocaltime("%H:%M"))", (.[] | repo), (.[] | live)] | map(trunc($cols))) as $head
     | {start: "🏃", end: "🏁", pr: "🔀", issue: "📝", decision: "🙋", fail: "⚠️", notice: "💬"} as $icons
     | [$events | split("\n")[] | select(. != "") | split("\t") | select(length >= 4) | .[0] |= tonumber]
     | [sort_by(.[0])[] | "\(.[0] | when) \($labels[.[1]] // .[1][0:3]) \($icons[.[2]] // "・") \(.[3:] | join(" "))" | trunc($cols)]
       | reverse | .[:([$rows - ($head | length) - 2, 0] | max)] as $lines
-    | $head[], "── できごと " + ("─" * ([$cols - 12, 0] | max)), $lines[]' "$cache"
+    | $head[], (rule("── できごと") | trunc($cols)), $lines[]' "$cache"
 }
 
 # 判断待ち・見落とし・gh の失敗・失敗の通知があれば、ペインを待機中（赤い枠）にする
