@@ -58,8 +58,8 @@ frame() {
     def elapsed: (($now - .) / 60 | floor) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" else "\($m)m" end;
     # 今日なら時刻、それより前なら日付
     def when: if strflocaltime("%Y%m%d") == ($now | strflocaltime("%Y%m%d")) then strflocaltime("%H:%M") else strflocaltime("%m/%d") end;
-    # 端末での幅（全角は2、罫線は1、絵文字の異体字セレクタは0）で切る
-    def cw: if . == 65039 then 0 elif . >= 9472 and . <= 9599 then 1 elif . > 4351 then 2 else 1 end;
+    # 端末での幅（全角は2、記号（…など）と罫線は1、絵文字の異体字セレクタは0）で切る
+    def cw: if . == 65039 then 0 elif (. >= 8192 and . <= 8303) or (. >= 9472 and . <= 9599) then 1 elif . > 4351 then 2 else 1 end;
     def trunc($w):
       if (explode | map(cw) | add // 0) <= $w then .
       else (reduce explode[] as $c ({s: [], w: 0, full: false};

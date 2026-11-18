@@ -133,6 +133,11 @@ assert_eq "長いできごとはペインの幅で切る" "yes" "$([ "$width" -l
 
 setup
 echo "[$(repo)]" > "$cache"
+rule=$(frame | grep '^── できごと')
+assert_eq "見出しの罫線はペインの幅ちょうど（罫線は幅1、全角は幅2で数える）" "60" "$(printf '%s' "$rule" | perl -CS -ne 'my $w = 0; $w += /[\x{3000}-\x{FFFF}]/ ? 2 : 1 for split //; print $w')"
+
+setup
+echo "[$(repo)]" > "$cache"
 for i in $(seq 1 100); do event "$((now - 1000 + i))" my-app start "#$i に着手"; done
 assert_eq "できごとはペインの高さに収まる分だけ出す" "yes" "$([ "$(frame | wc -l)" -le 40 ] && echo yes || echo no)"
 
