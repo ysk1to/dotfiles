@@ -446,7 +446,7 @@ assert_eq "判断待ちを通知する" "1" "$(grep -c '^osascript.*判断待ち
 # ---- 企画の回 ----
 # リポジトリに企画の手順（.claude/auto-plan.md）があれば、決まった間隔（既定は6時間）で、
 # 実装の代わりに企画の回を起動する。claude は Issue の案をファイルに書き、スクリプトが Issue にする。
-# 作る件数は、着手できる auto-ready の Issue が目標の件数（既定は12件）になるまで
+# 作る件数は、着手できる auto-ready の Issue が目標の件数（既定は8件）になるまで
 enable_plan() {
   (cd "$tmp/seed" && mkdir -p .claude && echo 企画の手順 > .claude/auto-plan.md && git add .claude &&
     git commit -qm plan && git push -q origin main)
@@ -490,18 +490,18 @@ setup
 FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "企画の手順がなければ企画の回を起動しない" "0" "$(claude_calls)"
 
-# 着手できる Issue が目標の件数（既定は12件）に足りていれば、企画せずに実装する。目標は環境変数で変えられる
+# 着手できる Issue が目標の件数（既定は8件）に足りていれば、企画せずに実装する。目標は環境変数で変えられる
 setup
 enable_plan
-FAKE_ISSUES=$(ready_issues 12) "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+FAKE_ISSUES=$(ready_issues 8) "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
-assert_eq "auto-ready が12件あれば実装の回にする" "yes" "$(echo "$prompt" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+assert_eq "auto-ready が8件あれば実装の回にする" "yes" "$(echo "$prompt" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
 assert_eq "実装の回の既定のモデルは opus のまま" "opus" "$(args_after --model)"
 setup
 enable_plan
-FAKE_ISSUES=$(ready_issues 11) "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+FAKE_ISSUES=$(ready_issues 7) "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
-assert_eq "auto-ready が11件なら企画する（少なくなるのを待たない）" "yes" "$(echo "$prompt" | grep -q '.claude/auto-plan.md' && echo yes || echo no)"
+assert_eq "auto-ready が7件なら企画する（少なくなるのを待たない）" "yes" "$(echo "$prompt" | grep -q '.claude/auto-plan.md' && echo yes || echo no)"
 setup
 enable_plan
 CLAUDE_AUTO_DEV_PLAN_TARGET=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
@@ -608,8 +608,8 @@ FAKE_ISSUES='[]' FAKE_PLAN_COUNT=3 CLAUDE_AUTO_DEV_PLAN_MAX=2 "$bin/claude-auto-
 assert_eq "1回に作る件数の上限を環境変数で変えられる" "2" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
 setup
 enable_plan
-FAKE_ISSUES=$(ready_issues 10) FAKE_PLAN_COUNT=5 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "目標に足りない分だけ作る（10件あれば2件）" "2" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
+FAKE_ISSUES=$(ready_issues 6) FAKE_PLAN_COUNT=5 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "目標に足りない分だけ作る（6件あれば2件）" "2" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
 assert_eq "足りない件数をプロンプトで伝える" "yes" "$(grep -q '2 件まで' "$FAKE_LOG" && echo yes || echo no)"
 
 # 企画の回のモデルは環境変数で変えられる
@@ -807,6 +807,52 @@ enable_review
 FAKE_MERGED_PRS="$merged" FAKE_REVIEW_NEW=1 FAKE_REVIEW_EXIT=3 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "精査が失敗したら PR を精査済みにしない" "0" "$(grep -c '^gh pr edit' "$FAKE_LOG")"
 assert_eq "精査が失敗したら Issue を作らない（PR の巡回）" "0" "$(grep -c '^gh issue create' "$FAKE_LOG")"
+
+# ---- 優先 ----
+# 着手の順は、p1 → p2 → ラベルなし。同じ段階の中では番号の小さい順。あとから出た大事な Issue が、
+# 先に並んだ Issue の後ろで待たされないようにする
+started() { sed -n 's/^gh issue edit issue edit \([0-9]*\) --remove-label auto-ready --add-label auto-in-progress$/\1/p' "$FAKE_LOG"; }
+prio() { jq -cn --argjson n "$1" '{number: $n, labels: ([{name: "auto-ready"}] + ($ARGS.positional | map({name: .})))}' --args "${@:2}"; }
+
+setup
+FAKE_ISSUES="[$(prio 3),$(prio 5 p2),$(prio 9 p1),$(prio 4 p2),$(prio 12 p1)]" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "p1 の Issue から着手する（その中では番号の小さい順）" "9" "$(started)"
+setup
+FAKE_ISSUES="[$(prio 3),$(prio 5 p2),$(prio 4 p2)]" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "p1 がなければ p2 の Issue から着手する" "4" "$(started)"
+setup
+FAKE_ISSUES="[$(prio 7),$(prio 3)]" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "優先のラベルがなければ番号の小さい順" "3" "$(started)"
+setup
+FAKE_ISSUES="[$(prio 3),$(prio 9 p1 needs-decision),$(prio 8 p1 in-progress)]" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "判断待ち・作業中の Issue は、p1 でも着手しない" "3" "$(started)"
+
+# 企画の回は p2 を付けられる（1回に1件まで）。p1 は本人だけが付けるので、claude が書いても p2 にする
+p2_count() { issue_creates | grep -cx "$1"; }
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_PLAN_TEXT=$'🤖 [fix] 直す\nlabels: auto-ready, p2\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "企画の回は p2 を付けられる" "1" "$(p2_count p2)"
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_PLAN_TEXT=$'🤖 [fix] 直す\nlabels: auto-ready, p1\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "claude が p1 と書いても p2 にする" "10" "$(p2_count p2)$(p2_count p1)"
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=3 FAKE_PLAN_TEXT=$'🤖 [fix] 直す\nlabels: auto-ready, p2\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "企画の回が p2 を付けられるのは1回に1件まで" "1" "$(p2_count p2)"
+assert_eq "p2 を付けなかった案も Issue にはする" "3" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "書かれていなければ p2 を付けない" "0" "$(p2_count p2)"
+assert_eq "p2 を1件まで使えるとプロンプトで伝える" "yes" "$(grep -q 'p2' "$FAKE_LOG" && echo yes || echo no)"
+
+# 精査の回が PR から見つけた問題の Issue には、p2 を必ず付ける（壊れたものを直すのを、新しい作業より先にする）
+setup
+enable_review
+FAKE_MERGED_PRS="$merged" FAKE_REVIEW_NEW=2 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "精査が作った Issue には p2 を付ける" "2" "$(p2_count p2)"
 
 # ---- 1日の上限 ----
 # 実装の回は、1日に CLAUDE_AUTO_DEV_DAILY_MAX 回まで（指定がなければ数えない）。起動の回数を増やしても、

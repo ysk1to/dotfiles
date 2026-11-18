@@ -82,12 +82,13 @@ make check
 
 ### カスタムスクリプト
 - `claude-auto-dev <リポジトリのパス>` - 自動開発ワークフローを1回動かす。リモートの最新から専用のworktreeを作って作業させ、終わったら片付ける
-  - `auto-ready`のIssueのうち番号のいちばん小さいものを選ぶ。判断待ち（`needs-decision`）と作業中（`auto-in-progress`、対話のセッションが作業中の`in-progress`）のIssueは選ばない
+  - `auto-ready`のIssueを、`p1`→`p2`→ラベルなしの順に、同じ段階の中では番号の小さい順に選ぶ（あとから出た大事なIssueを先にできる）。判断待ち（`needs-decision`）と作業中（`auto-in-progress`、対話のセッションが作業中の`in-progress`）のIssueは選ばない
   - ClaudeにはGitHubを触らせない。Issueの選択・取得、着手のラベルとコメント、push、PRの作成はスクリプトが行う。Issueの本文とコメントはファイルで渡し、コメントは「本人の判断」「ワークフローが書いたもの」「ほかの人のもの」に仕分ける
   - ClaudeがコミットしてPRのファイル（1行目がタイトル、2行目以降が本文）を書いたら、スクリプトが`auto-`のブランチをpushし、`auto-dev`と`no-auto-merge`のラベル付きでPRを作る（慣らしが済んだら`CLAUDE_AUTO_DEV_AUTO_MERGE=1`で`no-auto-merge`を外す）。判断待ちのファイルを書いたら、その中身をIssueにコメントして`needs-decision`にする
   - 企画の回: リポジトリに`.claude/auto-plan.md`があれば、前の企画から6時間たった回に、実装の代わりに企画の回を起動する（1回に1つ）。Issueが少なくなるのを待たないのは、設計の残りを足すだけでなく、改善や新機能を定期的に考えさせるため。ClaudeはIssueの案を1件1ファイルで書き（1行目がタイトル、2行目が`labels: ラベル, …`、3行目以降が本文）、スクリプトが`auto-planned`ラベル付きのIssueにする。コードは変えられない
     - 付けられるラベルは`auto-ready`・`needs-decision`・`protected`・`auto-decided`だけ。`needs-decision`か`protected`（`.github/`の変更など、自動開発に任せないもの）のIssueには`auto-ready`を付けない
-    - 1回に作るのは、着手できる`auto-ready`のIssueが12件になるまでで、多くても8件。すでに12件あれば企画しない。件数は上限で、出す価値のある案がなければ1件も作らない
+    - 優先の`p2`は、企画の案には1回に1件まで付けられ、精査がPRから見つけた問題（`auto-finding`）には必ず付く。`p1`は本人だけが付ける（Claudeが`p1`と書いても`p2`にする）
+    - 1回に作るのは、着手できる`auto-ready`のIssueが8件になるまで。すでに8件あれば企画しない。件数は上限で、出す価値のある案がなければ1件も作らない
     - 前の企画から、mainもIssueの開閉も変わっていなければくり返さない（出せる案がないのに毎回起動しないため）。失敗したら通知する
     - 今あるIssue（開いているものは本文つき、閉じたものはタイトルだけ）は、スクリプトがファイルで渡す
   - 精査の回: リポジトリに`.claude/auto-plan-review.md`があれば、前の精査から1日たった回に、企画でも実装でもなく精査の回を起動する。企画と同じ回にしないのは、案を書いた流れに引きずられないようにするため。コードは変えられない
@@ -101,7 +102,7 @@ make check
   - Bashのコマンドはサンドボックスで囲み、worktreeの外に書けないようにする（コミット用に元のリポジトリの`.git`だけ許す）。リポジトリごとの追加は`<リポジトリ名>.sandbox.json`（`sandbox`設定の中身。例: `{"filesystem":{"allowWrite":["~/.npm"]},"network":{"allowedDomains":["registry.npmjs.org"]}}`）。サンドボックス自体は切れない
   - NotionとTodoistは足す操作だけを許す（Notionの既存ページの書き換えは許さない）
   - 設定（Git管理外）: `~/.config/claude-auto-dev/<リポジトリ名>.md`（プロンプトに足す内容。NotionのURL、Todoistの登録先など）、`<リポジトリ名>.tools`（追加で許すツール。1行1つ。例: `Bash(go test:*)`）
-  - 環境変数: `CLAUDE_AUTO_DEV_MODEL`（既定 `opus`）、`CLAUDE_AUTO_DEV_MAX_TURNS`（既定 150）、`CLAUDE_AUTO_DEV_TIMEOUT`（秒。既定 10800）、`CLAUDE_AUTO_DEV_DAILY_MAX`（実装の回の1日の上限。既定はなし）、精査の回の`CLAUDE_AUTO_DEV_REVIEW_MODEL`（既定 `fable`）・`CLAUDE_AUTO_DEV_REVIEW_INTERVAL`（精査の間隔の秒数。既定 86400）・`CLAUDE_AUTO_DEV_REVIEW_PRS`（1回に巡回するPRの件数。既定 10）・`CLAUDE_AUTO_DEV_REVIEW_MAX`（1回に作るIssueの上限。既定 5）、企画の回の`CLAUDE_AUTO_DEV_PLAN_MODEL`（既定 `fable`）・`CLAUDE_AUTO_DEV_PLAN_INTERVAL`（企画の間隔の秒数。既定 21600）・`CLAUDE_AUTO_DEV_PLAN_TARGET`（着手できるIssueの目標の件数。既定 12）・`CLAUDE_AUTO_DEV_PLAN_MAX`（1回に作る件数の上限。既定 8）
+  - 環境変数: `CLAUDE_AUTO_DEV_MODEL`（既定 `opus`）、`CLAUDE_AUTO_DEV_MAX_TURNS`（既定 150）、`CLAUDE_AUTO_DEV_TIMEOUT`（秒。既定 10800）、`CLAUDE_AUTO_DEV_DAILY_MAX`（実装の回の1日の上限。既定はなし）、精査の回の`CLAUDE_AUTO_DEV_REVIEW_MODEL`（既定 `fable`）・`CLAUDE_AUTO_DEV_REVIEW_INTERVAL`（精査の間隔の秒数。既定 86400）・`CLAUDE_AUTO_DEV_REVIEW_PRS`（1回に巡回するPRの件数。既定 10）・`CLAUDE_AUTO_DEV_REVIEW_MAX`（1回に作るIssueの上限。既定 5）、企画の回の`CLAUDE_AUTO_DEV_PLAN_MODEL`（既定 `fable`）・`CLAUDE_AUTO_DEV_PLAN_INTERVAL`（企画の間隔の秒数。既定 21600）・`CLAUDE_AUTO_DEV_PLAN_TARGET`（着手できるIssueの目標の件数。既定 8）・`CLAUDE_AUTO_DEV_PLAN_MAX`（1回に作る件数の上限。既定 8）
   - ログは`~/.local/state/claude-auto-dev/logs/`（最後の応答、ターン数・費用・拒否されたツール。`.json`に結果の全体）
 
 ## 🔧 カスタマイズ

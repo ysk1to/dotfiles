@@ -68,13 +68,15 @@ for n in $stale; do
   notify "が失敗" "#${n}: 前の回が途中で止まっていました"
 done
 
-# 着手できる Issue（auto-ready のうち、判断待ち・作業中でないもの）。番号のいちばん小さいものから着手する
+# 着手できる Issue（auto-ready のうち、判断待ち・作業中でないもの）を、着手の順に並べる。
+# 順は p1 → p2 → ラベルなしで、同じ段階の中では番号の小さい順。あとから出た大事な Issue を、先に並んだものより前にできる
 ready=$(set -o pipefail; gh issue list --label auto-ready --state open --json number,labels |
-  jq -c '[.[] | select([.labels[].name] | index("needs-decision") or index("auto-in-progress") or index("in-progress") | not) | .number]') || {
+  jq -c '[.[] | select([.labels[].name] | index("needs-decision") or index("auto-in-progress") or index("in-progress") | not)]
+    | sort_by([([.labels[].name] | if index("p1") then 0 elif index("p2") then 1 else 2 end), .number]) | map(.number)') || {
   notify "が失敗" "gh で Issue を取得できません"
   exit 1
 }
-issue=$(echo "$ready" | jq 'min // empty')
+issue=$(echo "$ready" | jq '.[0] // empty')
 
 # 手元で作業中のブランチには触らないよう、リモートの最新から専用の worktree を作る
 git -C "$repo" fetch -q origin || exit 1
@@ -119,7 +121,7 @@ fi
 
 plan_key_file="$state_dir/plan-key/$name"
 plan_last_file="$state_dir/plan-last/$name"
-plan_room=$((${CLAUDE_AUTO_DEV_PLAN_TARGET:-12} - $(echo "$ready" | jq length)))
+plan_room=$((${CLAUDE_AUTO_DEV_PLAN_TARGET:-8} - $(echo "$ready" | jq length)))
 if [ "$mode" = implement ] && has_file .claude/auto-plan.md && [ "$plan_room" -gt 0 ] &&
   due "$plan_last_file" "${CLAUDE_AUTO_DEV_PLAN_INTERVAL:-21600}"; then
   fetch_all_issues
@@ -237,9 +239,11 @@ readonly_tools=(
 
 # claude が書いた案のファイル（1行目がタイトル、2行目が「labels: ラベル, …」、3行目以降が本文）を Issue にする。
 # 件数の上限と付けてよいラベルをここで守る。使い方: create_issues <必ず付けるラベル> <上限> <作った回の名前> <ファイル>…
-# Issue にできなかった件数を $skipped に足す
+# Issue にできなかった件数を $skipped に足す。
+# 優先のラベルは p2 まで。p1 は本人だけが付ける（claude が自分の案をいちばん前に差し込めないようにする）。
+# 企画の案に付けるのは1回に1件まで。精査が見つけた問題（auto-finding）には必ず付け、新しい作業より先に直す
 create_issues() {
-  local base_label="$1" max="$2" by="$3" created=0 f title labels_line auto_ready hold labels asked l
+  local base_label="$1" max="$2" by="$3" created=0 f title labels_line auto_ready hold labels asked l p2 p2_used=0
   shift 3
   for f in "$@"; do
     [ -f "$f" ] || continue
@@ -258,6 +262,8 @@ create_issues() {
     # 付けるラベルは決まったものだけ。自動開発に任せない Issue（protected・needs-decision）には auto-ready を付けない
     auto_ready=no
     hold=no
+    p2=no
+    [ "$base_label" != auto-finding ] || p2=yes
     labels=(--label "$base_label")
     IFS=, read -ra asked <<< "${labels_line#labels:}"
     for l in "${asked[@]}"; do
@@ -266,8 +272,13 @@ create_issues() {
         auto-ready) auto_ready=yes ;;
         needs-decision | protected) hold=yes; labels+=(--label "$l") ;;
         auto-decided) labels+=(--label "$l") ;;
+        p1 | p2) [ "$p2_used" -ge 1 ] || p2=yes ;;
       esac
     done
+    if [ "$p2" = yes ]; then
+      labels+=(--label p2)
+      p2_used=$((p2_used + 1))
+    fi
     [ "$auto_ready" = no ] || [ "$hold" = yes ] || labels+=(--label auto-ready)
     if {
       tail -n +3 "$f"
@@ -321,7 +332,7 @@ if [ "$mode" = review ]; then
 - 2行目以降: 理由。Issue にコメントされる
 PR で直すべき問題を見つけたら、$review_dir に new-01.md、new-02.md … で Issue の案を作る。${review_max} 件まで。これは上限で、問題がなければ作らない。
 - 1行目: Issue のタイトル
-- 2行目: labels: に続けて、付けるラベルをカンマ区切りで書く。使えるのは auto-ready・needs-decision・protected・auto-decided だけ
+- 2行目: labels: に続けて、付けるラベルをカンマ区切りで書く。使えるのは auto-ready・needs-decision・protected・auto-decided だけ（優先の p2 は起動スクリプトが付ける）
 - 3行目以降: Issue の本文（どの PR のどこが問題か）
 
 $(cat "$config")"
@@ -412,7 +423,7 @@ if [ "$mode" = plan ]; then
 今ある Issue（開いているものは本文つき、閉じたものはタイトルだけ）は $plan_input にある。
 Issue の案は、1件につき1ファイルで $plan_dir に作る（ファイル名は 01.md、02.md … で、着手してほしい順）。${plan_max} 件まで。これは上限で、埋める必要はない。出す価値のある案がなければ、1つも作らずに終わる。
 - 1行目: Issue のタイトル
-- 2行目: labels: に続けて、付けるラベルをカンマ区切りで書く。使えるのは auto-ready・needs-decision・protected・auto-decided だけ
+- 2行目: labels: に続けて、付けるラベルをカンマ区切りで書く。使えるのは auto-ready・needs-decision・protected・auto-decided と、ほかの Issue より先に着手してほしい案に付ける p2（1回に1件まで）だけ
 - 3行目以降: Issue の本文
 
 $(cat "$config")"
