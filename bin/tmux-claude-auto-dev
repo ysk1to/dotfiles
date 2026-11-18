@@ -1,20 +1,27 @@
 #!/bin/bash
-# claude-auto-dev の状況（claude-auto-dev-status --json）を、tmux のステータスバー向けに絵文字と件数で出力する。
-# 例: 🛠 🙋2 🔀1 🏃#8 📥19 ⚠️（0件のものは出さない。何もなければ 🛠 ✓、自動開発のリポジトリがなければ何も出さない）
-#   🙋 判断待ちの Issue / 🔀 開いている PR / 🏃 自動開発が作業中の Issue / 📥 着手できる Issue
+# claude-auto-dev の状況（claude-auto-dev-status --json）を、tmux のステータスバー（2行目）向けに絵文字と件数で出力する。
+# 例: 🛠 kbi 🏃#14 12m 🙋1 🔀2 │ foo ✓ │ ⏭20:00 🔁4 💲2.50
+#   リポジトリごとに略称と件数を並べる（0件のものは出さない。何もなければ ✓）
+#   🏃 実行中の回（#Issue・企画・精査と経過時間）/ 🙋 判断待ちの Issue / 🔀 開いている PR / 📥 着手できる Issue
 #   ⚠️ 起動の見落とし・gh の失敗・直近の失敗の通知
+#   最後に、全リポジトリで ⏭ いちばん近い次の起動 / 🔁 今日の回数 / 💲 今日の費用（ドル）
+#   自動開発のリポジトリがなければ何も出さない
 # 使い方: tmux-claude-auto-dev [--popup]
 #   --popup で凡例と状況の全文を出す（tmux の display-popup から呼ぶ）
 # status-interval ごとに gh を呼ばないよう、結果をキャッシュし、古くなったら裏で取り直す（待たせない）。
-# キャッシュの有効期間は TMUX_AUTO_DEV_TTL（秒、既定 300）で変更できる
+# キャッシュの有効期間は TMUX_AUTO_DEV_TTL（秒、既定 300）で変更できる。
+# 実行中の回はすぐ変わるので、キャッシュでなく claude-auto-dev のロックを毎回読む
 
 status="${TMUX_AUTO_DEV_STATUS:-$(dirname "$0")/claude-auto-dev-status}"
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-auto-dev-status.json"
 ttl="${TMUX_AUTO_DEV_TTL:-300}"
+state_dir="${CLAUDE_AUTO_DEV_STATE_DIR:-$HOME/.local/state/claude-auto-dev}"
+now="${CLAUDE_AUTO_DEV_NOW:-$(date +%s)}"
 
 if [ "$1" = --popup ]; then
-  echo "🙋 判断待ちの Issue  🔀 開いている PR  🏃 作業中の Issue  📥 着手できる Issue"
+  echo "🏃 実行中の回（#Issue・企画・精査と経過時間）  🙋 判断待ちの Issue  🔀 開いている PR  📥 着手できる Issue"
   echo "⚠️  起動の見落とし・gh の失敗・直近の失敗の通知"
+  echo "⏭ 次の起動  🔁 今日の回数  💲 今日の費用（ドル）  ※ 全リポジトリの合計"
   echo
   "$status"
   exit 0
@@ -33,13 +40,34 @@ fi
 
 [ -f "$cache" ] || { echo "🛠 …"; exit 0; }
 
-jq -r 'if length == 0 then empty else
-  (map(.decisions | length) | add) as $d
-  | (map(.prs | length) | add) as $p
-  | ([.[].in_progress[].number]) as $w
-  | (map(.ready) | add) as $r
-  | any(.[]; .schedule.missed_at or .error or any(.notices[]; .title | test("失敗"))) as $warn
-  | [if $d > 0 then "🙋\($d)" else empty end, if $p > 0 then "🔀\($p)" else empty end,
-     ($w[] | "🏃#\(.)"), if $r > 0 then "📥\($r)" else empty end, if $warn then "⚠️" else empty end]
-  | "🛠 " + (if length == 0 then "✓" else join(" ") end)
+# 実行中の回を { 名前: run の JSON } にまとめる。落ちてロックだけ残っているもの（pid のプロセスがない）は除く
+running='{}'
+for lock in "$state_dir"/locks/*; do
+  if [ ! -f "$lock/run" ] || ! kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then
+    continue
+  fi
+  running=$(jq -c --arg name "$(basename "$lock")" --slurpfile run "$lock/run" '.[$name] = $run[0]' <<< "$running" 2>/dev/null) ||
+    running='{}'
+done
+
+jq -r --argjson running "$running" --argjson now "$now" '
+  def money: (. * 100 | round) as $c | "\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)";
+  def elapsed: (($now - .) / 60 | floor) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" else "\($m)m" end;
+  def run: if .mode == "implement" then "#\(.issue)" elif .mode == "plan" then "企画" else "精査" end + " \(.started_at | elapsed)";
+  def segment:
+    ($running[.name] // null) as $r | .label as $label
+    | (.schedule.missed_at or .error or any(.notices[]; .title | test("失敗"))) as $warn
+    | [if $r then "🏃\($r | run)" else empty end,
+       (.decisions | length) as $d | if $d > 0 then "🙋\($d)" else empty end,
+       (.prs | length) as $p | if $p > 0 then "🔀\($p)" else empty end,
+       if .ready > 0 then "📥\(.ready)" else empty end,
+       if $warn then "⚠️" else empty end]
+    | "\($label) " + (if length == 0 then "✓" else join(" ") end);
+  if length == 0 then empty else
+    ([.[].schedule.next_at // empty] | min) as $next
+    | (map(.runs.today.count) | add) as $count
+    | (map(.runs.today.cost) | add) as $cost
+    | [if $next then "⏭\($next | strflocaltime("%H:%M"))" else empty end,
+       if $count > 0 then "🔁\($count) 💲\($cost | money)" else empty end] as $total
+    | "🛠 " + ([.[] | segment] + (if ($total | length) > 0 then [$total | join(" ")] else [] end) | join(" │ "))
   end' "$cache" 2>/dev/null
