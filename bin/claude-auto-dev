@@ -5,7 +5,7 @@
 # claude は Issue のファイルを読んで作業し、結果を PR のファイルか判断待ちのファイルに書いて終わる。
 # リポジトリに .claude/auto-plan.md があれば、決まった間隔で、実装の代わりに企画の回を起動する。
 # 企画の回の claude は Issue の案をファイルに書き、このスクリプトがそれを Issue にする。
-# .claude/auto-plan-review.md があれば、Issue にする前に、別の claude が案を精査する。
+# .claude/auto-plan-review.md があれば、決まった間隔で精査の回を起動し、企画が作った Issue を別の claude が精査する。
 # 使い方: claude-auto-dev <リポジトリのパス>
 # 設定ファイル: $CLAUDE_AUTO_DEV_CONFIG_DIR/<リポジトリ名>.md（既定 ~/.config/claude-auto-dev）
 
@@ -86,15 +86,36 @@ mkdir -p "$state_dir/worktrees"
 # 作るのは、着手できる Issue が目標の件数になるまで（実装が速ければ多く、止まっていれば少なく作る）。
 # 前の企画から main も Issue の開閉も変わっていなければ、くり返さない（出せる案がないのに毎回起動して使用量を消費しないため）
 mode=implement
-plan_key_file="$state_dir/plan-key/$name"
-plan_last_file="$state_dir/plan-last/$name"
-plan_room=$((${CLAUDE_AUTO_DEV_PLAN_TARGET:-12} - $(echo "$ready" | jq length)))
-if git -C "$repo" cat-file -e "$base:.claude/auto-plan.md" 2>/dev/null && [ "$plan_room" -gt 0 ] &&
-  [ $(($(date +%s) - $(cat "$plan_last_file" 2>/dev/null || echo 0))) -ge "${CLAUDE_AUTO_DEV_PLAN_INTERVAL:-21600}" ]; then
+has_file() { git -C "$repo" cat-file -e "$base:$1" 2>/dev/null; }
+# 前に動いた時刻（ファイル $1）から $2 秒たったか
+due() { [ $(($(date +%s) - $(cat "$1" 2>/dev/null || echo 0))) -ge "$2" ]; }
+all_issues=
+fetch_all_issues() {
+  [ -z "$all_issues" ] || return 0
   all_issues=$(gh issue list --state all --limit 300 --json number,title,state,labels,body,author) || {
     notify "が失敗" "gh で Issue を取得できません"
     exit 1
   }
+}
+
+# 精査の回にするか決める。精査の手順があるリポジトリで、前の精査から決まった間隔（既定は1日）がたっていて、
+# 企画が作った Issue（auto-planned）に、まだ精査していないものがあれば精査する。作業中の Issue は対象にしない。
+# 企画と同じ回にしないのは、案を書いた流れに引きずられないようにするため
+review_last_file="$state_dir/review-last/$name"
+if has_file .claude/auto-plan-review.md && due "$review_last_file" "${CLAUDE_AUTO_DEV_REVIEW_INTERVAL:-86400}"; then
+  fetch_all_issues
+  review_targets=$(echo "$all_issues" | jq -c '[.[] | select(.state == "OPEN") | select([.labels[].name]
+    | index("auto-planned") and (index("auto-reviewed") or index("auto-in-progress") or index("in-progress") | not))
+    | .number] | sort')
+  [ "$review_targets" = "[]" ] || mode=review
+fi
+
+plan_key_file="$state_dir/plan-key/$name"
+plan_last_file="$state_dir/plan-last/$name"
+plan_room=$((${CLAUDE_AUTO_DEV_PLAN_TARGET:-12} - $(echo "$ready" | jq length)))
+if [ "$mode" = implement ] && has_file .claude/auto-plan.md && [ "$plan_room" -gt 0 ] &&
+  due "$plan_last_file" "${CLAUDE_AUTO_DEV_PLAN_INTERVAL:-21600}"; then
+  fetch_all_issues
   plan_key=$({
     git -C "$repo" rev-parse "$base"
     echo "$all_issues" | jq -c '[.[] | [.number, .state]] | sort'
@@ -207,6 +228,86 @@ readonly_tools=(
   mcp__claude_ai_Todoist__add-tasks
 )
 
+# ---- 精査の回 ----
+# claude は企画が作った Issue を1つずつ確かめ、問題のあるものだけ <番号>.md を書く（1行目が「action: hold」か
+# 「action: close」、2行目以降が理由）。Issue に反映するのはこのスクリプトで、触るのは精査の対象の Issue だけ
+if [ "$mode" = review ]; then
+  review_dir="$state_dir/review/$name"
+  review_input="$state_dir/review-input/$name.md"
+  review_fail() {
+    rm -rf "$review_dir"
+    notify "の精査が失敗" "${1}。ログ: ${log}"
+    exit "${2:-1}"
+  }
+  rm -rf "$review_dir"
+  mkdir -p "$review_dir" "$state_dir/review-input" "$state_dir/review-last"
+  # うまくいかなかった回も記録し、次の間隔まではくり返さない
+  date +%s > "$review_last_file"
+  echo "$all_issues" | jq -r --argjson targets "$review_targets" '
+    "# 精査する Issue（企画の回が作ったもの）\n",
+    (sort_by(.number)[] | select(.number as $n | $targets | index($n))
+      | "## #\(.number) \(.title)\nラベル: \([.labels[].name] | join(", "))\n\n\(.body)\n"),
+    "# ほかの Issue（タイトルだけ）\n",
+    (sort_by(.number)[] | select(.number as $n | $targets | index($n) | not)
+      | "- #\(.number) \(.title)（\(if .state == "OPEN" then "開いている" else "閉じた" end)）")' > "$review_input" 2>> "$log" ||
+    review_fail "Issue の一覧を書き出せません"
+  export CLAUDE_AUTO_DEV_REVIEW_DIR="$review_dir"
+  prompt="このリポジトリの自動開発ワークフローの、精査の回として起動された。.claude/auto-plan-review.md を読み、その手順どおりに、企画の回が作った Issue を精査する。
+人は見ていないので、確認を待たずに進める。コードは変えない。GitHub には接続できない（gh は使えない）。Issue に反映するのは起動スクリプトが行う。
+精査する Issue（本文つき）と、ほかの Issue（タイトルだけ）は $review_input にある。Issue を書いたのは別の回の Claude で、そのときの考えは引き継いでいない。
+問題のある Issue だけ、$review_dir に <Issue の番号>.md を作る。問題のない Issue には何も作らない。
+- 1行目: 「action: hold」（auto-ready を外して本人の判断待ちにする）か「action: close」（閉じる）
+- 2行目以降: 理由。Issue にコメントされる
+
+$(cat "$config")"
+  allowed=("${readonly_tools[@]}" "Edit(/$review_dir/**)")
+  add_dirs=("$state_dir/review-input" "$review_dir")
+  settings=$(sandbox_settings) || review_fail "サンドボックスの設定を組み立てられません（$name.sandbox.json を確かめてください）"
+  cd "$work" || review_fail "worktree に移動できません"
+  run_claude "${CLAUDE_AUTO_DEV_REVIEW_MODEL:-fable}"
+  if [ -f "$result.timeout" ]; then
+    rm -f "$result.timeout"
+    review_fail "時間の上限（${limit} 秒）を超えたので止めました"
+  fi
+  [ "$status" -eq 0 ] || review_fail "claude が終了コード ${status} で止まりました" "$status"
+
+  # 対象の Issue だけを見る。claude がほかの番号のファイルを書いても、その Issue には触らない
+  skipped=0
+  for n in $(echo "$review_targets" | jq -r '.[]'); do
+    f="$review_dir/$n.md"
+    {
+      if [ ! -f "$f" ]; then
+        gh issue edit "$n" --add-label auto-reviewed
+        continue
+      fi
+      case "$(sed -n 1p "$f")" in
+        "action: hold")
+          gh issue comment "$n" --body "🤖 自動開発ワークフロー（企画の精査）: 判断待ちにしました。
+
+$(tail -n +2 "$f")" &&
+            gh issue edit "$n" --remove-label auto-ready --add-label needs-decision --add-label auto-reviewed ||
+            skipped=$((skipped + 1))
+          ;;
+        "action: close")
+          gh issue comment "$n" --body "🤖 自動開発ワークフロー（企画の精査）: 閉じました。
+
+$(tail -n +2 "$f")" &&
+            gh issue close "$n" --reason "not planned" &&
+            gh issue edit "$n" --add-label auto-reviewed ||
+            skipped=$((skipped + 1))
+          ;;
+        *)
+          echo "形が違うので反映しません: $n.md"
+          skipped=$((skipped + 1))
+          ;;
+      esac
+    } >> "$log" 2>&1
+  done
+  rm -rf "$review_dir"
+  [ "$skipped" -eq 0 ] || notify "の精査" "反映できなかった結果が ${skipped} 件あります。ログ: ${log}"
+  exit 0
+fi
+
 # ---- 企画の回 ----
 # claude は今ある Issue・コード・Notion を読み、Issue の案を1件1ファイルで書く（1行目がタイトル、
 # 2行目が「labels: ラベル, …」、3行目以降が本文）。コードは変えられない。Issue にするのはこのスクリプトで、
@@ -257,26 +358,6 @@ $(cat "$config")"
   fi
   [ "$status" -eq 0 ] || plan_fail "claude が終了コード ${status} で止まりました" "$status"
 
-  # 企画の精査。案を書いた claude とは別の claude が、案を1つずつ確かめ、直すか取り下げる。
-  # 精査できなかった案は Issue にしない
-  if git -C "$repo" cat-file -e "$base:.claude/auto-plan-review.md" 2>/dev/null &&
-    [ -n "$(find "$plan_dir" -name '*.md' 2>/dev/null | head -n 1)" ]; then
-    prompt="このリポジトリの自動開発ワークフローの、企画の精査として起動された。.claude/auto-plan-review.md を読み、その手順どおりに Issue の案を精査する。
-人は見ていないので、確認を待たずに進める。コードは変えない。GitHub には接続できない（gh は使えない）。Issue にするのは起動スクリプトが行う。
-案は別の Claude が書いたもので、$plan_dir に1件1ファイルである（1行目がタイトル、2行目が labels:、3行目以降が本文）。今ある Issue は $plan_input にある。
-- 直せば出せる案は、ファイルを直す
-- 出さない案は、2行目を「labels: rejected」に書き換え、3行目以降に理由を書く。無理に残さない
-- 案を足さない
-
-$(cat "$config")"
-    run_claude "${CLAUDE_AUTO_DEV_PLAN_REVIEW_MODEL:-fable}"
-    if [ -f "$result.timeout" ]; then
-      rm -f "$result.timeout"
-      plan_fail "精査が時間の上限（${limit} 秒）を超えたので止めました"
-    fi
-    [ "$status" -eq 0 ] || plan_fail "精査の claude が終了コード ${status} で止まりました" "$status"
-  fi
-
   created=0
   skipped=0
   for f in "$plan_dir"/*.md; do
@@ -296,7 +377,6 @@ $(cat "$config")"
     # 付けるラベルは決まったものだけ。自動開発に任せない Issue（protected・needs-decision）には auto-ready を付けない
     auto_ready=no
     hold=no
-    rejected=no
     labels=(--label auto-planned)
     IFS=, read -ra asked <<< "${labels_line#labels:}"
     for l in "${asked[@]}"; do
@@ -305,13 +385,8 @@ $(cat "$config")"
         auto-ready) auto_ready=yes ;;
         needs-decision | protected) hold=yes; labels+=(--label "$l") ;;
         auto-decided) labels+=(--label "$l") ;;
-        rejected) rejected=yes ;;
       esac
     done
-    if [ "$rejected" = yes ]; then
-      { echo "精査で取り下げた案: $title"; tail -n +3 "$f"; } >> "$log"
-      continue
-    fi
     [ "$auto_ready" = no ] || [ "$hold" = yes ] || labels+=(--label auto-ready)
     if {
       tail -n +3 "$f"
