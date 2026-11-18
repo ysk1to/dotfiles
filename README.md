@@ -41,6 +41,7 @@ macOS用の設定ファイル管理リポジトリ
 - `bin/claude-auto-dev` - launchdなどから定期的に呼ばれ、リポジトリの`auto-ready`のIssueを1件、Claude Code（`claude -p`）にPRにさせる。手順の本体はリポジトリの`.claude/auto-dev.md`。Issueがない回はClaudeを起動しない。`.claude/auto-plan.md`があるリポジトリでは、決まった間隔で次の作業を企画してIssueにし、`.claude/auto-plan-review.md`があれば、企画したIssueとマージされたPRを別の回で精査する
 - `bin/claude-auto-dev-status` - `claude-auto-dev`の状況をまとめて出す（本人待ちの判断・PR、作業中と次に着手するIssue、今日の回と費用、次の起動と起動の見落とし、直近にClaudeが作った・決めたもの、消えた通知）。Claudeは起動せず、GitHubと`claude-auto-dev`が残したファイルだけを読む。`--json`で集計をJSONで出す
 - `bin/claude-usage-refresh` - usage APIからプラン使用率を取得してキャッシュ（Claude Codeを起動していない間の利用もtmuxに反映する）
+- `bin/tmux-claude-auto-dev` - `claude-auto-dev-status`の結果を、tmuxのステータスバー向けに絵文字と件数で表示（例: `🛠 🙋2 🔀1 🏃#8 📥19 ⚠️`）。結果は5分キャッシュし、古くなったら裏で取り直す。`--popup`で凡例と状況の全文を出す（`C-q + A`）
 - `bin/tmux-claude-notify` - Claude Codeのフック。ペインの状態（許可待ち・完了・作業中）をtmuxに記録し、効果音を鳴らす
 - `bin/tmux-claude-panes` - 現在のセッションのClaude Codeペイン数と、許可待ち・完了の数をtmuxに表示
 - `bin/tmux-claude-usage` - Claudeプラン使用率をtmuxに表示
