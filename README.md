@@ -96,6 +96,7 @@ make check
     - Issueに問題があれば、Claudeが`<番号>.md`を書く（1行目が`action: hold`か`action: close`、2行目以降が理由）。スクリプトが理由をコメントし、`hold`は`auto-ready`を外して`needs-decision`に、`close`は閉じる。対象でないIssueのファイルは無視する
     - PRに直すべき問題があれば、ClaudeがIssueの案を`new-NN.md`に書き（形とラベルの決まりは企画の案と同じ）、スクリプトが`auto-finding`ラベル付きのIssueにする。1回5件まで
     - 精査したIssueとPRには`auto-reviewed`を付け、次からは見ない。失敗した回は何も反映せず、通知する
+  - 企画の回と精査の回が付けるラベル（`auto-planned`・`auto-finding`・`auto-reviewed`・`auto-decided`・`protected`・`p2`など）がリポジトリになければ、スクリプトが作る。すでにあるラベルには触らない。`p1`は本人が使うラベルなので、必要なら手で作る
   - `CLAUDE_AUTO_DEV_DAILY_MAX`を指定すると、実装の回を1日にその回数までにする（企画の回は数えない）。起動の回数を増やしても、使用量とレビュー待ちが増えすぎないようにするため
   - 失敗したとき・何も残さずに終わったとき・時間の上限を超えたとき・前の回が途中で止まって`auto-in-progress`が残っていたときは、Issueを`needs-decision`にしてmacOSの通知で知らせる
   - `--restricted`と`--permission-mode dontAsk`で起動する。ユーザーの設定（グローバルの`CLAUDE.md`・許可・フック）は読まず、ファイルの読み書きは作業ディレクトリと受け渡し用のファイルに限り、WebFetchは使えない。決まりは各リポジトリの`.claude/auto-dev.md`に書く
