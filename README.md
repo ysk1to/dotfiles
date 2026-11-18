@@ -168,6 +168,7 @@ gh pr create
 macOS で `make lint` と `tests/*.test.sh` を実行し、Claude が差分を読んで、問題がなければそのままマージする。
 判断が必要なときはマージせず、PR にコメントして作成者をメンションする。
 - `.github/` と `claude/`（Claude Code の設定）を変える PR、`no-auto-merge` ラベルを付けた PR は自動ではマージしない。
+  - ほかの変更でこれらの記述が古くなるだけなら、レビューは止めない。マージのときに、古くなった記述を直す Issue を自動で作る。
 - 認証には Secret の `CLAUDE_CODE_OAUTH_TOKEN`（`claude setup-token` で作る）を使う。
 
 他の環境で同期：
