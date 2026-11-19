@@ -47,8 +47,22 @@ out=$(run private/my.app)
 assert_eq "共通のセッションを、リポジトリ名のウィンドウで作る" "yes" "$(has "$out" "tmux new-session -d -s claude -n my_app -c $repo")"
 assert_eq "ペインを2回割って3ペインにする" "2" "$(count "$out" 'tmux split-window')"
 assert_eq "上の2つのペインで claude を起動する" "2" "$(count "$out" 'claude Enter')"
-assert_eq "右下のペインは claude を起動せず、シェルにする" "no" "$(has "$out" 'tmux send-keys -t %3 claude')"
-assert_eq "右下のペインの名前は Shell" "yes" "$(has "$out" 'tmux select-pane -t %3 -T Shell')"
+assert_eq "右下のペインは claude を起動しない" "no" "$(has "$out" 'tmux send-keys -t %3 claude Enter')"
+assert_eq "右下のペインで自動開発の監視を起動する（リポジトリの外では絞らない）" "yes" "$(has "$out" 'tmux send-keys -t %3 claude-auto-dev-watch Enter')"
+assert_eq "右下のペインに Shell の名前は付けない" "no" "$(has "$out" '-T Shell')"
+
+# ---- ディレクトリがリポジトリのとき ----
+setup
+git init -q "$repo"
+out=$(run private/my.app)
+assert_eq "右下の監視は、そのリポジトリに絞る" "yes" "$(has "$out" 'tmux send-keys -t %3 claude-auto-dev-watch --repo my.app Enter')"
+
+setup
+git init -q "$repo"
+git -C "$repo" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m init
+git -C "$repo" worktree add -q "$tmp/Program/private/my.app-wt" -b wt
+out=$(run private/my.app-wt)
+assert_eq "worktree なら、元のリポジトリに絞る" "yes" "$(has "$out" 'tmux send-keys -t %3 claude-auto-dev-watch --repo my.app Enter')"
 assert_eq "tmux の外からはアタッチする" "yes" "$(has "$out" 'tmux attach -t =claude')"
 
 # ---- 共通のセッションはあり、そのリポジトリのウィンドウがないとき ----
