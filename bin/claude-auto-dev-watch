@@ -73,7 +73,7 @@ frame() {
   fi
   jq -r --argjson running "$running" --argjson steps "$steps" --argjson now "$now" --argjson rows "$rows" --argjson cols "$cols" \
     --arg events "$events" '
-    def money: (. * 100 | round) as $c | "\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)";
+    def duration: (. / 60 | round) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" else "\($m)m" end;
     def elapsed: (($now - .) / 60 | floor) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" else "\($m)m" end;
     # 今日なら時刻、それより前なら日付
     def when: if strflocaltime("%Y%m%d") == ($now | strflocaltime("%Y%m%d")) then strflocaltime("%H:%M") else strflocaltime("%m/%d") end;
@@ -94,7 +94,7 @@ frame() {
          if .error then "🚨 \(.error)" else empty end,
          (.notices[] | select((.title | test("失敗")) and (.resolved | not)) | "🚨 \(.at | when) \(.message)")] as $warns
       | [if .schedule.next_at then "⏩ \(.schedule.next_at | strflocaltime("%H:%M"))" else empty end,
-         if .runs.today.count > 0 then "🔁 \(.runs.today.count)  💰 \(.runs.today.cost | money)" else empty end] as $plan
+         if .runs.today.count > 0 then "🔁 \(.runs.today.count)  ⏳ \(.runs.today.duration // 0 | duration)" else empty end] as $plan
       | "\(.label)  " + (if ($items + $warns | length) == 0 then "✓" else $items | join("   ") end),
         ($warns[] | "     " + .),
         (if ($plan | length) > 0 then "     " + ($plan | join("  ")) else empty end);

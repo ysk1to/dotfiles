@@ -31,7 +31,8 @@ runs() {
     stamp=${f%.json}
     stamp=${stamp: -15}
     jq -c --argjson at "$(date -j -f '%Y%m%d-%H%M%S' "$stamp" +%s 2>/dev/null || echo 0)" --arg day "${stamp:0:8}" \
-      '{at: $at, day: $day, turns: .num_turns, cost: (.total_cost_usd // 0), denials: (.permission_denials // [] | length)}' "$f" 2>/dev/null
+      '{at: $at, day: $day, turns: .num_turns, cost: (.total_cost_usd // 0), duration: ((.duration_ms // 0) / 1000 | round),
+        denials: (.permission_denials // [] | length)}' "$f" 2>/dev/null
   done
 }
 
@@ -119,7 +120,8 @@ collect() {
          findings: [$created[] | select(names | index("auto-finding")) | brief]
        },
        runs: {
-         today: ($runs | map(select(.day == $today)) | {count: length, cost: (map(.cost) | add // 0), denials: (map(.denials) | add // 0)}),
+         today: ($runs | map(select(.day == $today)) | {count: length, cost: (map(.cost) | add // 0), duration: (map(.duration) | add // 0),
+           denials: (map(.denials) | add // 0)}),
          last: ($runs | max_by(.at) // null | if . then del(.day) else null end)
        },
        notices: $notices,
@@ -140,7 +142,8 @@ if [ "$all" = "[]" ]; then
 fi
 echo "$all" | jq -r --arg hours "${CLAUDE_AUTO_DEV_STATUS_HOURS:-24}" '
   def time: strflocaltime("%m/%d %H:%M");
-  def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)";
+  # 秒を、分（1時間を超えたら 1h05m の形）にする
+  def duration: (. / 60 | round) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" else "\($m)m" end;
   def item: "#\(.number) \(.title)";
   # 見出しを端末での幅（全角は2）で14にそろえ、行にする
   def line($label; $text):
@@ -161,8 +164,8 @@ echo "$all" | jq -r --arg hours "${CLAUDE_AUTO_DEV_STATUS_HOURS:-24}" '
     list("作業中"; [.in_progress[] | item]),
     list("次に着手"; [if .next then "\(.next | item)（着手できる Issue \(.ready) 件）" else empty end]),
     line("起動"; "前回 \(.schedule.checked_at // null | if . then time else "記録なし" end) / 次回 \(.schedule.next_at // null | if . then time else "launchd の設定なし" end)"),
-    line("今日"; "\(.runs.today.count) 回  \(.runs.today.cost | money)  拒否 \(.runs.today.denials)"),
-    (if .runs.last then line("前回の回"; "\(.runs.last.at | time)  \(.runs.last.turns) ターン  \(.runs.last.cost | money)") else empty end),
+    line("今日"; "\(.runs.today.count) 回  \(.runs.today.duration | duration)  拒否 \(.runs.today.denials)"),
+    (if .runs.last then line("前回の回"; "\(.runs.last.at | time)  \(.runs.last.turns) ターン  \(.runs.last.duration | duration)") else empty end),
     ([some("マージ"; .recent.merged), some("企画"; .recent.planned),
       some("Claude が決定"; .recent.decided), some("精査で発見"; .recent.findings)] as $recent
       | if ($recent | length) > 0 then "  直近 \($hours) 時間", $recent[] else empty end),

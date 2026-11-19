@@ -111,21 +111,21 @@ assert_eq "gh が失敗したら、そのことを出す" "yes" "$(q '.[0].error
 assert_eq "gh が失敗しても、ほかは出して成功で終わる" "0" "$?"
 
 # ---- 手元の記録 ----
-run_log() { # ファイル名の時刻 ターン数 費用 拒否の数
+run_log() { # ファイル名の時刻 ターン数 費用 拒否の数 かかった時間（ミリ秒）
   mkdir -p "$state/logs"
-  jq -n --argjson t "$2" --argjson c "$3" --argjson d "$4" '{num_turns: $t, total_cost_usd: $c,
-    permission_denials: [range($d) | {tool_name: "Bash"}]}' > "$state/logs/my-app-$1.json"
+  jq -n --argjson t "$2" --argjson c "$3" --argjson d "$4" --argjson ms "${5:-0}" '{num_turns: $t, total_cost_usd: $c,
+    duration_ms: $ms, permission_denials: [range($d) | {tool_name: "Bash"}]}' > "$state/logs/my-app-$1.json"
 }
 setup
-run_log 20261117-230000 10 1.0 0
-run_log 20261118-020000 20 1.25 1
-run_log 20261118-140000 46 1.5 0
+run_log 20261117-230000 10 1.0 0 600000
+run_log 20261118-020000 20 1.25 1 840000
+run_log 20261118-140000 46 1.5 0 4920400
 echo '{}' > "$state/logs/other-20261118-150000.json"
-assert_eq "今日の回の数・費用・拒否の数" '{"count":2,"cost":2.75,"denials":1}' "$(q '.[0].runs.today')"
-assert_eq "前回の回" "{\"at\":$(at '2026-11-18 14:00:00'),\"turns\":46,\"cost\":1.5,\"denials\":0}" "$(q '.[0].runs.last')"
+assert_eq "今日の回の数・費用・かかった時間（秒）・拒否の数" '{"count":2,"cost":2.75,"duration":5760,"denials":1}' "$(q '.[0].runs.today')"
+assert_eq "前回の回" "{\"at\":$(at '2026-11-18 14:00:00'),\"turns\":46,\"cost\":1.5,\"duration\":4920,\"denials\":0}" "$(q '.[0].runs.last')"
 
 setup
-assert_eq "回がなければ、今日は0回" '{"count":0,"cost":0,"denials":0}' "$(q '.[0].runs.today')"
+assert_eq "回がなければ、今日は0回" '{"count":0,"cost":0,"duration":0,"denials":0}' "$(q '.[0].runs.today')"
 assert_eq "記録がなくてもエラーを出さない" "" "$("$bin/claude-auto-dev-status" 2>&1 >/dev/null)"
 assert_eq "回がなければ、前回はなし" "null" "$(q '.[0].runs.last')"
 
@@ -151,7 +151,7 @@ checked() { mkdir -p "$state/checked" && echo "$1" > "$state/checked/my-app"; }
 # ---- テキストの出力 ----
 has() { if printf '%s\n' "$1" | grep -qF -- "$2"; then echo yes; else echo no; fi; }
 setup
-run_log 20261118-140000 46 1.5 1
+run_log 20261118-140000 46 1.5 1 4920000
 mkdir -p "$state/notices"
 printf '%s\t%s\t%s\n' "$((now - 600))" "が失敗" "#8: 止まりました" > "$state/notices/my-app.tsv"
 FAKE_ISSUES="[$(issue 10 '決めて' "$((now - 86400 * 3))" needs-decision), $(issue 12 '急ぎ' "$((now - 86400 * 3))" auto-ready p2),
@@ -163,8 +163,8 @@ assert_eq "テキストにリポジトリ名を出す" "my-app" "$(printf '%s\n'
 assert_eq "テキストに判断待ちを出す" "yes" "$(has "$text" '#10 決めて')"
 assert_eq "テキストに開いている PR とラベルを出す" "yes" "$(has "$text" '#30 開いている（no-auto-merge）')"
 assert_eq "テキストに次に着手する Issue と件数を出す" "yes" "$(has "$text" '#12 急ぎ（着手できる Issue 2 件）')"
-assert_eq "テキストに今日の回を出す" "yes" "$(has "$text" '1 回  $1.50  拒否 1')"
-assert_eq "テキストに前回の回を出す" "yes" "$(has "$text" '11/18 14:00  46 ターン  $1.50')"
+assert_eq "テキストに今日の回とかかった時間を出す（ドルは出さない）" "yes" "$(has "$text" '1 回  1h22m  拒否 1')"
+assert_eq "テキストに前回の回を出す" "yes" "$(has "$text" '11/18 14:00  46 ターン  1h22m')"
 assert_eq "テキストに Claude が決めたことを出す" "yes" "$(has "$text" '#14 自分で決めた')"
 assert_eq "テキストに通知を出す" "yes" "$(has "$text" '11/18 16:20  が失敗  #8: 止まりました')"
 assert_eq "作業中がなければ「なし」と出す" "yes" "$(printf '%s\n' "$text" | grep -q '作業中 *なし' && echo yes || echo no)"
