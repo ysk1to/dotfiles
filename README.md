@@ -34,7 +34,6 @@ macOS用の設定ファイル管理リポジトリ
 
 ### アプリケーション
 - `Brewfile` - Homebrewパッケージ管理
-- `iTerm.json` - iTerm2カラーテーマ設定
 - `iterm2/profile.json` - iTerm2のdynamic profile（Shift+EnterでESC+CRを送りClaude Codeで改行）
 
 ### スクリプト

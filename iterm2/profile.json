@@ -129,7 +129,7 @@
       },
       "Custom Command": "No",
       "ASCII Anti Aliased": true,
-      "Non Ascii Font": "RictyNerdFontAOPSLMDIWEA-Bold 13",
+      "Non Ascii Font": "HackGenConsoleNF-Regular 13",
       "Vertical Spacing": 1,
       "Use Bold Font": true,
       "Option Key Sends": 0,
@@ -257,7 +257,7 @@
         "Green Component": 0.63529999999999998
       },
       "Right Option Key Sends": 0,
-      "Use Non-ASCII Font": true,
+      "Use Non-ASCII Font": false,
       "Ansi 6 Color": {
         "Red Component": 0.49020000000000002,
         "Color Space": "sRGB",
