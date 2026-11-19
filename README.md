@@ -111,6 +111,7 @@ make check
     - Issueに問題があれば、Claudeが`<番号>.md`を書く（1行目が`action: hold`か`action: close`、2行目以降が理由）。スクリプトが理由をコメントし、`hold`は`auto-ready`を外して`needs-decision`に、`close`は閉じる。対象でないIssueのファイルは無視する
     - PRに直すべき問題があれば、ClaudeがIssueの案を`new-NN.md`に書き（形とラベルの決まりは企画の案と同じ）、スクリプトが`auto-finding`ラベル付きのIssueにする。1回5件まで
     - 精査したIssueとPRには`auto-reviewed`を付け、次からは見ない。失敗した回は何も反映せず、通知する
+    - 判断が出たあとも残っているTodoistの判断待ちのタスクを、Issueの開閉とラベルと突き合わせて完了にする（どのタスクを完了にするかは各リポジトリの手順に書く）。そのため、ほかのIssueもラベルつきで渡し、Todoistのタスクの完了（`complete-tasks`）を許す
   - 企画の回と精査の回が付けるラベル（`auto-planned`・`auto-finding`・`auto-reviewed`・`auto-decided`・`protected`・`p2`など）がリポジトリになければ、スクリプトが作る。すでにあるラベルには触らない。`p1`は本人が使うラベルなので、必要なら手で作る
   - Issueの一覧は1000件まで取得する（`gh`の既定の30件で切ると、古いIssueが着手の候補や重複の確認から外れるため）。`CLAUDE_AUTO_DEV_ISSUE_LIMIT`で変えられる
   - `CLAUDE_AUTO_DEV_DAILY_MAX`を指定すると、実装の回を1日にその回数までにする（企画の回は数えない）。起動の回数を増やしても、使用量とレビュー待ちが増えすぎないようにするため

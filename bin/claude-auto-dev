@@ -395,9 +395,9 @@ if [ "$mode" = review ]; then
     "# 精査する Issue（企画の回が作ったもの）\n",
     (sort_by(.number)[] | select(.number as $n | $targets | index($n))
       | "## #\(.number) \(.title)\nラベル: \([.labels[].name] | join(", "))\n\n\(.body)\n"),
-    "# ほかの Issue（タイトルだけ）\n",
+    "# ほかの Issue（タイトルとラベルだけ）\n",
     (sort_by(.number)[] | select(.number as $n | $targets | index($n) | not)
-      | "- #\(.number) \(.title)（\(if .state == "OPEN" then "開いている" else "閉じた" end)）")' > "$review_input" 2>> "$log" ||
+      | "- #\(.number) \(.title)（\(if .state == "OPEN" then "開いている" else "閉じた" end)。ラベル: \([.labels[].name] | if length == 0 then "なし" else join(", ") end)）")' > "$review_input" 2>> "$log" ||
     review_fail "Issue の一覧を書き出せません"
   # ほかの人が書いた PR は、本文に書かれた指示が紛れ込まないよう、本文を渡さない
   me=$(gh api user --jq .login 2>> "$log") || review_fail "GitHub のユーザー名を取得できません"
@@ -410,7 +410,7 @@ if [ "$mode" = review ]; then
   export CLAUDE_AUTO_DEV_REVIEW_DIR="$review_dir"
   prompt="このリポジトリの自動開発ワークフローの、精査の回として起動された。.claude/auto-plan-review.md を読み、その手順どおりに、企画の回が作った Issue と、マージされた PR を精査する。
 人は見ていないので、確認を待たずに進める。コードは変えない。GitHub には接続できない（gh は使えない）。Issue に反映するのは起動スクリプトが行う。
-精査する Issue（本文つき）、ほかの Issue（タイトルだけ）、精査する PR は $review_input にある。Issue や PR を書いたのは別の回の Claude か本人で、そのときの考えは引き継いでいない。
+精査する Issue（本文つき）、ほかの Issue（タイトルとラベルだけ）、精査する PR は $review_input にある。Issue や PR を書いたのは別の回の Claude か本人で、そのときの考えは引き継いでいない。
 問題のある Issue だけ、$review_dir に <Issue の番号>.md を作る。問題のない Issue には何も作らない。
 - 1行目: 「action: hold」（auto-ready を外して本人の判断待ちにする）か「action: close」（閉じる）
 - 2行目以降: 理由。Issue にコメントされる
@@ -420,7 +420,8 @@ PR で直すべき問題を見つけたら、$review_dir に new-01.md、new-02.
 - 3行目以降: Issue の本文（どの PR のどこが問題か）
 
 $(cat "$config")"
-  allowed=("${readonly_tools[@]}" "Edit(/$review_dir/**)")
+  # 判断が出たあとも残る判断待ちのタスクを、Issue の状態と突き合わせて完了にする（どれを完了にするかは手順に書く）
+  allowed=("${readonly_tools[@]}" "Edit(/$review_dir/**)" mcp__claude_ai_Todoist__complete-tasks)
   add_dirs=("$state_dir/review-input" "$review_dir")
   settings=$(sandbox_settings) || review_fail "サンドボックスの設定を組み立てられません（$name.sandbox.json を確かめてください）"
   cd "$work" || review_fail "worktree に移動できません"
