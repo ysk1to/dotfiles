@@ -51,6 +51,7 @@ macOS用の設定ファイル管理リポジトリ
 - `bin/tmux-claude-notify` - Claude Codeのフック。ペインの状態（許可待ち・完了・作業中）をtmuxに記録し、効果音を鳴らす
 - `bin/tmux-claude-panes` - 現在のセッションのClaude Codeペイン数と、許可待ち・完了の数をtmuxに表示
 - `bin/tmux-claude-usage` - Claudeプラン使用率をtmuxに表示
+- `bin/tmux-help` - tmuxの使い方（キーの割り当てと画面の見かた）を用途ごとにまとめて出す。`C-q + ?`でポップアップに開く。`.tmux.conf`にキーを足したらここにも足す（足し忘れはテストで気づく）
 - `bin/tmux-weather` - wttr.inの天気をキャッシュしてtmuxに表示（既定30分。地点は環境変数`TMUX_WEATHER_LOCATION`で指定し、`~/.zprofile.local`などに書く）
 
 ## 🚀 セットアップ
