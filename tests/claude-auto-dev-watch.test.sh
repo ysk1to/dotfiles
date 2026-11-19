@@ -76,8 +76,8 @@ assert_eq "実行中の回は、Issue と経過時間を出す" "yes" "$(has "$(
 
 setup
 next=$(at '2026-11-18 18:00:00')
-echo "[$(repo ".schedule.next_at = $next | .runs.today.count = 3 | .runs.today.cost = 2.1")]" > "$cache"
-assert_eq "次の起動と今日の回数・費用を出す" "yes" "$(has "$(frame)" '⏩ 18:00  🔁 3  💰 2.10')"
+echo "[$(repo ".schedule.next_at = $next | .runs.today.count = 3 | .runs.today.cost = 2.1 | .runs.today.duration = 840")]" > "$cache"
+assert_eq "次の起動と今日の回数・かかった時間を出す" "yes" "$(has "$(frame)" '⏩ 18:00  🔁 3  ⏳ 14m')"
 
 setup
 echo "[$(repo ".schedule.missed_at = $(at '2026-11-18 16:00:00')")]" > "$cache"

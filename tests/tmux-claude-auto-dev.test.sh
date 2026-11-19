@@ -88,9 +88,9 @@ assert_eq "作業中のラベルだけで実行中でなければ 🏃 を出さ
 setup
 next=$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-11-18 18:00:00' +%s)
 later=$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-11-18 20:00:00' +%s)
-echo "[$(repo ".schedule.next_at = $later | .runs.today.count = 1 | .runs.today.cost = 0.4"),
-  $(repo ".name = \"foo\" | .label = \"foo\" | .schedule.next_at = $next | .runs.today.count = 2 | .runs.today.cost = 1.7")]" > "$cache"
-assert_eq "最後に、いちばん近い次の起動と今日の回数・費用をまとめて出す" "🔧 app  ✓  │  foo  ✓  │  ⏩ 18:00  🔁 3  💰 2.10" "$(show)"
+echo "[$(repo ".schedule.next_at = $later | .runs.today.count = 1 | .runs.today.cost = 0.4 | .runs.today.duration = 1500"),
+  $(repo ".name = \"foo\" | .label = \"foo\" | .schedule.next_at = $next | .runs.today.count = 2 | .runs.today.cost = 1.7 | .runs.today.duration = 5220")]" > "$cache"
+assert_eq "最後に、いちばん近い次の起動と今日の回数・かかった時間をまとめて出す" "🔧 app  ✓  │  foo  ✓  │  ⏩ 18:00  🔁 3  ⏳ 1h52m" "$(show)"
 
 setup
 echo "[$(repo '.schedule.missed_at = 1')]" > "$cache"
@@ -156,7 +156,8 @@ assert_eq "取り直しに失敗したら、前のキャッシュを残す" "�
 setup
 popup=$("$bin/tmux-claude-auto-dev" --popup)
 assert_eq "ポップアップに凡例を出す" "yes" "$(echo "$popup" | grep -q '🙋 判断待ちの Issue' && echo yes || echo no)"
-assert_eq "凡例に次の起動と今日の回数・費用も出す" "yes" "$(echo "$popup" | grep -q '⏩ 次の起動' && echo "$popup" | grep -q '💰' && echo yes || echo no)"
+assert_eq "凡例に次の起動と今日の回数・かかった時間も出す" "yes" "$(echo "$popup" | grep -q '⏩ 次の起動' && echo "$popup" | grep -q '⏳ 今日のかかった時間' && echo yes || echo no)"
+assert_eq "凡例に費用は出さない" "no" "$(echo "$popup" | grep -q '💰' && echo yes || echo no)"
 assert_eq "ポップアップに状況の全文を出す" "yes" "$(echo "$popup" | grep -q '状況の全文' && echo yes || echo no)"
 
 # ---- 実行中の回だけ出す（claude-auto-dev-watch が使う） ----

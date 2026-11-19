@@ -70,7 +70,7 @@ fi
 [ -z "$FAKE_CLAUDE_SLEEP" ] || sleep "$FAKE_CLAUDE_SLEEP"
 echo '{"type":"system","subtype":"init"}'
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"make test"}}]}}'
-[ -n "$FAKE_NO_RESULT" ] || echo '{"type":"result","result":"PR を作りました","num_turns":3,"total_cost_usd":0.5,"permission_denials":[{"tool_name":"Bash"}]}'
+[ -n "$FAKE_NO_RESULT" ] || echo '{"type":"result","result":"PR を作りました","num_turns":3,"total_cost_usd":0.5,"duration_ms":245000,"permission_denials":[{"tool_name":"Bash"}]}'
 exit "$FAKE_CLAUDE_EXIT"
 EOF
   cat > "$tmp/bin/gh" <<'EOF'
@@ -958,8 +958,8 @@ assert_eq "やることがない回は、できごとを残さない" "" "$(even
 
 setup
 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "着手・claude の終了・判断待ちを残す" "my-app	start	#1 に着手
-my-app	end	3 ターン、\$0.50
+assert_eq "着手・claude の終了（ターン数とかかった時間）・判断待ちを残す" "my-app	start	#1 に着手
+my-app	end	3 ターン、4m
 my-app	decision	#1: 判断待ちで止まりました。Issue のコメントを見てください" "$(events)"
 assert_eq "できごとの時刻を残す" "3" "$(cut -f1 "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" 2>/dev/null | grep -cE '^[0-9]+$')"
 run=$(sed -n 's/^claude run=//p' "$FAKE_LOG")
@@ -980,7 +980,7 @@ setup
 enable_plan
 FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "企画の回は、開始と作った Issue を残す" "my-app	start	企画
-my-app	end	3 ターン、\$0.50
+my-app	end	3 ターン、4m
 my-app	issue	#20 🤖 [add] 一覧を足す" "$(events)"
 assert_eq "企画の回は、回の種類をロックに残す" '"plan" null' "$(sed -n 's/^claude run=//p' "$FAKE_LOG" | jq -r '"\(.mode | tojson) \(.issue)"')"
 

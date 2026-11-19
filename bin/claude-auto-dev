@@ -239,8 +239,9 @@ run_claude() {
     jq -r '(.result // ""), "ターン数 \(.num_turns)、費用 \(.total_cost_usd) ドル、拒否されたツール \(.permission_denials | length) 件",
       (.permission_denials[]? | "拒否: \(.tool_name) \(.tool_input | tostring | .[0:200])")' "$result" >> "$log" 2>/dev/null ||
       cat "$result" >> "$log"
-    event end "$(jq -r '(.total_cost_usd * 100 | round) as $c
-      | "\(.num_turns) ターン、$\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)"' "$result" 2>/dev/null)"
+    # 定額のプランでは費用（API で払ったときの額）は目安にならないので、できごとにはかかった時間を出す
+    event end "$(jq -r '((.duration_ms // 0) / 60000 | round) as $m
+      | "\(.num_turns) ターン、" + if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" else "\($m)m" end' "$result" 2>/dev/null)"
   else
     tail -n 5 "$stream" >> "$log" 2>/dev/null
     event end "終了コード $status"
