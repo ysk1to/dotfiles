@@ -39,7 +39,7 @@ macOS用の設定ファイル管理リポジトリ
   - 色など画面で見ながら決めたいものは、画面で調整してから Settings → Profiles の Other Actions → Copy Profile as JSON で書き出し、変えたキーだけをこのファイルに写す
 
 ### スクリプト
-- `bin/claude-team` - 共通のtmuxセッション `claude` に、指定ディレクトリでClaude Codeを2ペインとシェルを1ペイン開くウィンドウを作る（リポジトリごとに1ウィンドウ）
+- `bin/claude-team` - 共通のtmuxセッション `claude` に、指定ディレクトリでClaude Codeを2ペインと自動開発の監視（`claude-auto-dev-watch`）を1ペイン開くウィンドウを作る（リポジトリごとに1ウィンドウ）。シェルは`C-q + S`のポップアップで開く
 - `bin/claude-statusline` - Claude CodeのstatusLine（モデル・effort・トークン数・コンテキスト使用率など）
 - `bin/claude-context-guard` - Claude Codeのフック。コンテキストが自動圧縮に近づいたら（既定25万トークン）、圧縮前にNotionへ途中経過を記録するよう促す
 - `bin/claude-auto-dev` - launchdなどから定期的に呼ばれ、リポジトリの`auto-ready`のIssueを1件、Claude Code（`claude -p`）にPRにさせる。手順の本体はリポジトリの`.claude/auto-dev.md`。Issueがない回はClaudeを起動しない。`.claude/auto-plan.md`があるリポジトリでは、決まった間隔で次の作業を企画してIssueにし、`.claude/auto-plan-review.md`があれば、企画したIssueとマージされたPRを別の回で精査する
@@ -47,7 +47,7 @@ macOS用の設定ファイル管理リポジトリ
 - `bin/claude-skill-install` - ほかの人が公開しているClaude Codeのスキルを、コミットを決めて`~/.claude/skills/`に置く。同じコミットが置いてあれば取得しない。自分が置いたのではないフォルダは置き換えない
 - `bin/claude-usage-refresh` - usage APIからプラン使用率を取得してキャッシュ（Claude Codeを起動していない間の利用もtmuxに反映する）
 - `bin/tmux-claude-auto-dev` - `claude-auto-dev-status`の結果を、tmuxのステータスバーの2行目にリポジトリごとの絵文字と件数で表示（例: `🔧 kbi  🏃 #14 12m  🙋 1  🔀 2  │  foo  ✓  │  ⏩ 20:00  🔁 4  ⏳ 1h52m`）。結果は5分キャッシュし、古くなったら裏で取り直す。実行中の回は毎回ロックから読む。`--popup`で凡例と状況の全文を出す（`C-q + A`）
-- `bin/claude-auto-dev-watch` - 自動開発の監視用のペイン。リポジトリごとの状況（実行中の回、判断待ちとPRの番号とタイトル、次の起動、今日の回とかかった時間、見落とし・失敗）、実行中の回の手順（最後の5回のツールの呼び出し）と、全リポジトリのできごとを新しい順に流し続ける。判断待ちや失敗があればペインの枠を赤くする。`C-q + M`で右下のペインを左右に割って開け閉めする（今のペインのリポジトリの分だけを出す。`--repo`で指定もできる）
+- `bin/claude-auto-dev-watch` - 自動開発の監視用のペイン。リポジトリごとの状況（実行中の回、判断待ちとPRの番号とタイトル、次の起動、今日の回とかかった時間、見落とし・失敗）、実行中の回の手順（最後の5回のツールの呼び出し）と、全リポジトリのできごとを新しい順に流し続ける。判断待ちや失敗があればペインの枠を赤くする。`claude-team`が右下のペインで起動する。`C-q + M`で右下のペインを左右に割って開け閉めする（今のペインのリポジトリの分だけを出す。`--repo`で指定もできる）
 - `bin/tmux-claude-notify` - Claude Codeのフック。ペインの状態（許可待ち・完了・作業中）をtmuxに記録し、効果音を鳴らす
 - `bin/tmux-claude-panes` - 現在のセッションのClaude Codeペイン数と、許可待ち・完了の数をtmuxに表示
 - `bin/tmux-claude-usage` - Claudeプラン使用率をtmuxに表示

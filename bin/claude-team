@@ -1,5 +1,5 @@
 #!/bin/bash
-# 指定ディレクトリで Claude Code を2ペインとシェルを1ペイン開くウィンドウを、共通の tmux セッション claude に作る
+# 指定ディレクトリで Claude Code を2ペインと自動開発の監視を1ペイン開くウィンドウを、共通の tmux セッション claude に作る
 # 使い方: claude-team [ディレクトリ] [ウィンドウ名]
 #   ディレクトリは ~/Program からの相対パス（例: works/xxx）か絶対パス
 #   ディレクトリ省略時はカレントディレクトリ、ウィンドウ名省略時はディレクトリ名
@@ -12,7 +12,7 @@
 # |  Main     | Sub      |
 # |           |          |
 # |           +----------+
-# |           | Shell    |
+# |           | auto-dev |
 # |           |          |
 # +-----------+----------+
 
@@ -53,16 +53,21 @@ else
   main=$(tmux new-session -d -s "$SESSION" -n "$WINDOW" -c "$DIR" -P -F '#{pane_id}')
 fi
 sub=$(tmux split-window -h -t "$main" -c "$DIR" -P -F '#{pane_id}')
-shell=$(tmux split-window -v -t "$sub" -c "$DIR" -P -F '#{pane_id}')
+watch=$(tmux split-window -v -t "$sub" -c "$DIR" -P -F '#{pane_id}')
 
 tmux select-pane -t "$main" -T Main
 tmux select-pane -t "$sub" -T Sub
-tmux select-pane -t "$shell" -T Shell
 
-# claude 終了後もシェルが残るよう send-keys で起動する。右下はシェルのまま使う
+# 終了後もシェルが残るよう send-keys で起動する
 for pane in "$main" "$sub"; do
   tmux send-keys -t "$pane" claude Enter
 done
+# 右下は自動開発の監視（claude-auto-dev-watch。ペインの名前は自分で auto-dev にする）。ディレクトリがリポジトリ
+# （worktree なら元のリポジトリ）の中なら、そのリポジトリに絞る。シェルは C-q + S のポップアップで開く
+watch_cmd=claude-auto-dev-watch
+common=$(git -C "$DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+  watch_cmd="$watch_cmd --repo $(printf '%q' "$(basename "$(dirname "$common")")")"
+tmux send-keys -t "$watch" "$watch_cmd" Enter
 
 tmux select-pane -t "$main"
 attach_session
