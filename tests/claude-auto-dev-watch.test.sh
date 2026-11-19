@@ -30,12 +30,20 @@ setup() {
   export XDG_CACHE_HOME="$tmp" CLAUDE_AUTO_DEV_STATE_DIR="$state" CLAUDE_AUTO_DEV_NOW="$now" LINES=40 COLUMNS=60
   export TMUX_AUTO_DEV_STATUS=/usr/bin/true TMUX_AUTO_DEV_TTL=100000 FAKE_LOG="$tmp/fake.log" TMUX_PANE=
   export PATH="$tmp/bin:$PATH"
-  export FAKE_PANES= FAKE_PATH=/
+  export FAKE_PANES= FAKE_PATH=/ FAKE_BR=%1 FAKE_TR=%1 FAKE_TL=%1
   cat > "$tmp/bin/tmux" <<'EOF'
 #!/bin/bash
 echo "tmux $*" >> "$FAKE_LOG"
 [ "$1" != list-panes ] || printf '%s' "$FAKE_PANES"
-[ "$1" != display ] || echo "$FAKE_PATH"
+# display は、-t でペインを指したらそのペインの ID（FAKE_BR・FAKE_TR・FAKE_TL）、それ以外は今のペインのパスを返す
+if [ "$1" = display ]; then
+  case "$*" in
+    *'{bottom-right}'*) echo "$FAKE_BR" ;;
+    *'{top-right}'*) echo "$FAKE_TR" ;;
+    *'{top-left}'*) echo "$FAKE_TL" ;;
+    *) echo "$FAKE_PATH" ;;
+  esac
+fi
 EOF
   chmod +x "$tmp/bin/tmux"
   echo '[]' > "$cache"
@@ -187,6 +195,15 @@ assert_eq "自分のペインに印を付ける（C-q + M で閉じるため）"
 setup
 FAKE_PANES=$'%1 \n%2 \n' "$bin/claude-auto-dev-watch" --toggle
 assert_eq "監視のペインがなければ、右下のペインを左右に割って開く" "yes" "$(has "$(cat "$FAKE_LOG")" "tmux split-window -d -h -l 60 -t {bottom-right} $bin/claude-auto-dev-watch")"
+
+# claude-team のウィンドウ（左に Main、右に Sub と監視）で監視を閉じたあと。右の列は Sub だけになっている
+setup
+FAKE_BR=%2 FAKE_TR=%2 FAKE_TL=%1 FAKE_PANES=$'%1 \n%2 \n' "$bin/claude-auto-dev-watch" --toggle
+assert_eq "右の列のペインが1つだけなら、上下に割って元の右下に開く" "yes" "$(has "$(cat "$FAKE_LOG")" "tmux split-window -d -v -t {bottom-right} $bin/claude-auto-dev-watch")"
+
+setup
+FAKE_BR=%3 FAKE_TR=%2 FAKE_TL=%1 FAKE_PANES=$'%1 \n%2 \n%3 \n' "$bin/claude-auto-dev-watch" --toggle
+assert_eq "右の列にペインが2つ以上あれば、右下のペインを左右に割って開く" "yes" "$(has "$(cat "$FAKE_LOG")" "tmux split-window -d -h -l 60 -t {bottom-right} $bin/claude-auto-dev-watch")"
 
 setup
 git init -q "$tmp/my-app" && mkdir -p "$tmp/my-app/src"
