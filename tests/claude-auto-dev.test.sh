@@ -79,7 +79,8 @@ EOF
 #!/bin/bash
 [ -z "$FAKE_GH_FAIL" ] || exit 1
 case "$1 $2" in
-  "issue list") case "$*" in *auto-in-progress*) echo "$FAKE_STALE" ;; *"--state all"*)
+  "issue list") echo "gh issue list $*" >> "$FAKE_LOG"
+    case "$*" in *auto-in-progress*) echo "$FAKE_STALE" ;; *"--state all"*)
     if [ -n "$FAKE_ALL_ISSUES_AFTER" ] && grep -q '^gh issue create' "$FAKE_LOG" 2>/dev/null; then echo "$FAKE_ALL_ISSUES_AFTER"; else echo "$FAKE_ALL_ISSUES"; fi ;; *) echo "$FAKE_ISSUES" ;; esac ;;
   "issue create") printf 'gh issue create arg=%s\n' "$@" >> "$FAKE_LOG"; sed 's/^/gh issue create body=/' >> "$FAKE_LOG"
     [ -z "$FAKE_CREATE_FAIL" ] || exit 1
@@ -130,6 +131,13 @@ assert_eq "プロンプトで手順のファイルを読ませる" "yes" "$(echo
 system_prompt=$(sed -n '/^claude arg=--append-system-prompt$/{n;p;}' "$FAKE_LOG")
 assert_eq "システムプロンプトで日本語で書くよう指示する" "yes" "$(echo "$system_prompt" | grep -q '日本語' && echo yes || echo no)"
 assert_eq "プロンプトに設定ファイルの中身を入れる" "yes" "$(grep -q 'https://example.com/notion' "$FAKE_LOG" && echo yes || echo no)"
+
+# gh の一覧は、件数を指定しないと30件で切れる（新しい順）。着手できる Issue が30件を超えても、
+# 古い Issue（番号の小さいもの、p1 のもの）を取りこぼさないよう、件数を指定して取得する
+list_limit() { grep -E "^gh issue list .*$1" "$FAKE_LOG" | sed -n 's/.*--limit \([0-9]*\).*/\1/p' | head -n 1; }
+setup
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "着手できる Issue の一覧を、30件で切らない" "yes" "$([ "$(list_limit '--label auto-ready')" -ge 1000 ] 2>/dev/null && echo yes || echo no)"
 
 # やることがない回は、claude を起動しない（使用量を消費しない）
 setup
@@ -568,6 +576,13 @@ FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_ALL_ISSUES_AFTER="$after" "$bin/claude-a
 FAKE_ISSUES='[]' FAKE_ALL_ISSUES="$after" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "企画が作った Issue だけでは、もう一度企画しない" "1" "$(claude_calls)"
 unset CLAUDE_AUTO_DEV_PLAN_INTERVAL
+
+# 全件の一覧（重複の確認、企画の状態、精査の対象に使う）も、300件で切らない。1日に20〜30件ずつ増えるため
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "全件の一覧を、300件で切らない" "yes" "$([ "$(list_limit '--json number,title,state')" -ge 1000 ] 2>/dev/null && echo yes || echo no)"
+assert_eq "Issue を作ったあとの全件の一覧も、300件で切らない" "yes" "$([ "$(list_limit '--json number,state$')" -ge 1000 ] 2>/dev/null && echo yes || echo no)"
 
 # 今ある Issue はスクリプトが取得して、ファイルで渡す（重複した案を出さないため）
 setup
