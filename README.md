@@ -38,7 +38,7 @@ macOS用の設定ファイル管理リポジトリ
 - `iterm2/profile.json` - iTerm2のdynamic profile（Shift+EnterでESC+CRを送りClaude Codeで改行）
 
 ### スクリプト
-- `bin/claude-team` - 指定ディレクトリでClaude Codeを3ペイン起動するtmuxセッションを構築
+- `bin/claude-team` - 共通のtmuxセッション `claude` に、指定ディレクトリでClaude Codeを3ペイン起動するウィンドウを作る（リポジトリごとに1ウィンドウ）
 - `bin/claude-statusline` - Claude CodeのstatusLine（モデル・effort・トークン数・コンテキスト使用率など）
 - `bin/claude-context-guard` - Claude Codeのフック。コンテキストが自動圧縮に近づいたら（既定25万トークン）、圧縮前にNotionへ途中経過を記録するよう促す
 - `bin/claude-auto-dev` - launchdなどから定期的に呼ばれ、リポジトリの`auto-ready`のIssueを1件、Claude Code（`claude -p`）にPRにさせる。手順の本体はリポジトリの`.claude/auto-dev.md`。Issueがない回はClaudeを起動しない。`.claude/auto-plan.md`があるリポジトリでは、決まった間隔で次の作業を企画してIssueにし、`.claude/auto-plan-review.md`があれば、企画したIssueとマージされたPRを別の回で精査する

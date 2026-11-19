@@ -1,9 +1,12 @@
 #!/bin/bash
-# 指定ディレクトリで Claude Code を3ペイン起動する tmux セッションを作る
-# 使い方: claude-team [ディレクトリ] [セッション名]
+# 指定ディレクトリで Claude Code を3ペイン起動するウィンドウを、共通の tmux セッション claude に作る
+# 使い方: claude-team [ディレクトリ] [ウィンドウ名]
 #   ディレクトリは ~/Program からの相対パス（例: works/xxx）か絶対パス
-#   ディレクトリ省略時はカレントディレクトリ、セッション名省略時はディレクトリ名
+#   ディレクトリ省略時はカレントディレクトリ、ウィンドウ名省略時はディレクトリ名
 #   案件名はリポジトリに書かず、スニペット（例: claude-team works/xxx）で呼び分ける
+#   リポジトリをまたいで並行するときも、ウィンドウ（タブ）を切り替えるだけで済み、
+#   ほかのリポジトリで Claude Code が待機中・完了かはステータスバーのウィンドウ番号の色でわかる
+#   そのリポジトリのウィンドウがすでにあれば、作らずにそこへ移る
 #
 # +-----------+----------+
 # |  Main     | Sub      |
@@ -14,6 +17,7 @@
 # +-----------+----------+
 
 BASE="$HOME/Program"
+SESSION=claude
 
 case "$1" in
   "") target="$PWD" ;;
@@ -21,10 +25,11 @@ case "$1" in
   *) target="$BASE/$1" ;;
 esac
 DIR=$(cd "$target" 2>/dev/null && pwd) || { echo "ディレクトリが見つかりません: $target" >&2; exit 1; }
-# tmux のセッション名に使えない . と : は _ に置き換える
-SESSION=$(printf '%s' "${2:-$(basename "$DIR")}" | tr '.:' '__')
+# tmux のターゲットの指定に使う . と : は _ に置き換える
+WINDOW=$(printf '%s' "${2:-$(basename "$DIR")}" | tr '.:' '__')
 
 attach_session() {
+  tmux select-window -t "=$SESSION:=$WINDOW"
   if [ -n "$TMUX" ]; then
     tmux switch-client -t "=$SESSION"
   else
@@ -32,15 +37,21 @@ attach_session() {
   fi
 }
 
-# 既存セッションがあればアタッチ
-if tmux has-session -t "=$SESSION" 2>/dev/null; then
-  echo "既存セッション '$SESSION' にアタッチします..."
+# 既存のウィンドウがあればそこへ移る
+if tmux has-session -t "=$SESSION" 2>/dev/null &&
+  tmux list-windows -t "=$SESSION" -F '#{window_name}' | grep -Fxq -- "$WINDOW"; then
+  echo "既存のウィンドウ '$WINDOW' に移ります..."
   attach_session
   exit 0
 fi
 
 # pane-base-index に依存しないよう、番号ではなくペインIDで扱う
-main=$(tmux new-session -d -s "$SESSION" -n main -c "$DIR" -P -F '#{pane_id}')
+# -n で名前を付けたウィンドウは automatic-rename が切れ、実行中のコマンド名に変わらない
+if tmux has-session -t "=$SESSION" 2>/dev/null; then
+  main=$(tmux new-window -d -t "=$SESSION:" -n "$WINDOW" -c "$DIR" -P -F '#{pane_id}')
+else
+  main=$(tmux new-session -d -s "$SESSION" -n "$WINDOW" -c "$DIR" -P -F '#{pane_id}')
+fi
 sub=$(tmux split-window -h -t "$main" -c "$DIR" -P -F '#{pane_id}')
 reviewer=$(tmux split-window -v -t "$sub" -c "$DIR" -P -F '#{pane_id}')
 
