@@ -105,8 +105,15 @@ mkdir -p "$state_dir/worktrees"
 # 企画の回にするか決める。企画の手順があるリポジトリで、前の企画から決まった間隔がたっていたら企画する。
 # Issue が少なくなるのを待たないのは、設計の残りを足すだけでなく、改善や新機能を定期的に考えさせるため。
 # 作るのは、着手できる Issue が目標の件数になるまで（実装が速ければ多く、止まっていれば少なく作る）。
-# 前の企画から main も Issue の開閉も変わっていなければ、くり返さない（出せる案がないのに毎回起動して使用量を消費しないため）
+# 前の企画から main も Issue の開閉も変わっていなければ、くり返さない（出せる案がないのに毎回起動して使用量を消費しないため）。
+# 比べる状態（main のコミットと、Issue の番号と開閉。$1 は Issue の JSON）は、企画がうまくいったときだけ残す
 mode=implement
+plan_key_of() {
+  {
+    git -C "$repo" rev-parse "$base"
+    echo "$1" | jq -c '[.[] | [.number, .state]] | sort'
+  } | shasum | cut -d' ' -f1
+}
 has_file() { git -C "$repo" cat-file -e "$base:$1" 2>/dev/null; }
 # 前に動いた時刻（ファイル $1）から $2 秒たったか
 due() { [ $(($(date +%s) - $(cat "$1" 2>/dev/null || echo 0))) -ge "$2" ]; }
@@ -144,11 +151,7 @@ plan_room=$((${CLAUDE_AUTO_DEV_PLAN_TARGET:-8} - $(echo "$ready" | jq length)))
 if [ "$mode" = implement ] && has_file .claude/auto-plan.md && [ "$plan_room" -gt 0 ] &&
   due "$plan_last_file" "${CLAUDE_AUTO_DEV_PLAN_INTERVAL:-21600}"; then
   fetch_all_issues
-  plan_key=$({
-    git -C "$repo" rev-parse "$base"
-    echo "$all_issues" | jq -c '[.[] | [.number, .state]] | sort'
-  } | shasum | cut -d' ' -f1)
-  [ "$plan_key" = "$(cat "$plan_key_file" 2>/dev/null)" ] || mode=plan
+  [ "$(plan_key_of "$all_issues")" = "$(cat "$plan_key_file" 2>/dev/null)" ] || mode=plan
 fi
 
 # やることがない回は Claude を起動しない（使用量を消費しない）。
@@ -280,9 +283,14 @@ readonly_tools=(
 
 # claude が書いた案のファイル（1行目がタイトル、2行目が「labels: ラベル, …」、3行目以降が本文）を Issue にする。
 # 件数の上限と付けてよいラベルをここで守る。使い方: create_issues <必ず付けるラベル> <上限> <作った回の名前> <ファイル>…
-# Issue にできなかった件数を $skipped に足す。
+# Issue にできなかった件数を $skipped に足す。$failed_dir があれば、Issue にできなかったファイルをそこに残す
+# （書いた案が消えると、開発ログには出したと残るのに Issue がない、というずれになるため）。
 # 優先のラベルは p2 まで。p1 は本人だけが付ける（claude が自分の案をいちばん前に差し込めないようにする）。
 # 企画の案に付けるのは1回に1件まで。精査が見つけた問題（auto-finding）には必ず付け、新しい作業より先に直す
+keep_failed() {
+  [ -n "$failed_dir" ] || return 0
+  mkdir -p "$failed_dir" && mv "$@" "$failed_dir"/
+}
 create_issues() {
   local base_label="$1" max="$2" by="$3" created=0 f url title labels_line auto_ready hold labels asked l p2 p2_used=0
   shift 3
@@ -298,6 +306,7 @@ create_issues() {
     if [ -z "$title" ] || [ -z "$labels_line" ]; then
       echo "形が違うので Issue にしません: $(basename "$f")" >> "$log"
       skipped=$((skipped + 1))
+      keep_failed "$f"
       continue
     fi
     # 付けるラベルは決まったものだけ。自動開発に任せない Issue（protected・needs-decision）には auto-ready を付けない
@@ -330,6 +339,7 @@ create_issues() {
       created=$((created + 1))
     else
       skipped=$((skipped + 1))
+      keep_failed "$f"
     fi
   done
 }
@@ -451,15 +461,22 @@ fi
 if [ "$mode" = plan ]; then
   plan_dir="$state_dir/plan/$name"
   plan_input="$state_dir/plan-input/$name.md"
+  # Issue にできなかった案は、ログと同じ名前のディレクトリに残す
+  failed_dir="$state_dir/plan-failed/${log_name%.log}"
+  # 止まるまでに書き終えていた案は、消さずに残して場所を知らせる
   plan_fail() {
+    local kept=
+    if compgen -G "$plan_dir/*.md" > /dev/null; then
+      keep_failed "$plan_dir"/*.md && kept="。書いてあった案: ${failed_dir}"
+    fi
     rm -rf "$plan_dir"
-    notify "の企画が失敗" "${1}。ログ: ${log}"
+    notify "の企画が失敗" "${1}。ログ: ${log}${kept}"
     exit "${2:-1}"
   }
   rm -rf "$plan_dir"
   mkdir -p "$plan_dir" "$state_dir/plan-input" "$state_dir/plan-key" "$state_dir/plan-last"
-  # 同じ状態でくり返さないよう、うまくいかなかった回も記録する
-  echo "$plan_key" > "$plan_key_file"
+  # うまくいかなかった回も時刻は記録し、次の間隔まではくり返さない。状態は記録しないので、間隔がたてばやり直す
+  # （一時的な失敗のあと、main も Issue も変わらないと、止まったままになるため）
   date +%s > "$plan_last_file"
   # ほかの人が書いた Issue は、本文に書かれた指示が案に紛れ込まないよう、タイトルだけを渡す
   me=$(gh api user --jq .login 2>> "$log") || plan_fail "GitHub のユーザー名を取得できません"
@@ -498,7 +515,14 @@ $(cat "$config")"
   ensure_labels auto-planned auto-ready needs-decision protected auto-decided p2
   create_issues auto-planned "$plan_max" 企画 "$plan_dir"/*.md
   rm -rf "$plan_dir"
-  [ "$skipped" -eq 0 ] || notify "の企画" "Issue にできなかった案が ${skipped} 件あります。ログ: ${log}"
+  if [ "$skipped" -ne 0 ]; then
+    notify "の企画" "Issue にできなかった案が ${skipped} 件あります。案: ${failed_dir}。ログ: ${log}"
+    exit 0
+  fi
+  # 状態は Issue を作ったあとのものを残す。作る前のものだと、企画が自分で作った Issue だけで次の企画が起動する。
+  # 取得できなければ残さない（次の間隔でもう一度企画するだけ）
+  after=$(gh issue list --state all --limit 300 --json number,state 2>> "$log") &&
+    plan_key_of "$after" > "$plan_key_file"
   exit 0
 fi
 
