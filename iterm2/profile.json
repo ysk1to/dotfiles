@@ -109,7 +109,6 @@
       "Mouse Reporting": true,
       "Command": "",
       "Description": "Default",
-      "Rewritable": true,
       "Screen": -1,
       "Selection Color": {
         "Red Component": 0.20000000000000001,
