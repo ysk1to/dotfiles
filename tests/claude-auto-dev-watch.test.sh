@@ -82,7 +82,7 @@ setup
 echo "[$(repo '.decisions = [{number: 15, title: "決めて"}, {number: 18, title: "これも"}] | .prs = [{number: 36, title: "一覧を足す"}]
   | .schedule.next_at = '"$(at '2026-11-18 17:00:00')"'')]" > "$cache"
 out=$(frame)
-assert_eq "判断待ちは、状況の行の下に番号とタイトルを1件1行で出す" "app  🙋 #15 #18   🔀 #36|     🙋 #15 決めて|     🙋 #18 これも" "$(sed -n 2,4p <<< "$out" | paste -sd '|' -)"
+assert_eq "タイトルの行があれば状況の行は件数にし、その下に番号とタイトルを1件1行で出す" "app  🙋 2   🔀 1|     🙋 #15 決めて|     🙋 #18 これも" "$(sed -n 2,4p <<< "$out" | paste -sd '|' -)"
 assert_eq "開いている PR も、番号とタイトルを1件1行で出す" "     🔀 #36 一覧を足す" "$(sed -n 5p <<< "$out")"
 assert_eq "次の起動の行は、タイトルの行の後に出す" "     ⏩ 17:00" "$(sed -n 6p <<< "$out")"
 echo "[$(repo '.decisions = [{number: 15, title: ("長" * 60)}]')]" > "$cache"
