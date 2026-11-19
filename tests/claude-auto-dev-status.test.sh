@@ -168,6 +168,22 @@ assert_eq "テキストに前回の回を出す" "yes" "$(has "$text" '11/18 14:
 assert_eq "テキストに Claude が決めたことを出す" "yes" "$(has "$text" '#14 自分で決めた')"
 assert_eq "テキストに通知を出す" "yes" "$(has "$text" '11/18 16:20  が失敗  #8: 止まりました')"
 assert_eq "作業中がなければ「なし」と出す" "yes" "$(printf '%s\n' "$text" | grep -q '作業中 *なし' && echo yes || echo no)"
+
+# ---- GitHub の URL ----
+assert_eq "origin がなければ、リポジトリの URL は null" "null" "$(q '.[0].url')"
+assert_eq "origin がなければ、テキストに URL を出さない" "no" "$(has "$text" 'https://')"
+git init -q "$tmp/my-app"
+git -C "$tmp/my-app" remote add origin git@github.com:someone/my-app.git
+assert_eq "origin（ssh）から GitHub の URL を作る" '"https://github.com/someone/my-app"' "$(q '.[0].url')"
+git -C "$tmp/my-app" remote set-url origin https://github.com/someone/my-app.git
+assert_eq "origin（https）から GitHub の URL を作る" '"https://github.com/someone/my-app"' "$(q '.[0].url')"
+git -C "$tmp/my-app" remote set-url origin git@example.com:someone/my-app.git
+assert_eq "origin が GitHub でなければ null" "null" "$(q '.[0].url')"
+git -C "$tmp/my-app" remote set-url origin git@github.com:someone/my-app.git
+text=$("$bin/claude-auto-dev-status" 2>&1)
+assert_eq "テキストの判断待ちの次の行に、Issue の URL を出す" "                    https://github.com/someone/my-app/issues/10" "$(grep -A1 -F '#10 決めて' <<< "$text" | tail -n 1)"
+assert_eq "テキストの開いている PR の次の行に、PR の URL を出す" "                    https://github.com/someone/my-app/pull/30" "$(grep -A1 -F '#30 開いている' <<< "$text" | tail -n 1)"
+assert_eq "判断待ちと開いている PR のほかには URL を出さない" "2" "$(grep -c 'https://' <<< "$text")"
 assert_eq "直近の出来事がない項目は出さない" "no" "$(has "$text" 'マージ')"
 
 setup
