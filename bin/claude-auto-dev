@@ -292,7 +292,7 @@ keep_failed() {
   mkdir -p "$failed_dir" && mv "$@" "$failed_dir"/
 }
 create_issues() {
-  local base_label="$1" max="$2" by="$3" created=0 f url title labels_line auto_ready hold labels asked l p2 p2_used=0
+  local base_label="$1" max="$2" by="$3" created=0 f url title labels_line auto_ready hold labels asked l p2 p2_used=0 line
   shift 3
   for f in "$@"; do
     [ -f "$f" ] || continue
@@ -309,27 +309,43 @@ create_issues() {
       keep_failed "$f"
       continue
     fi
-    # 付けるラベルは決まったものだけ。自動開発に任せない Issue（protected・needs-decision）には auto-ready を付けない
+    # 付けるラベルは決まったものだけ。自動開発に任せない Issue（protected・needs-decision）には auto-ready を付けない。
+    # 区切りは読点（、）でも読む。知らないラベルは付けずに、ログに残す
     auto_ready=no
     hold=no
     p2=no
-    [ "$base_label" != auto-finding ] || p2=yes
     labels=(--label "$base_label")
-    IFS=, read -ra asked <<< "${labels_line#labels:}"
+    line="${labels_line#labels:}"
+    IFS=, read -ra asked <<< "${line//、/,}"
     for l in "${asked[@]}"; do
       l="${l// /}"
       case "$l" in
         auto-ready) auto_ready=yes ;;
         needs-decision | protected) hold=yes; labels+=(--label "$l") ;;
         auto-decided) labels+=(--label "$l") ;;
-        p1 | p2) [ "$p2_used" -ge 1 ] || p2=yes ;;
+        p1 | p2) p2=yes ;;
+        "") ;;
+        *) echo "知らないラベルは付けません: ${l}（$(basename "$f")）" >> "$log" ;;
       esac
     done
+    # auto-ready も任せないラベルもない案は、誰も拾わない Issue になるので、needs-decision にして本人に見せる
+    if [ "$auto_ready" = no ] && [ "$hold" = no ]; then
+      echo "auto-ready も needs-decision・protected もないので、needs-decision にします: $(basename "$f")" >> "$log"
+      hold=yes
+      labels+=(--label needs-decision)
+    fi
+    # p2 は着手の順のラベルなので、自動開発に任せない案には付けない（1回に1件の枠も使わない）。
+    # 精査が見つけた問題には、必ず付ける
+    if [ "$base_label" = auto-finding ]; then
+      p2=yes
+    elif [ "$hold" = yes ] || [ "$p2_used" -ge 1 ]; then
+      p2=no
+    fi
     if [ "$p2" = yes ]; then
       labels+=(--label p2)
       p2_used=$((p2_used + 1))
     fi
-    [ "$auto_ready" = no ] || [ "$hold" = yes ] || labels+=(--label auto-ready)
+    [ "$hold" = yes ] || labels+=(--label auto-ready)
     if url=$({
       tail -n +3 "$f"
       printf '\n---\n🤖 自動開発ワークフロー（%s）が作成\n' "$by"
