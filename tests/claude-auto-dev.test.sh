@@ -617,6 +617,26 @@ FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_PLAN_TEXT=$'🤖 [判断] 範囲\nlabels
 creates=$(issue_creates)
 assert_eq "needs-decision の Issue には auto-ready を付けない" "yesno" "$(has_line "$creates" 'needs-decision')$(has_line "$creates" 'auto-ready')"
 
+# auto-ready も、任せないラベル（needs-decision・protected）もない案は、誰も拾わない Issue になるので、
+# needs-decision にして本人に見せる
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_PLAN_TEXT=$'🤖 [add] 新機能\nlabels: auto-decided\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+creates=$(issue_creates)
+assert_eq "auto-ready も任せないラベルもなければ needs-decision にする" "yesno" "$(has_line "$creates" 'needs-decision')$(has_line "$creates" 'auto-ready')"
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_PLAN_TEXT=$'🤖 [add] 新機能\nlabels:\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "ラベルが空でも needs-decision にする" "yes" "$(has_line "$(issue_creates)" 'needs-decision')"
+
+# 区切りが読点（、）でもラベルを読む。知らないラベルは付けずに、ログに残す
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_PLAN_TEXT=$'🤖 [add] 新機能\nlabels: auto-ready、auto-decided, urgent\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+creates=$(issue_creates)
+assert_eq "読点で区切ったラベルも読む" "yesyesno" "$(has_line "$creates" 'auto-ready')$(has_line "$creates" 'auto-decided')$(has_line "$creates" 'needs-decision')"
+assert_eq "知らないラベルをログに残す" "yes" "$(grep -q '知らないラベル.*urgent' "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/*.log && echo yes || echo no)"
+
 # ラベルの行がないファイルは、形が違うので Issue にしない
 setup
 enable_plan
@@ -898,6 +918,12 @@ enable_plan
 FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "書かれていなければ p2 を付けない" "0" "$(p2_count p2)"
 assert_eq "p2 を1件まで使えるとプロンプトで伝える" "yes" "$(grep -q 'p2' "$FAKE_LOG" && echo yes || echo no)"
+
+# p2 は着手の順のラベルなので、自動開発に任せない案（needs-decision・protected）には付けない
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_PLAN_TEXT=$'🤖 [判断] 範囲\nlabels: needs-decision, p2\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "企画の回は、任せない案には p2 を付けない" "0" "$(p2_count p2)"
 
 # 精査の回が PR から見つけた問題の Issue には、p2 を必ず付ける（壊れたものを直すのを、新しい作業より先にする）
 setup
