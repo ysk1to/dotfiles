@@ -21,7 +21,7 @@ LINKS := $(foreach val, $(DOTFILES), $(DOTPATH)/$(val),$(HOME)/$(val)) \
          $(DOTPATH)/iterm2/profile.json,$(subst $() ,@,$(ITERM_DIR))/dotfiles.json
 
 # コメントを含まない JSON（VSCode の設定は JSONC なので別扱い）
-JSON_FILES  := $(wildcard claude/*.json iterm2/*.json) iTerm.json
+JSON_FILES  := $(wildcard claude/*.json iterm2/*.json)
 JSONC_FILES := $(wildcard vscode/*.json)
 SCRIPTS     := $(wildcard bin/* claude/skills/*/*.sh)
 
