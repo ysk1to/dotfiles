@@ -84,6 +84,10 @@ echo "[$(repo ".schedule.missed_at = $(at '2026-11-18 16:00:00')")]" > "$cache"
 assert_eq "起動の見落としを出す" "yes" "$(has "$(frame)" '🚨 16:00 の起動が記録されていません')"
 echo "[$(repo '.error = "gh で Issue と PR を取得できません"')]" > "$cache"
 assert_eq "gh の失敗を出す" "yes" "$(has "$(frame)" '🚨 gh で Issue と PR を取得できません')"
+echo "[$(repo '.notices = [{at: 1, title: "が失敗", message: "古い失敗", resolved: true}]')]" > "$cache"
+assert_eq "後の回が正常に終わった失敗は 🚨 にしない" "no" "$(has "$(frame)" '🚨')"
+TMUX_PANE=%9 frame >/dev/null
+assert_eq "後の回が正常に終わった失敗では、枠を赤くしない" "yes" "$(has "$(cat "$FAKE_LOG")" 'tmux set -p -t %9 -u @claude_state')"
 
 # ---- 実行中の手順（claude の stream-json の出力） ----
 tool() { # ツール名 入力の JSON

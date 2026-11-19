@@ -92,7 +92,7 @@ frame() {
          if .ready > 0 then "📥 \(.ready)" else empty end] as $items
       | [if .schedule.missed_at then "🚨 \(.schedule.missed_at | when) の起動が記録されていません" else empty end,
          if .error then "🚨 \(.error)" else empty end,
-         (.notices[] | select(.title | test("失敗")) | "🚨 \(.at | when) \(.message)")] as $warns
+         (.notices[] | select((.title | test("失敗")) and (.resolved | not)) | "🚨 \(.at | when) \(.message)")] as $warns
       | [if .schedule.next_at then "⏩ \(.schedule.next_at | strflocaltime("%H:%M"))" else empty end,
          if .runs.today.count > 0 then "🔁 \(.runs.today.count)  💰 \(.runs.today.cost | money)" else empty end] as $plan
       | "\(.label)  " + (if ($items + $warns | length) == 0 then "✓" else $items | join("   ") end),
@@ -116,7 +116,7 @@ frame() {
 # 判断待ち・見落とし・gh の失敗・失敗の通知があれば、ペインを待機中（赤い枠）にする
 mark() {
   [ -n "$TMUX_PANE" ] || return 0
-  if status | jq -e 'any(.[]; (.decisions | length) > 0 or .schedule.missed_at or .error or any(.notices[]; .title | test("失敗")))' \
+  if status | jq -e 'any(.[]; (.decisions | length) > 0 or .schedule.missed_at or .error or any(.notices[]; (.title | test("失敗")) and (.resolved | not)))' \
     > /dev/null 2>&1; then
     tmux set -p -t "$TMUX_PANE" @claude_state waiting
   else
