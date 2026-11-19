@@ -1,0 +1,40 @@
+#!/bin/bash
+# dynamic profile を iTerm2 の既定のプロファイルにする。
+# 既定が Default に戻ると、新しいウィンドウでキー割り当てや配色が効かなくなるため、deploy-iterm で設定し直す。
+# 使い方:
+#   iterm-default-profile <dynamic profile の JSON>
+#   iterm-default-profile --check <dynamic profile の JSON>   既定になっていれば 0、違えば 1（書き込まない）
+# iTerm2 は終了時に設定ファイルを書き直すので、動いているあいだは書き込まず、画面での直し方を出す。
+# jq がなければ書き込まずに 0 で終わる（make install は jq を入れる前にも呼ぶため）
+
+check=0
+if [ "$1" = "--check" ]; then
+  check=1
+  shift
+fi
+[ $# -eq 1 ] || { echo "使い方: iterm-default-profile [--check] <dynamic profile の JSON>" >&2; exit 2; }
+
+domain=com.googlecode.iterm2
+key="Default Bookmark Guid"
+
+if ! command -v jq >/dev/null; then
+  echo "jq がないので、既定のプロファイルは変えません。jq を入れてから make deploy-iterm を実行してください" >&2
+  exit "$check"
+fi
+
+guid=$(jq -er '.Profiles[0].Guid' "$1" 2>/dev/null) || { echo "$1 から Guid を読めません" >&2; exit 1; }
+name=$(jq -r '.Profiles[0].Name' "$1")
+
+if [ "$(defaults read "$domain" "$key" 2>/dev/null)" = "$guid" ]; then
+  [ "$check" -eq 1 ] || echo "既定のプロファイルは $name です"
+  exit 0
+fi
+[ "$check" -eq 0 ] || exit 1
+
+if pgrep -x iTerm2 >/dev/null; then
+  echo "iTerm2 が動いているので、既定のプロファイルは変えません。" >&2
+  echo "Settings → Profiles で $name を選び、Other Actions… → Set as Default を選んでください" >&2
+  exit 0
+fi
+
+defaults write "$domain" "$key" -string "$guid" && echo "既定のプロファイルを $name にしました"

@@ -66,8 +66,12 @@ make install
 ```
 dotfiles・Claude Code・VSCode・iTerm2の設定をシンボリックリンクで展開し、`brew bundle`でパッケージを入れる。個別に展開したいときは`make deploy-*`を使う
 
-### 3. iTerm2のプロファイルをデフォルトにする
-iTerm2の Settings → Profiles で「ysk1to (dotfiles)」を選び、Other Actions → Set as Default でデフォルトにする
+### 3. iTerm2のプロファイルがデフォルトになっているかを確かめる
+`make install`は、iTerm2が動いていなければ「ysk1to (dotfiles)」をデフォルトのプロファイルにする。iTerm2の中から実行したときは変えないので、次のどちらかでデフォルトにする
+- iTerm2の Settings → Profiles で「ysk1to (dotfiles)」を選び、Other Actions → Set as Default を選ぶ
+- iTerm2を終了し、ほかのターミナルから`make deploy-iterm`を実行する
+
+デフォルトが外れると、新しいウィンドウでShift+Enterの改行や配色が効かなくなる。外れていないかは`make check`でわかる
 
 ### 4. 状態を確認
 ```bash
@@ -79,13 +83,13 @@ make check
 ### Makeターゲット
 - `make` / `make help` - ターゲット一覧を表示
 - `make install` - すべての設定を展開し、Homebrewパッケージをインストール
-- `make check` - シンボリックリンク、外部のスキル、Homebrewパッケージが揃っているか確認（古いだけのパッケージは問題なしとみなす）
+- `make check` - シンボリックリンク、外部のスキル、iTerm2の既定のプロファイル、Homebrewパッケージが揃っているか確認（古いだけのパッケージは問題なしとみなす）
 - `make lint` - `bin/`のスクリプトをshellcheck、JSONファイルを構文チェック
 - `make list` - リポジトリ内のdotfilesを一覧表示
 - `make deploy` - dotfilesをホームディレクトリにシンボリックリンク作成
 - `make deploy-vscode` - VSCode設定をアプリケーションディレクトリにシンボリックリンク作成
 - `make deploy-claude` - Claude Code設定を`~/.claude/`にシンボリックリンク作成し、外部のスキルを取得
-- `make deploy-iterm` - iTerm2のdynamic profileをシンボリックリンク作成
+- `make deploy-iterm` - iTerm2のdynamic profileをシンボリックリンク作成し、既定のプロファイルにする（iTerm2を終了してから実行する。動いているあいだは設定ファイルが上書きされるため、変えずに画面での直し方を出す）
 
 ### カスタムスクリプト
 - `claude-auto-dev <リポジトリのパス>` - 自動開発ワークフローを1回動かす。リモートの最新から専用のworktreeを作って作業させ、終わったら片付ける
