@@ -73,9 +73,12 @@ mkdir -p "$state_dir/logs"
 log_name="$name-$(date +%Y%m%d-%H%M%S).log"
 log="$state_dir/logs/$log_name"
 
+# gh の一覧は、件数を指定しないと新しい順の30件で切れる。古い Issue を取りこぼさないよう、どの一覧も件数を指定する
+issue_limit="${CLAUDE_AUTO_DEV_ISSUE_LIMIT:-1000}"
+
 # 前の回が落ちて auto-in-progress のまま残った Issue は、もう誰も拾わないので、判断待ちにして知らせる。
 # ロックを取れているので、今ほかに動いている回はない。gh が失敗したら（ログイン切れなど）、黙って終わらずに知らせる
-stale=$(set -o pipefail; gh issue list --label auto-in-progress --state open --json number | jq -r '.[].number') || {
+stale=$(set -o pipefail; gh issue list --label auto-in-progress --state open --limit "$issue_limit" --json number | jq -r '.[].number') || {
   notify "が失敗" "gh で Issue を取得できません"
   exit 1
 }
@@ -89,7 +92,7 @@ done
 
 # 着手できる Issue（auto-ready のうち、判断待ち・作業中でないもの）を、着手の順に並べる。
 # 順は p1 → p2 → ラベルなしで、同じ段階の中では番号の小さい順。あとから出た大事な Issue を、先に並んだものより前にできる
-ready=$(set -o pipefail; gh issue list --label auto-ready --state open --json number,labels |
+ready=$(set -o pipefail; gh issue list --label auto-ready --state open --limit "$issue_limit" --json number,labels |
   jq -c '[.[] | select([.labels[].name] | index("needs-decision") or index("auto-in-progress") or index("in-progress") | not)]
     | sort_by([([.labels[].name] | if index("p1") then 0 elif index("p2") then 1 else 2 end), .number]) | map(.number)') || {
   notify "が失敗" "gh で Issue を取得できません"
@@ -120,7 +123,7 @@ due() { [ $(($(date +%s) - $(cat "$1" 2>/dev/null || echo 0))) -ge "$2" ]; }
 all_issues=
 fetch_all_issues() {
   [ -z "$all_issues" ] || return 0
-  all_issues=$(gh issue list --state all --limit 300 --json number,title,state,stateReason,labels,body,author) || {
+  all_issues=$(gh issue list --state all --limit "$issue_limit" --json number,title,state,stateReason,labels,body,author) || {
     notify "が失敗" "gh で Issue を取得できません"
     exit 1
   }
@@ -553,7 +556,7 @@ $(cat "$config")"
   fi
   # 状態は Issue を作ったあとのものを残す。作る前のものだと、企画が自分で作った Issue だけで次の企画が起動する。
   # 取得できなければ残さない（次の間隔でもう一度企画するだけ）
-  after=$(gh issue list --state all --limit 300 --json number,state 2>> "$log") &&
+  after=$(gh issue list --state all --limit "$issue_limit" --json number,state 2>> "$log") &&
     plan_key_of "$after" > "$plan_key_file"
   exit 0
 fi
