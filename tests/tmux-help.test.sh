@@ -61,9 +61,9 @@ assert_eq "bind の一覧を読めている" "C-q" "$(bound_keys prefix | head -
 assert_eq ".tmux.conf の prefix のキーがすべて載っている" "" "$(missing_keys prefix)"
 assert_eq ".tmux.conf のコピーモードのキーがすべて載っている" "" "$(missing_keys copy)"
 
-# ヘルプのポップアップと、シェルのペインを開くキーがある
+# ヘルプのポップアップと、シェルのポップアップ（いまのペインの上に重ねる）を開くキーがある
 assert_eq "C-q ? でヘルプを開く" "1" "$(grep -c '^bind ? display-popup .*~/bin/tmux-help' "$conf")"
-assert_eq "C-q S でシェルをいまのペインの下に開く" "1" "$(grep -c '^bind S split-window -v .*-c "#{pane_current_path}"' "$conf")"
+assert_eq "C-q S でシェルをいまのペインの上に重ねて開く" "1" "$(grep -c '^bind S run-shell -b .*display-popup .*-w #{pane_width} .*-d "#{pane_current_path}"' "$conf")"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures failed"
