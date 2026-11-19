@@ -39,7 +39,7 @@ macOS用の設定ファイル管理リポジトリ
   - 色など画面で見ながら決めたいものは、画面で調整してから Settings → Profiles の Other Actions → Copy Profile as JSON で書き出し、変えたキーだけをこのファイルに写す
 
 ### スクリプト
-- `bin/claude-team` - 共通のtmuxセッション `claude` に、指定ディレクトリでClaude Codeを3ペイン起動するウィンドウを作る（リポジトリごとに1ウィンドウ）
+- `bin/claude-team` - 共通のtmuxセッション `claude` に、指定ディレクトリでClaude Codeを2ペインとシェルを1ペイン開くウィンドウを作る（リポジトリごとに1ウィンドウ）
 - `bin/claude-statusline` - Claude CodeのstatusLine（モデル・effort・トークン数・コンテキスト使用率など）
 - `bin/claude-context-guard` - Claude Codeのフック。コンテキストが自動圧縮に近づいたら（既定25万トークン）、圧縮前にNotionへ途中経過を記録するよう促す
 - `bin/claude-auto-dev` - launchdなどから定期的に呼ばれ、リポジトリの`auto-ready`のIssueを1件、Claude Code（`claude -p`）にPRにさせる。手順の本体はリポジトリの`.claude/auto-dev.md`。Issueがない回はClaudeを起動しない。`.claude/auto-plan.md`があるリポジトリでは、決まった間隔で次の作業を企画してIssueにし、`.claude/auto-plan-review.md`があれば、企画したIssueとマージされたPRを別の回で精査する

@@ -33,7 +33,8 @@ case "$1" in
   has-session) [ -n "$FAKE_SESSION" ] ;;
   list-windows) printf '%s' "$FAKE_WINDOWS" ;;
   new-session|new-window) echo %1 ;;
-  split-window) echo %2 ;;
+  # 割るたびに %2・%3 と別のペインを返す
+  split-window) n=$(($(cat "$FAKE_LOG.split" 2>/dev/null || echo 1) + 1)); echo "$n" > "$FAKE_LOG.split"; echo "%$n" ;;
 esac
 EOF
   chmod +x "$tmp/bin/tmux"
@@ -45,7 +46,9 @@ setup
 out=$(run private/my.app)
 assert_eq "共通のセッションを、リポジトリ名のウィンドウで作る" "yes" "$(has "$out" "tmux new-session -d -s claude -n my_app -c $repo")"
 assert_eq "ペインを2回割って3ペインにする" "2" "$(count "$out" 'tmux split-window')"
-assert_eq "3つのペインで claude を起動する" "3" "$(count "$out" 'claude Enter')"
+assert_eq "上の2つのペインで claude を起動する" "2" "$(count "$out" 'claude Enter')"
+assert_eq "右下のペインは claude を起動せず、シェルにする" "no" "$(has "$out" 'tmux send-keys -t %3 claude')"
+assert_eq "右下のペインの名前は Shell" "yes" "$(has "$out" 'tmux select-pane -t %3 -T Shell')"
 assert_eq "tmux の外からはアタッチする" "yes" "$(has "$out" 'tmux attach -t =claude')"
 
 # ---- 共通のセッションはあり、そのリポジトリのウィンドウがないとき ----
@@ -55,7 +58,7 @@ out=$(run private/my.app)
 assert_eq "セッションは作らない" "no" "$(has "$out" 'tmux new-session')"
 assert_eq "ウィンドウを足す" "yes" "$(has "$out" "tmux new-window -d -t =claude: -n my_app -c $repo")"
 assert_eq "足したウィンドウを選ぶ" "yes" "$(has "$out" 'tmux select-window -t =claude:=my_app')"
-assert_eq "3つのペインで claude を起動する" "3" "$(count "$out" 'claude Enter')"
+assert_eq "上の2つのペインで claude を起動する" "2" "$(count "$out" 'claude Enter')"
 
 # ---- そのリポジトリのウィンドウがすでにあるとき ----
 setup
