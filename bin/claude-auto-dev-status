@@ -95,7 +95,10 @@ collect() {
     issues='[]'
     prs='[]'
   fi
-  jq -n --arg name "$name" --arg label "$(label "$name")" --arg repo "$repo" --arg error "$error" --argjson since "$since" \
+  # GitHub での URL（テキストで、判断待ちと開いている PR に添える）。origin が GitHub でなければ出さない
+  url=$(git -C "$repo" remote get-url origin 2>/dev/null |
+    sed -nE 's#^(git@github\.com:|https://github\.com/)(.+)$#https://github.com/\2#p' | sed 's/\.git$//')
+  jq -n --arg name "$name" --arg label "$(label "$name")" --arg repo "$repo" --arg url "$url" --arg error "$error" --argjson since "$since" \
     --argjson running "$(running "$name")" \
     --arg today "$(date -r "$now" +%Y%m%d)" --argjson runs "$runs" --argjson notices "$notices" --argjson schedule "$schedule" \
     --argjson issues "$issues" --argjson prs "$prs" '
@@ -107,7 +110,7 @@ collect() {
     | ($open | map(select(names | index("auto-ready") and (index("needs-decision") or index("auto-in-progress") or index("in-progress") | not)))
         | sort_by([(names | if index("p1") then 0 elif index("p2") then 1 else 2 end), .number])) as $ready
     | ($issues | map(recent("createdAt")) | sort_by(.number)) as $created
-    | {name: $name, label: $label, repo: $repo, running: $running,
+    | {name: $name, label: $label, repo: $repo, url: (if $url == "" then null else $url end), running: $running,
        decisions: [$open[] | select(names | index("needs-decision")) | brief],
        prs: [$prs[] | select(.state == "OPEN") | {number, title, labels: names}],
        in_progress: [$open[] | select(names | index("auto-in-progress")) | brief],
@@ -147,18 +150,23 @@ echo "$all" | jq -r --arg hours "${CLAUDE_AUTO_DEV_STATUS_HOURS:-24}" '
   def item: "#\(.number) \(.title)";
   # 見出しを端末での幅（全角は2）で14にそろえ、行にする
   def line($label; $text):
-    ($label | explode | map(if . > 4351 then 2 else 1 end) | add) as $w
+    ($label | explode | map(if . > 4351 then 2 else 1 end) | add // 0) as $w
     | "    \($label)\(" " * ([14 - $w, 1] | max))  \($text)";
   # 見出しと項目の一覧。項目がなければ「なし」を出す
   def list($label; $items): if ($items | length) == 0 then line($label; "なし") else ($items[] | line($label; .)) end;
+  # 本人が開く項目（判断待ち・開いている PR）。次の行に GitHub の URL を添える
+  def links($label; $kind; $items; text):
+    .url as $url
+    | if ($items | length) == 0 then line($label; "なし")
+      else ($items[] | line($label; text), (if $url then line(""; "\($url)/\($kind)/\(.number)") else empty end)) end;
   # 項目がなければ、行ごと出さない
   def some($label; $items): $items[] | line($label; item);
   (.[] | .name,
     (if .schedule.missed_at then "  ⚠ \(.schedule.missed_at | time) の起動が記録されていません" else empty end),
     (if .error then "  ⚠ \(.error)" else empty end),
     "  本人待ち",
-    list("判断待ち"; [.decisions[] | item]),
-    list("開いている PR"; [.prs[] | item + (if (.labels | length) > 0 then "（\(.labels | join(", "))）" else "" end)]),
+    links("判断待ち"; "issues"; .decisions; item),
+    links("開いている PR"; "pull"; .prs; item + (if (.labels | length) > 0 then "（\(.labels | join(", "))）" else "" end)),
     "  自動開発",
     (if .running then line("実行中"; "\(.running | if .mode == "implement" then "#\(.issue) の実装" elif .mode == "plan" then "企画" else "精査" end)（\(.running.started_at | time) から）") else empty end),
     list("作業中"; [.in_progress[] | item]),

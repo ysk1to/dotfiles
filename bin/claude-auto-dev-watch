@@ -1,5 +1,6 @@
 #!/bin/bash
-# claude-auto-dev の状況を、tmux の監視用のペインに流し続ける。上にリポジトリごとの状況、中に実行中の回の手順
+# claude-auto-dev の状況を、tmux の監視用のペインに流し続ける。上にリポジトリごとの状況
+# （判断待ちと開いている PR は番号とタイトルも1件1行で）、中に実行中の回の手順
 # （claude の stream-json の出力から、最後の5回のツールの呼び出し）、下に全リポジトリのできごと
 # （claude-auto-dev が残す events.tsv）を新しい順に出す。判断待ちや見落とし・失敗があれば、ペインを待機中
 # （@claude_state = waiting。ほかの Claude のペインと同じ赤い枠）にする。
@@ -96,6 +97,8 @@ frame() {
       | [if .schedule.next_at then "⏩ \(.schedule.next_at | strflocaltime("%H:%M"))" else empty end,
          if .runs.today.count > 0 then "🔁 \(.runs.today.count)  ⏳ \(.runs.today.duration // 0 | duration)" else empty end] as $plan
       | "\(.label)  " + (if ($items + $warns | length) == 0 then "✓" else $items | join("   ") end),
+        (.decisions[] | select(.title) | "     🙋 #\(.number) \(.title)"),
+        (.prs[] | select(.title) | "     🔀 #\(.number) \(.title)"),
         ($warns[] | "     " + .),
         (if ($plan | length) > 0 then "     " + ($plan | join("  ")) else empty end);
     def rule($title): $title + " " + ("─" * ([$cols - ($title | explode | map(cw) | add) - 1, 0] | max));
