@@ -30,11 +30,12 @@ setup() {
   export XDG_CACHE_HOME="$tmp" CLAUDE_AUTO_DEV_STATE_DIR="$state" CLAUDE_AUTO_DEV_NOW="$now" LINES=40 COLUMNS=60
   export TMUX_AUTO_DEV_STATUS=/usr/bin/true TMUX_AUTO_DEV_TTL=100000 FAKE_LOG="$tmp/fake.log" TMUX_PANE=
   export PATH="$tmp/bin:$PATH"
-  export FAKE_PANES=
+  export FAKE_PANES= FAKE_PATH=/
   cat > "$tmp/bin/tmux" <<'EOF'
 #!/bin/bash
 echo "tmux $*" >> "$FAKE_LOG"
 [ "$1" != list-panes ] || printf '%s' "$FAKE_PANES"
+[ "$1" != display ] || echo "$FAKE_PATH"
 EOF
   chmod +x "$tmp/bin/tmux"
   echo '[]' > "$cache"
@@ -141,6 +142,20 @@ echo "[$(repo)]" > "$cache"
 for i in $(seq 1 100); do event "$((now - 1000 + i))" my-app start "#$i に着手"; done
 assert_eq "できごとはペインの高さに収まる分だけ出す" "yes" "$([ "$(frame | wc -l)" -le 40 ] && echo yes || echo no)"
 
+# ---- 1つのリポジトリに絞る（--repo） ----
+setup
+echo "[$(repo), $(repo '.name = "other" | .label = "oth" | .decisions = [{number: 3}]')]" > "$cache"
+running other '{"mode":"plan","issue":null,"log":"/x.log","started_at":'"$now"'}'
+event "$now" my-app start '#14 に着手'
+event "$now" other start '#3 に着手'
+out=$(TMUX_PANE=%9 "$bin/claude-auto-dev-watch" --once --repo my-app 2>&1)
+assert_eq "絞ったリポジトリの状況を出す" "yes" "$(has "$out" 'app  ✓')"
+assert_eq "ほかのリポジトリの状況は出さない" "no" "$(has "$out" 'oth  ')"
+assert_eq "ほかのリポジトリの実行中の回は出さない" "no" "$(has "$out" '実行中 oth')"
+assert_eq "絞ったリポジトリのできごとを出す" "yes" "$(has "$out" 'app 🏃 #14 に着手')"
+assert_eq "ほかのリポジトリのできごとは出さない" "no" "$(has "$out" '#3 に着手')"
+assert_eq "ほかのリポジトリの判断待ちでは、枠を赤くしない" "yes" "$(has "$(cat "$FAKE_LOG")" 'tmux set -p -t %9 -u @claude_state')"
+
 # ---- ペインの枠 ----
 setup
 echo "[$(repo '.decisions = [{number: 15}]')]" > "$cache"
@@ -157,6 +172,20 @@ assert_eq "自分のペインに印を付ける（C-q + M で閉じるため）"
 setup
 FAKE_PANES=$'%1 \n%2 \n' "$bin/claude-auto-dev-watch" --toggle
 assert_eq "監視のペインがなければ、右下のペインを左右に割って開く" "yes" "$(has "$(cat "$FAKE_LOG")" "tmux split-window -d -h -l 60 -t {bottom-right} $bin/claude-auto-dev-watch")"
+
+setup
+git init -q "$tmp/my-app" && mkdir -p "$tmp/my-app/src"
+FAKE_PATH="$tmp/my-app/src" FAKE_PANES=$'%1 \n' "$bin/claude-auto-dev-watch" --toggle
+assert_eq "今のペインがリポジトリの中なら、そのリポジトリに絞って開く" "yes" "$(has "$(cat "$FAKE_LOG")" "$bin/claude-auto-dev-watch --repo my-app")"
+
+setup
+git init -q "$tmp/my-app" && git -C "$tmp/my-app" commit -q --allow-empty -m init && git -C "$tmp/my-app" worktree add -q "$tmp/wt"
+FAKE_PATH="$tmp/wt" FAKE_PANES=$'%1 \n' "$bin/claude-auto-dev-watch" --toggle
+assert_eq "worktree の中なら、元のリポジトリの名前で絞る" "yes" "$(has "$(cat "$FAKE_LOG")" "--repo my-app")"
+
+setup
+FAKE_PATH="$tmp" FAKE_PANES=$'%1 \n' "$bin/claude-auto-dev-watch" --toggle
+assert_eq "リポジトリの外なら、絞らずに開く" "no" "$(has "$(cat "$FAKE_LOG")" "--repo")"
 
 setup
 FAKE_PANES=$'%1 \n%7 1\n' "$bin/claude-auto-dev-watch" --toggle

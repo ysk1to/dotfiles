@@ -3,8 +3,9 @@
 # （claude の stream-json の出力から、最後の5回のツールの呼び出し）、下に全リポジトリのできごと
 # （claude-auto-dev が残す events.tsv）を新しい順に出す。判断待ちや見落とし・失敗があれば、ペインを待機中
 # （@claude_state = waiting。ほかの Claude のペインと同じ赤い枠）にする。
-# 使い方: claude-auto-dev-watch [--once | --toggle]
+# 使い方: claude-auto-dev-watch [--once | --toggle] [--repo リポジトリ名]
 #   --once で1回だけ出して終わる / --toggle で監視用のペインを開け閉めする（C-q + M）
+#   --repo でそのリポジトリの状況・実行中の回・できごとだけを出す。--toggle は、今のペインのリポジトリに絞って開く
 # 状況は tmux-claude-auto-dev と同じキャッシュを読み、古ければ tmux-claude-auto-dev に裏で取り直させる。
 # 書き直す間隔は CLAUDE_AUTO_DEV_WATCH_INTERVAL（秒、既定 10）、開くときの幅は CLAUDE_AUTO_DEV_WATCH_WIDTH（既定 60）
 
@@ -12,16 +13,34 @@ bar="$(dirname "$0")/tmux-claude-auto-dev"
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-auto-dev-status.json"
 state_dir="${CLAUDE_AUTO_DEV_STATE_DIR:-$HOME/.local/state/claude-auto-dev}"
 
-# 印（@auto_dev_watch）の付いたペインがあれば閉じ、なければ右下のペインを左右に割って開く
-if [ "$1" = --toggle ]; then
+mode='' repo=''
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --once | --toggle) mode=$1 ;;
+    --repo) repo=$2; shift ;;
+  esac
+  shift
+done
+
+# 印（@auto_dev_watch）の付いたペインがあれば閉じ、なければ右下のペインを左右に割って開く。
+# 今のペインがリポジトリ（worktree なら元のリポジトリ）の中なら、そのリポジトリに絞る
+if [ "$mode" = --toggle ]; then
   pane=$(tmux list-panes -F '#{pane_id} #{@auto_dev_watch}' | awk '$2 == 1 { print $1; exit }')
   if [ -n "$pane" ]; then
     tmux kill-pane -t "$pane"
   else
-    tmux split-window -d -h -l "${CLAUDE_AUTO_DEV_WATCH_WIDTH:-60}" -t '{bottom-right}' "$0"
+    cmd=$0
+    common=$(git -C "$(tmux display -p '#{pane_current_path}')" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+      cmd="$0 --repo $(printf '%q' "$(basename "$(dirname "$common")")")"
+    tmux split-window -d -h -l "${CLAUDE_AUTO_DEV_WATCH_WIDTH:-60}" -t '{bottom-right}' "$cmd"
   fi
   exit 0
 fi
+
+# 状況のキャッシュを、--repo のリポジトリだけに絞って出す
+status() {
+  jq --arg repo "$repo" 'if $repo == "" then . else map(select(.name == $repo)) end' "$cache" 2>/dev/null
+}
 
 if [ -n "$TMUX_PANE" ]; then
   tmux set -p -t "$TMUX_PANE" @auto_dev_watch 1
@@ -34,8 +53,8 @@ frame() {
   rows="${LINES:-$(tput lines)}"
   cols="${COLUMNS:-$(tput cols)}"
   "$bar" > /dev/null
-  running=$("$bar" --running)
-  events=$(tail -n 200 "$state_dir/events.tsv" 2>/dev/null)
+  running=$("$bar" --running | jq -c --arg repo "$repo" 'if $repo == "" then . else with_entries(select(.key == $repo)) end')
+  events=$(awk -F '\t' -v repo="$repo" 'repo == "" || $2 == repo' "$state_dir/events.tsv" 2>/dev/null | tail -n 200)
   # 実行中の回ごとに、最後の5回のツールの呼び出し（ツール名と対象）。書きかけの行は読み飛ばす
   steps='{}'
   for name in $(jq -r 'keys[]' <<< "$running"); do
@@ -48,7 +67,7 @@ frame() {
              | ltrimstr($wt) | gsub("\n"; " "))}]
       | $steps + {($name): .[-5:]}') || steps='{}'
   done
-  if [ ! -s "$cache" ] || [ "$(jq length "$cache" 2>/dev/null)" = 0 ]; then
+  if [ ! -s "$cache" ] || [ "$(status | jq length)" = 0 ]; then
     echo "claude-auto-dev はまだ動いていません"
     return
   fi
@@ -91,21 +110,21 @@ frame() {
     | [$events | split("\n")[] | select(. != "") | split("\t") | select(length >= 4) | .[0] |= tonumber]
     | [sort_by(.[0])[] | "\(.[0] | when) \($labels[.[1]] // .[1][0:3]) \($icons[.[2]] // "・") \(.[3:] | join(" "))" | trunc($cols)]
       | reverse | .[:([$rows - ($head | length) - 2, 0] | max)] as $lines
-    | $head[], (rule("── できごと") | trunc($cols)), $lines[]' "$cache"
+    | $head[], (rule("── できごと") | trunc($cols)), $lines[]' <<< "$(status)"
 }
 
 # 判断待ち・見落とし・gh の失敗・失敗の通知があれば、ペインを待機中（赤い枠）にする
 mark() {
   [ -n "$TMUX_PANE" ] || return 0
-  if jq -e 'any(.[]; (.decisions | length) > 0 or .schedule.missed_at or .error or any(.notices[]; .title | test("失敗")))' \
-    "$cache" > /dev/null 2>&1; then
+  if status | jq -e 'any(.[]; (.decisions | length) > 0 or .schedule.missed_at or .error or any(.notices[]; .title | test("失敗")))' \
+    > /dev/null 2>&1; then
     tmux set -p -t "$TMUX_PANE" @claude_state waiting
   else
     tmux set -p -t "$TMUX_PANE" -u @claude_state
   fi
 }
 
-if [ "$1" = --once ]; then
+if [ "$mode" = --once ]; then
   frame
   mark
   exit 0
