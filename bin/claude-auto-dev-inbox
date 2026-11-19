@@ -1,0 +1,85 @@
+#!/bin/bash
+# 本人待ち（判断待ちの Issue と開いている PR）を、tmux のペインに出し続ける。今のリポジトリの分は番号・タイトル・URL、
+# ほかのリポジトリの分は番号だけを1行で出す。claude-team が右下のペインで起動する（C-c で止めるとシェルに戻る）。
+# 使い方: claude-auto-dev-inbox [--once] [--repo リポジトリ名]
+#   --once で1回だけ出して終わる
+#   --repo を省くと、今のディレクトリのリポジトリ（worktree なら元のリポジトリ）に絞る。リポジトリの外では、
+#   すべてのリポジトリを番号・タイトル・URL まで出す
+# 状況は tmux-claude-auto-dev と同じキャッシュを読み、古ければ tmux-claude-auto-dev に裏で取り直させる。
+# 書き直す間隔は CLAUDE_AUTO_DEV_INBOX_INTERVAL（秒、既定 30）
+
+bar="$(dirname "$0")/tmux-claude-auto-dev"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-auto-dev-status.json"
+
+mode='' repo=''
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --once) mode=$1 ;;
+    --repo) repo=$2; shift ;;
+  esac
+  shift
+done
+if [ -z "$repo" ]; then
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2> /dev/null) && repo=$(basename "$(dirname "$common")")
+fi
+
+frame() {
+  local now cols urls dir url
+  now="${CLAUDE_AUTO_DEV_NOW:-$(date +%s)}"
+  cols="${COLUMNS:-$(tput cols)}"
+  "$bar" > /dev/null
+  if [ ! -s "$cache" ] || [ "$(jq length "$cache" 2> /dev/null || echo 0)" = 0 ]; then
+    echo "claude-auto-dev はまだ動いていません"
+    return
+  fi
+  # リポジトリの場所から GitHub の URL を作る（origin が GitHub でなければ、URL は出さない）
+  urls='{}'
+  while IFS= read -r dir; do
+    url=$(git -C "$dir" remote get-url origin 2> /dev/null | sed -nE 's#^(git@github\.com:|https://github\.com/)(.+)$#https://github.com/\2#p' | sed 's/\.git$//')
+    [ -z "$url" ] || urls=$(jq -c --arg dir "$dir" --arg url "$url" '.[$dir] = $url' <<< "$urls")
+  done < <(jq -r '.[].repo // empty' "$cache")
+  jq -r --arg repo "$repo" --argjson urls "$urls" --argjson now "$now" --argjson cols "$cols" '
+    # 端末での幅（全角は2、記号（…など）と罫線は1、絵文字の異体字セレクタは0）で切る
+    def cw: if . == 65039 then 0 elif (. >= 8192 and . <= 8303) or (. >= 9472 and . <= 9599) then 1 elif . > 4351 then 2 else 1 end;
+    def trunc($w):
+      if (explode | map(cw) | add // 0) <= $w then .
+      else (reduce explode[] as $c ({s: [], w: 0, full: false};
+          if .full or .w + ($c | cw) > $w - 1 then .full = true else .s += [$c] | .w += ($c | cw) end) | .s | implode) + "…" end;
+    def items($title; $path; $list):
+      "  \($title) \(if ($list | length) == 0 then "なし" else ($list | length) end)",
+      ($list[]
+        | "     #\(.number) \(.title)\(if (.labels // [] | length) > 0 then "（\(.labels | join(", "))）" else "" end)",
+          (if $urls[$path.repo] then "         \($urls[$path.repo])/\($path.kind)/\(.number)" else empty end));
+    # 番号・タイトル・URL まで出す
+    def detail:
+      "",
+      "\(.label) \(.name)",
+      items("🙋 判断待ち"; {repo, kind: "issues"}; .decisions),
+      items("🔀 開いている PR"; {repo, kind: "pull"}; .prs);
+    # 番号だけを1行で出す
+    def brief:
+      [if (.decisions | length) > 0 then "🙋 " + ([.decisions[] | "#\(.number)"] | join(" ")) else empty end,
+       if (.prs | length) > 0 then "🔀 " + ([.prs[] | "#\(.number)"] | join(" ")) else empty end] as $items
+      | "  \(.label)  " + (if ($items | length) == 0 then "✓" else $items | join("   ") end);
+    (if $repo == "" or all(.[]; .name != $repo) then . else map(select(.name == $repo)) end) as $here
+    | (. - $here) as $rest
+    | ["本人待ち  \($now | strflocaltime("%H:%M"))",
+       ($here[] | detail),
+       (if ($rest | length) > 0 then "", "ほかのリポジトリ", ($rest[] | brief) else empty end)]
+    | .[] | trunc($cols)' "$cache"
+}
+
+if [ "$mode" = --once ]; then
+  frame
+  exit 0
+fi
+
+tput civis
+trap 'tput cnorm; exit 0' INT TERM
+while true; do
+  out=$(frame)
+  tput cup 0 0
+  printf '%s' "$out" | sed $'s/$/\033[K/'
+  tput ed
+  sleep "${CLAUDE_AUTO_DEV_INBOX_INTERVAL:-30}"
+done

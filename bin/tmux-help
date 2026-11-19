@@ -84,5 +84,7 @@ tmux の使い方（prefix は C-q。q で閉じる、/ で検索）
 
 ■ コマンド
  claude-team [ディレクトリ] [ウィンドウ名]
-                 Claude Code を2ペインとシェルを1ペイン開くウィンドウを、セッション claude に作る（あればそこへ移る）
+                 Claude Code を2ペインと本人待ちの一覧を1ペイン開くウィンドウを、セッション claude に作る（あればそこへ移る）
+ claude-auto-dev-inbox
+                 本人待ち（判断待ちの Issue と開いている PR）を出し続ける。C-c で止める
 HELP

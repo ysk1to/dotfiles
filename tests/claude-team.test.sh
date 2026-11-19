@@ -47,8 +47,9 @@ out=$(run private/my.app)
 assert_eq "共通のセッションを、リポジトリ名のウィンドウで作る" "yes" "$(has "$out" "tmux new-session -d -s claude -n my_app -c $repo")"
 assert_eq "ペインを2回割って3ペインにする" "2" "$(count "$out" 'tmux split-window')"
 assert_eq "上の2つのペインで claude を起動する" "2" "$(count "$out" 'claude Enter')"
-assert_eq "右下のペインは claude を起動せず、シェルにする" "no" "$(has "$out" 'tmux send-keys -t %3 claude')"
-assert_eq "右下のペインの名前は Shell" "yes" "$(has "$out" 'tmux select-pane -t %3 -T Shell')"
+assert_eq "右下のペインは claude を起動しない" "no" "$(has "$out" 'tmux send-keys -t %3 claude Enter')"
+assert_eq "右下のペインで本人待ちの一覧を起動する" "yes" "$(has "$out" 'tmux send-keys -t %3 claude-auto-dev-inbox Enter')"
+assert_eq "右下のペインの名前は Inbox" "yes" "$(has "$out" 'tmux select-pane -t %3 -T Inbox')"
 assert_eq "tmux の外からはアタッチする" "yes" "$(has "$out" 'tmux attach -t =claude')"
 
 # ---- 共通のセッションはあり、そのリポジトリのウィンドウがないとき ----
