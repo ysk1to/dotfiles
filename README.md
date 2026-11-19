@@ -35,6 +35,8 @@ macOS用の設定ファイル管理リポジトリ
 ### アプリケーション
 - `Brewfile` - Homebrewパッケージ管理
 - `iterm2/profile.json` - iTerm2のdynamic profile（Shift+EnterでESC+CRを送りClaude Codeで改行）
+  - 設定を変えるときは、このファイルを編集する（保存するとiTerm2がすぐ読み直す）。iTerm2の画面で変えた設定はファイルに書き戻されず、読み直しや再起動で元に戻る
+  - 色など画面で見ながら決めたいものは、画面で調整してから Settings → Profiles の Other Actions → Copy Profile as JSON で書き出し、変えたキーだけをこのファイルに写す
 
 ### スクリプト
 - `bin/claude-team` - 共通のtmuxセッション `claude` に、指定ディレクトリでClaude Codeを3ペイン起動するウィンドウを作る（リポジトリごとに1ウィンドウ）
