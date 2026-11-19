@@ -38,6 +38,8 @@ install: deploy deploy-claude deploy-iterm deploy-vscode ## Deploy everything an
 	@echo '==> Start to install Homebrew packages.'
 	@echo ''
 	@brew bundle --file=$(DOTPATH)/Brewfile
+	@# jq は brew bundle で入るので、入った後にもう一度、既定のプロファイルを設定する
+	@$(DOTPATH)/bin/iterm-default-profile $(DOTPATH)/iterm2/profile.json
 
 deploy: ## Create symlink to home directory
 	@echo '==> Start to deploy dotfiles to home directory.'
@@ -55,11 +57,12 @@ deploy-claude: ## Create symlink of Claude Code settings
 	  $(DOTPATH)/bin/claude-skill-install $$(echo "$$skill" | tr ',' ' ') || exit 1; \
 	done
 
-deploy-iterm: ## Create symlink of iTerm2 dynamic profile
+deploy-iterm: ## Create symlink of iTerm2 dynamic profile and set it as default
 	@echo '==> Start to deploy iTerm2 dynamic profile.'
 	@echo ''
 	@mkdir -p "$(ITERM_DIR)"
 	@ln -sfnv $(DOTPATH)/iterm2/profile.json "$(ITERM_DIR)/dotfiles.json"
+	@$(DOTPATH)/bin/iterm-default-profile $(DOTPATH)/iterm2/profile.json
 
 deploy-vscode: ## Create symlink of VSCode settings
 	@echo '==> Start to deploy VSCode settings.'
@@ -67,7 +70,7 @@ deploy-vscode: ## Create symlink of VSCode settings
 	@mkdir -p "$(VSCODE_DIR)"
 	@$(foreach val, settings.json keybindings.json, ln -sfnv $(DOTPATH)/vscode/$(val) "$(VSCODE_DIR)/$(val)";)
 
-check: ## Check symlinks and Homebrew packages
+check: ## Check symlinks, iTerm2 default profile and Homebrew packages
 	@echo '==> Checking symlinks.'
 	@ng=0; for pair in $(LINKS); do \
 	  src=$${pair%%,*}; dst=$$(printf '%s' "$${pair#*,}" | tr '@' ' '); \
@@ -80,6 +83,9 @@ check: ## Check symlinks and Homebrew packages
 	  if $(DOTPATH)/bin/claude-skill-install --check "$$name" "$$commit"; then echo "  ok  $$name"; \
 	  else echo "  NG  $$name（make deploy-claude で置き直せます）"; ng=1; fi; \
 	done; \
+	echo ''; echo '==> Checking iTerm2 default profile.'; \
+	if $(DOTPATH)/bin/iterm-default-profile --check $(DOTPATH)/iterm2/profile.json; then echo "  ok  iTerm2 の既定のプロファイル"; \
+	else echo "  NG  iTerm2 の既定のプロファイル（iTerm2 を終了して make deploy-iterm で直せます）"; ng=1; fi; \
 	echo ''; echo '==> Checking Homebrew packages.'; \
 	brew bundle check --no-upgrade --file=$(DOTPATH)/Brewfile || ng=1; \
 	exit $$ng
