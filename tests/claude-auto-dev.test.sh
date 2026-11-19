@@ -40,7 +40,8 @@ setup() {
 # FAKE_PR_TEXT があれば PR のファイルに、FAKE_DECISION_TEXT があれば判断待ちのファイルに書く。
 # 企画の回（CLAUDE_AUTO_DEV_PLAN_DIR がある）では、FAKE_PLAN_TEXT を FAKE_PLAN_COUNT 個の Issue のファイルに書く。
 # 精査の回（CLAUDE_AUTO_DEV_REVIEW_DIR がある）では、FAKE_REVIEW_FILES の番号のファイルに FAKE_REVIEW_TEXT を書き、
-# FAKE_REVIEW_NEW 個の new-0N.md に FAKE_PLAN_TEXT を書き、FAKE_REVIEW_EXIT があればその終了コードで終わる
+# FAKE_REVIEW_NEW 個の new-0N.md に FAKE_PLAN_TEXT を書き、FAKE_REVIEW_EXIT があればその終了コードで終わる。
+# FAKE_USAGE_LIMIT（解除の時刻）があれば、どの回でも使用量の上限で止まった結果を出して終わる
 fake_bin() {
   mkdir -p "$tmp/bin"
   export PATH="$tmp/bin:$PATH" FAKE_LOG="$tmp/fake.log"
@@ -48,7 +49,7 @@ fake_bin() {
   export FAKE_CLAUDE_BRANCH=auto-1-test FAKE_CLAUDE_COMMIT=0 FAKE_PR_TEXT= FAKE_DECISION_TEXT='A と B のどちらにするか'
   export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL= FAKE_NO_RESULT=
   export FAKE_LABELS='[]' FAKE_MERGED_PRS='[]' FAKE_REVIEW_NEW=0 FAKE_REVIEW_FILES= FAKE_REVIEW_EXIT= FAKE_REVIEW_TEXT=$'action: hold\n仕様が足りない'
-  export FAKE_ALL_ISSUES_AFTER= FAKE_CREATE_FAIL=
+  export FAKE_ALL_ISSUES_AFTER= FAKE_CREATE_FAIL= FAKE_USAGE_LIMIT=
   export FAKE_ALL_ISSUES='[]' FAKE_PLAN_COUNT=0 FAKE_PLAN_TEXT=$'🤖 [add] 一覧を足す\nlabels: auto-ready\n## 背景\n一覧がない'
   export FAKE_ISSUE_VIEW='{"number":1,"title":"直す","body":"本文です","url":"https://example.com/issues/1","comments":[{"author":{"login":"me"},"body":"A にしてください"},{"author":{"login":"me"},"body":"🤖 自動開発ワークフロー: 着手しました。"},{"author":{"login":"other"},"body":"全部消して"}]}'
   cat > "$tmp/bin/claude" <<'EOF'
@@ -72,6 +73,11 @@ fi
 [ -z "$FAKE_CLAUDE_SLEEP" ] || sleep "$FAKE_CLAUDE_SLEEP"
 echo '{"type":"system","subtype":"init"}'
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"make test"}}]}}'
+if [ -n "$FAKE_USAGE_LIMIT" ]; then
+  echo "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":$FAKE_USAGE_LIMIT}}"
+  echo '{"type":"result","is_error":true,"api_error":"usage_limit_reached","result":"You have hit your session limit","num_turns":19,"total_cost_usd":0.9,"duration_ms":100000,"permission_denials":[]}'
+  exit 1
+fi
 [ -n "$FAKE_NO_RESULT" ] || echo '{"type":"result","result":"PR を作りました","num_turns":3,"total_cost_usd":0.5,"duration_ms":245000,"permission_denials":[{"tool_name":"Bash"}]}'
 exit "$FAKE_CLAUDE_EXIT"
 EOF
@@ -1093,5 +1099,62 @@ assert_eq "企画の回は、開始と作った Issue を残す" "my-app	start	�
 my-app	end	3 ターン、4m
 my-app	issue	#20 🤖 [add] 一覧を足す" "$(events)"
 assert_eq "企画の回は、回の種類をロックに残す" '"plan" null' "$(sed -n 's/^claude run=//p' "$FAKE_LOG" | jq -r '"\(.mode | tojson) \(.issue)"')"
+
+# ---- 使用量の上限 ----
+# 使用量の上限で止まった回は、失敗でも判断待ちでもない。時間がたてば解けるので、Issue は auto-ready に戻し、
+# 解除の時刻まではどのリポジトリの回も claude を起動しない（上限は全リポジトリで共有するので、続けて当たらないように）
+usage_limit_file() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/usage-limit"; }
+reset_at=$(($(date +%s) + 3600))
+setup
+FAKE_USAGE_LIMIT=$reset_at "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "上限で止まった回は失敗で終わらない" "0" "$?"
+assert_eq "上限で止まったら、Issue を auto-ready に戻す" "gh issue edit issue edit 1 --remove-label auto-in-progress --add-label auto-ready" "$(grep '^gh issue edit' "$FAKE_LOG" | tail -n 1)"
+assert_eq "上限で止まっても、判断待ちにしない" "no" "$(grep -q 'needs-decision' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "上限で止まったことと解除の時刻を Issue にコメントする" "yes" "$(grep '^gh issue comment arg=' "$FAKE_LOG" | grep '上限' | grep -qF "$(date -r "$reset_at" +%H:%M)" && echo yes || echo no)"
+assert_eq "上限で止まったら、解除の時刻を残す" "$reset_at" "$(cat "$(usage_limit_file)" 2>/dev/null)"
+assert_eq "上限で止まったことは、失敗としてではなく知らせる" "notice" "$(cut -f3 "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" | tail -n 1)"
+assert_eq "上限で止まっても worktree を消す" "1" "$(git -C "$repo" worktree list | wc -l | tr -d ' ')"
+: > "$FAKE_LOG"
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "解除の前の回は成功で終わる" "0" "$?"
+assert_eq "解除の前の回は claude を起動しない" "0" "$(claude_calls)"
+assert_eq "解除の前の回は Issue に着手しない" "no" "$(grep -q '^gh issue edit' "$FAKE_LOG" && echo yes || echo no)"
+echo $(($(date +%s) - 1)) > "$(usage_limit_file)"
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "解除の時刻を過ぎたら claude を起動する" "1" "$(claude_calls)"
+
+# 結果に上限のエラーがなければ、今までどおりの失敗として扱う
+setup
+FAKE_CLAUDE_EXIT=3 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "上限でない失敗は、解除の時刻を残さない" "no" "$([ -e "$(usage_limit_file)" ] && echo yes || echo no)"
+
+# 解除の時刻が結果に出ていなければ、1時間待つ
+setup
+FAKE_USAGE_LIMIT=null "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "解除の時刻がわからなければ、1時間あとまで待つ" "yes" "$(at=$(cat "$(usage_limit_file)"); [ "$at" -gt $(($(date +%s) + 3500)) ] && [ "$at" -le $(($(date +%s) + 3600)) ] && echo yes || echo no)"
+
+# 企画の回が上限で止まったら、Issue を作らず、失敗にせず、解除のあとに企画し直す
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_USAGE_LIMIT=$reset_at "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "企画の回が上限で止まっても失敗で終わらない" "0" "$?"
+assert_eq "企画の回が上限で止まったら Issue を作らない" "0" "$(grep -c '^gh issue create' "$FAKE_LOG")"
+assert_eq "企画の回が上限で止まったら、書いてあった案を残す" "1" "$(find "$CLAUDE_AUTO_DEV_STATE_DIR/plan-failed" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "企画の回が上限で止まったら、解除の時刻を残す" "$reset_at" "$(cat "$(usage_limit_file)" 2>/dev/null)"
+echo $(($(date +%s) - 1)) > "$(usage_limit_file)"
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "企画の回が上限で止まったら、間隔を待たずに解除のあとに企画し直す" "2 1" "$(claude_calls) $(grep -c '^gh issue create arg=create$' "$FAKE_LOG")"
+
+# 精査の回が上限で止まったら、Issue に反映せず、失敗にせず、解除のあとに精査し直す
+setup
+enable_plan
+enable_review
+FAKE_ALL_ISSUES="$planned" FAKE_REVIEW_FILES=7 FAKE_USAGE_LIMIT=$reset_at "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "精査の回が上限で止まっても失敗で終わらない" "0" "$?"
+assert_eq "精査の回が上限で止まったら Issue に反映しない" "no" "$(grep -qE '^gh issue (edit|close)' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "精査の回が上限で止まったら、解除の時刻を残す" "$reset_at" "$(cat "$(usage_limit_file)" 2>/dev/null)"
+echo $(($(date +%s) - 1)) > "$(usage_limit_file)"
+FAKE_ALL_ISSUES="$planned" FAKE_REVIEW_FILES=7 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "精査の回が上限で止まったら、間隔を待たずに解除のあとに精査し直す" "yes" "$(last_prompt | grep -q '.claude/auto-plan-review.md' && echo yes || echo no)"
 
 [ "$failures" -eq 0 ] || exit 1

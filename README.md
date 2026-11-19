@@ -116,6 +116,7 @@ make check
   - Issueの一覧は1000件まで取得する（`gh`の既定の30件で切ると、古いIssueが着手の候補や重複の確認から外れるため）。`CLAUDE_AUTO_DEV_ISSUE_LIMIT`で変えられる
   - `CLAUDE_AUTO_DEV_DAILY_MAX`を指定すると、実装の回を1日にその回数までにする（企画の回は数えない）。起動の回数を増やしても、使用量とレビュー待ちが増えすぎないようにするため
   - 失敗したとき・何も残さずに終わったとき・時間の上限を超えたとき・前の回が途中で止まって`auto-in-progress`が残っていたときは、Issueを`needs-decision`にしてmacOSの通知で知らせる
+  - 使用量の上限で止まったときは、時間がたてば解けるので、失敗として扱わない。解除の時刻を`~/.local/state/claude-auto-dev/usage-limit`に残し、上限は全リポジトリで共有なので、その時刻まではどのリポジトリの回もClaudeを起動しない。実装の回は、Issueを`auto-ready`に戻して、解除の時刻をコメントする。企画の回と精査の回は、Issueに何も反映せず、解除のあとに間隔を待たずにやり直す
   - `--restricted`と`--permission-mode dontAsk`で起動する。ユーザーの設定（グローバルの`CLAUDE.md`・許可・フック）は読まず、ファイルの読み書きは作業ディレクトリと受け渡し用のファイルに限り、WebFetchは使えない。決まりは各リポジトリの`.claude/auto-dev.md`に書く
   - Bashのコマンドはサンドボックスで囲み、worktreeの外に書けないようにする（コミット用に元のリポジトリの`.git`だけ許す）。リポジトリごとの追加は`<リポジトリ名>.sandbox.json`（`sandbox`設定の中身。例: `{"filesystem":{"allowWrite":["~/.npm"]},"network":{"allowedDomains":["registry.npmjs.org"]}}`）。サンドボックス自体は切れない
   - NotionとTodoistは足す操作だけを許す（Notionの既存ページの書き換えは許さない）
