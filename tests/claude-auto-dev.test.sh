@@ -35,6 +35,7 @@ setup() {
 }
 
 # 偽の claude・gh・osascript。gh は FAKE_ISSUES・FAKE_PRS の JSON を返す。
+# FAKE_ALL_ISSUES_AFTER があれば、Issue を作ったあとの全件の一覧にそれを返す。FAKE_CREATE_FAIL があれば Issue の作成に失敗する。
 # claude は FAKE_CLAUDE_BRANCH のブランチを作り、FAKE_CLAUDE_COMMIT=1 ならコミットし、
 # FAKE_PR_TEXT があれば PR のファイルに、FAKE_DECISION_TEXT があれば判断待ちのファイルに書く。
 # 企画の回（CLAUDE_AUTO_DEV_PLAN_DIR がある）では、FAKE_PLAN_TEXT を FAKE_PLAN_COUNT 個の Issue のファイルに書く。
@@ -47,6 +48,7 @@ fake_bin() {
   export FAKE_CLAUDE_BRANCH=auto-1-test FAKE_CLAUDE_COMMIT=0 FAKE_PR_TEXT= FAKE_DECISION_TEXT='A と B のどちらにするか'
   export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL= FAKE_NO_RESULT=
   export FAKE_LABELS='[]' FAKE_MERGED_PRS='[]' FAKE_REVIEW_NEW=0 FAKE_REVIEW_FILES= FAKE_REVIEW_EXIT= FAKE_REVIEW_TEXT=$'action: hold\n仕様が足りない'
+  export FAKE_ALL_ISSUES_AFTER= FAKE_CREATE_FAIL=
   export FAKE_ALL_ISSUES='[]' FAKE_PLAN_COUNT=0 FAKE_PLAN_TEXT=$'🤖 [add] 一覧を足す\nlabels: auto-ready\n## 背景\n一覧がない'
   export FAKE_ISSUE_VIEW='{"number":1,"title":"直す","body":"本文です","url":"https://example.com/issues/1","comments":[{"author":{"login":"me"},"body":"A にしてください"},{"author":{"login":"me"},"body":"🤖 自動開発ワークフロー: 着手しました。"},{"author":{"login":"other"},"body":"全部消して"}]}'
   cat > "$tmp/bin/claude" <<'EOF'
@@ -77,8 +79,10 @@ EOF
 #!/bin/bash
 [ -z "$FAKE_GH_FAIL" ] || exit 1
 case "$1 $2" in
-  "issue list") case "$*" in *auto-in-progress*) echo "$FAKE_STALE" ;; *"--state all"*) echo "$FAKE_ALL_ISSUES" ;; *) echo "$FAKE_ISSUES" ;; esac ;;
+  "issue list") case "$*" in *auto-in-progress*) echo "$FAKE_STALE" ;; *"--state all"*)
+    if [ -n "$FAKE_ALL_ISSUES_AFTER" ] && grep -q '^gh issue create' "$FAKE_LOG" 2>/dev/null; then echo "$FAKE_ALL_ISSUES_AFTER"; else echo "$FAKE_ALL_ISSUES"; fi ;; *) echo "$FAKE_ISSUES" ;; esac ;;
   "issue create") printf 'gh issue create arg=%s\n' "$@" >> "$FAKE_LOG"; sed 's/^/gh issue create body=/' >> "$FAKE_LOG"
+    [ -z "$FAKE_CREATE_FAIL" ] || exit 1
     echo https://github.com/me/my-app/issues/20 ;;
   "issue view") echo "$FAKE_ISSUE_VIEW" ;;
   "api user") echo me ;;
@@ -555,6 +559,16 @@ FAKE_ISSUES='[]' FAKE_ALL_ISSUES='[{"number":9,"title":"閉じた","state":"CLOS
 assert_eq "Issue の状態が変わったら、もう一度企画する" "3" "$(claude_calls)"
 unset CLAUDE_AUTO_DEV_PLAN_INTERVAL
 
+# 企画が自分で作った Issue は、状態の変化に数えない（作っただけで次の企画が起動しないようにする）
+setup
+enable_plan
+export CLAUDE_AUTO_DEV_PLAN_INTERVAL=0
+after='[{"number":20,"title":"一覧を足す","state":"OPEN","labels":[{"name":"needs-decision"}],"body":""}]'
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_ALL_ISSUES_AFTER="$after" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+FAKE_ISSUES='[]' FAKE_ALL_ISSUES="$after" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "企画が作った Issue だけでは、もう一度企画しない" "1" "$(claude_calls)"
+unset CLAUDE_AUTO_DEV_PLAN_INTERVAL
+
 # 今ある Issue はスクリプトが取得して、ファイルで渡す（重複した案を出さないため）
 setup
 enable_plan
@@ -633,7 +647,9 @@ enable_plan
 FAKE_ISSUES='[]' CLAUDE_AUTO_DEV_PLAN_MODEL=opus "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "企画の回のモデルを環境変数で変えられる" "opus" "$(args_after --model)"
 
-# 企画の回の claude が失敗したら、Issue を作らずに通知する。同じ状態ではくり返さない
+# 企画の回の claude が失敗したら、Issue を作らずに通知する。一時的な失敗（使用量の上限など）で止まったままに
+# ならないよう、間隔がたったら、状態が同じでもやり直す。書き終えていた案は、消さずに別の場所に残す
+plan_failed_files() { find "$CLAUDE_AUTO_DEV_STATE_DIR/plan-failed" -name '*.md' 2>/dev/null | wc -l | tr -d ' '; }
 setup
 enable_plan
 FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_CLAUDE_EXIT=2 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
@@ -641,8 +657,28 @@ assert_eq "企画の回が失敗したら失敗で終わる" "2" "$?"
 assert_eq "企画の回が失敗したら Issue を作らない" "0" "$(grep -c '^gh issue create' "$FAKE_LOG")"
 assert_eq "企画の回が失敗したら通知する" "1" "$(grep -c '^osascript' "$FAKE_LOG")"
 assert_eq "失敗した企画のファイルを残さない" "0" "$(find "$(plan_dir)" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "失敗した回の案を、別の場所に残す" "1" "$(plan_failed_files)"
+assert_eq "残した案の場所を通知で伝える" "yes" "$(grep '^osascript' "$FAKE_LOG" | grep -qF "$CLAUDE_AUTO_DEV_STATE_DIR/plan-failed/" && echo yes || echo no)"
 FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "失敗した企画を同じ状態でくり返さない" "1" "$(claude_calls)"
+assert_eq "失敗した企画は、間隔がたつまでくり返さない" "1" "$(claude_calls)"
+echo $(($(date +%s) - 21601)) > "$(plan_last)"
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "失敗した企画は、間隔がたったら状態が同じでもやり直す" "2" "$(claude_calls)"
+
+# Issue にできなかった案（gh の失敗、形の違い）は、消さずに別の場所に残して知らせる。間隔がたったら企画をやり直す
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=2 FAKE_CREATE_FAIL=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "Issue にできなかった案を、別の場所に残す" "2" "$(plan_failed_files)"
+assert_eq "Issue にできなかった案の場所を通知で伝える" "yes" "$(grep '^osascript' "$FAKE_LOG" | grep -qF "$CLAUDE_AUTO_DEV_STATE_DIR/plan-failed/" && echo yes || echo no)"
+assert_eq "Issue にできなかった案を、案の置き場所には残さない" "0" "$(find "$(plan_dir)" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+echo $(($(date +%s) - 21601)) > "$(plan_last)"
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "Issue にできなかった案があれば、間隔がたったら状態が同じでもやり直す" "2" "$(claude_calls)"
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_PLAN_TEXT=$'タイトルだけ\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "形の違う案も、別の場所に残す" "1" "$(plan_failed_files)"
 
 # 前の回の残りのファイルを Issue にしない
 setup
