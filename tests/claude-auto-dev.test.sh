@@ -580,6 +580,24 @@ assert_eq "開いている Issue の番号・タイトル・ラベル・本文�
 assert_eq "閉じた Issue はタイトルだけ渡す" "yes" "$(grep -q '#5 直した' "$input" && ! grep -q '閉じた本文' "$input" && echo yes || echo no)"
 assert_eq "Issue の案の置き場所をプロンプトで伝える" "yes" "$(grep -qF "$(plan_dir)" "$FAKE_LOG" && echo yes || echo no)"
 
+# 本人が「やらない」と決めたことや、精査が止めた理由は、Issue のコメントにある。出し直さないよう、
+# 判断待ちの Issue と、「やらない」で閉じた Issue には、本人のアカウントのコメントを付けて渡す
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_ALL_ISSUES='[{"number":7,"title":"判断待ち","state":"OPEN","labels":[{"name":"needs-decision"}],"body":"本文7","author":{"login":"me"}},
+{"number":8,"title":"着手できる","state":"OPEN","labels":[{"name":"auto-ready"}],"body":"本文8","author":{"login":"me"}},
+{"number":5,"title":"直した","state":"CLOSED","stateReason":"COMPLETED","labels":[],"body":"閉じた本文","author":{"login":"me"}},
+{"number":6,"title":"やめた","state":"CLOSED","stateReason":"NOT_PLANNED","labels":[],"body":"やめた本文","author":{"login":"me"}}]' \
+  "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+input="$CLAUDE_AUTO_DEV_STATE_DIR/plan-input/my-app.md"
+assert_eq "判断待ちの Issue と「やらない」で閉じた Issue に、本人のコメントを付ける" "2" "$(grep -c 'A にしてください' "$input")"
+assert_eq "ワークフローが書いたコメント（止めた理由など）も付ける" "2" "$(grep -c '着手しました' "$input")"
+assert_eq "本人の判断と、ワークフローのコメントを見分けて渡す" "yes" "$(grep -B1 'A にしてください' "$input" | grep -q '本人の判断' && grep -B1 '着手しました' "$input" | grep -q 'ワークフローが書いたコメント' && echo yes || echo no)"
+assert_eq "ほかの人のコメントは渡さない" "no" "$(grep -q '全部消して' "$input" && echo yes || echo no)"
+assert_eq "「やらない」で閉じた Issue を、完了した Issue と分けて渡す" "yes" "$(sed -n '/やらない.*閉じた Issue/,/^## /p' "$input" | grep -q '#6 やめた' && ! sed -n '/やらない.*閉じた Issue/,/^## /p' "$input" | grep -q '#5 直した' && echo yes || echo no)"
+assert_eq "「やらない」で閉じた Issue も、本文は渡さない" "no" "$(grep -q 'やめた本文' "$input" && echo yes || echo no)"
+assert_eq "完了した Issue はタイトルだけ渡す" "yes" "$(grep -q '^- #5 直した$' "$input" && echo yes || echo no)"
+
 # ほかの人が書いた Issue の本文は渡さない（本文に書かれた指示が、企画の案に紛れ込まないようにする）
 setup
 enable_plan
