@@ -776,6 +776,9 @@ assert_eq "精査の回は結果のファイルを書ける" "yes" "$(has_line "
 assert_eq "精査の回は worktree を編集できない" "no" "$(has_line "$allowed" "Edit(/$CLAUDE_AUTO_DEV_STATE_DIR/worktrees/my-app/**)")"
 assert_eq "精査の回はコミットできない" "no" "$(has_line "$allowed" 'Bash(git commit:*)')"
 assert_eq "精査の回も gh を禁止する" "yes" "$(has_line "$(args_after --disallowedTools)" 'Bash(gh:*)')"
+# 判断が出たあとも残る判断待ちのタスクを、精査の回が Issue の状態と突き合わせて片付ける
+assert_eq "精査の回は Todoist のタスクを完了にできる" "yes" "$(has_line "$allowed" mcp__claude_ai_Todoist__complete-tasks)"
+assert_eq "ほかの Issue はラベルも渡す（判断が出たかを見るため）" "yes" "$(grep -qF -- '- #10 人が書いた（開いている。ラベル: auto-ready）' "$input" && grep -qF -- '- #11 閉じた（閉じた。ラベル: auto-planned）' "$input" && echo yes || echo no)"
 edits=$(grep '^gh issue edit' "$FAKE_LOG")
 assert_eq "hold の Issue は auto-ready を外して判断待ちにし、精査済みにする" "yes" "$(echo "$edits" | grep -qxF 'gh issue edit issue edit 7 --remove-label auto-ready --add-label needs-decision --add-label auto-reviewed' && echo yes || echo no)"
 assert_eq "hold の理由を Issue にコメントする" "yes" "$(grep -q '^gh issue comment arg=.*仕様が足りない' "$FAKE_LOG" && echo yes || echo no)"
