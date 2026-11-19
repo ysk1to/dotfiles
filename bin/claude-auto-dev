@@ -157,6 +157,11 @@ if [ "$mode" = implement ] && has_file .claude/auto-plan.md && [ "$plan_room" -g
   [ "$(plan_key_of "$all_issues")" = "$(cat "$plan_key_file" 2>/dev/null)" ] || mode=plan
 fi
 
+# 使用量の上限に当たった回が残した解除の時刻までは、どの回も Claude を起動しない。
+# 上限は全リポジトリで共有なので、ファイルもリポジトリごとに分けない
+usage_limit_file="$state_dir/usage-limit"
+[ "$(date +%s)" -ge "$(cat "$usage_limit_file" 2>/dev/null || echo 0)" ] || exit 0
+
 # やることがない回は Claude を起動しない（使用量を消費しない）。
 # レビュー待ちの PR が2件以上あるときも、積み上げないよう着手しない。
 # 実装の回は1日に CLAUDE_AUTO_DEV_DAILY_MAX 回まで（指定がなければ数えない）。企画の回は数えない
@@ -255,6 +260,18 @@ run_claude() {
     tail -n 5 "$stream" >> "$log" 2>/dev/null
     event end "終了コード $status"
   fi
+}
+
+# 使用量の上限で止まったか。止まっていれば、解除の時刻を残し、$limit_until に時刻（時:分）を入れる。
+# 解除の時刻は、流れた出力の最後の rate_limit_event にある。なければ1時間待つ
+hit_usage_limit() {
+  local at
+  [ "$(jq -r '.api_error // empty' "$result" 2>/dev/null)" = usage_limit_reached ] || return 1
+  at=$(jq -r 'select(.type == "rate_limit_event" and .rate_limit_info.status == "rejected")
+    | .rate_limit_info.resetsAt // empty' "$stream" 2>/dev/null | tail -n 1)
+  [ -n "$at" ] || at=$(($(date +%s) + 3600))
+  echo "$at" > "$usage_limit_file"
+  limit_until=$(date -r "$at" +%H:%M)
 }
 
 # Bash のコマンドはサンドボックスで囲み、worktree の外に書けないようにする。git diff --output やテストのコマンドは、
@@ -430,6 +447,12 @@ $(cat "$config")"
     rm -f "$result.timeout"
     review_fail "時間の上限（${limit} 秒）を超えたので止めました"
   fi
+  # 上限で止まったら反映せず、解除のあとに間隔を待たずに精査し直す
+  if hit_usage_limit; then
+    rm -rf "$review_dir" "$review_last_file"
+    notify "の精査が上限で中断" "使用量の上限で止まりました。${limit_until} の解除のあとに精査し直します"
+    exit 0
+  fi
   [ "$status" -eq 0 ] || review_fail "claude が終了コード ${status} で止まりました" "$status"
 
   ensure_labels auto-reviewed auto-finding auto-ready needs-decision protected auto-decided p2
@@ -545,6 +568,16 @@ $(cat "$config")"
     rm -f "$result.timeout"
     plan_fail "時間の上限（${limit} 秒）を超えたので止めました"
   fi
+  # 上限で止まったら Issue は作らず（書いてあった案は残す）、解除のあとに間隔を待たずに企画し直す
+  if hit_usage_limit; then
+    kept=
+    if compgen -G "$plan_dir/*.md" > /dev/null; then
+      keep_failed "$plan_dir"/*.md && kept="。書いてあった案: ${failed_dir}"
+    fi
+    rm -rf "$plan_dir" "$plan_last_file"
+    notify "の企画が上限で中断" "使用量の上限で止まりました。${limit_until} の解除のあとに企画し直します${kept}"
+    exit 0
+  fi
   [ "$status" -eq 0 ] || plan_fail "claude が終了コード ${status} で止まりました" "$status"
 
   skipped=0
@@ -629,6 +662,16 @@ run_claude "${CLAUDE_AUTO_DEV_MODEL:-opus}"
 if [ -f "$result.timeout" ]; then
   rm -f "$result.timeout"
   fail "時間の上限（${limit} 秒）を超えたので止めました"
+fi
+# 上限で止まったのは、判断待ちでも同じ失敗のくり返しでもないので、auto-ready に戻して解除のあとにやり直す
+if hit_usage_limit; then
+  {
+    comment "$issue" "使用量の上限で止まりました（解除は ${limit_until}）。解除のあとの回で、最初からやり直します。" &&
+      gh issue edit "$issue" --remove-label auto-in-progress --add-label auto-ready
+  } >> "$log" 2>&1
+  rm -f "$pr_file" "$decision_file"
+  notify "が上限で中断" "#${issue}: 使用量の上限で止まりました。${limit_until} の解除のあとにやり直します"
+  exit 0
 fi
 if [ "$status" -ne 0 ]; then
   fail "claude が終了コード ${status} で止まりました" "$status"
