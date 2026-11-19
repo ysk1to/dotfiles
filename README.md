@@ -99,6 +99,7 @@ make check
   - ClaudeにはGitHubを触らせない。Issueの選択・取得、着手のラベルとコメント、push、PRの作成はスクリプトが行う。Issueの本文とコメントはファイルで渡し、コメントは「本人の判断」「ワークフローが書いたもの」「ほかの人のもの」に仕分ける
   - ClaudeがコミットしてPRのファイル（1行目がタイトル、2行目以降が本文）を書いたら、スクリプトが`auto-`のブランチをpushし、`auto-dev`と`no-auto-merge`のラベル付きでPRを作る（慣らしが済んだら`CLAUDE_AUTO_DEV_AUTO_MERGE=1`で`no-auto-merge`を外す）。判断待ちのファイルを書いたら、その中身をIssueにコメントして`needs-decision`にする
   - 企画の回: リポジトリに`.claude/auto-plan.md`があれば、前の企画から6時間たった回に、実装の代わりに企画の回を起動する（1回に1つ）。Issueが少なくなるのを待たないのは、設計の残りを足すだけでなく、改善や新機能を定期的に考えさせるため。ClaudeはIssueの案を1件1ファイルで書き（1行目がタイトル、2行目が`labels: ラベル, …`、3行目以降が本文）、スクリプトが`auto-planned`ラベル付きのIssueにする。コードは変えられない
+    - 重複した案を出さないよう、今あるIssueをファイルで渡す（開いているものは本文つき、閉じたものはタイトルだけ）。判断待ち（`needs-decision`）のIssueと、「やらない」（not planned）で閉じたIssueには、本人のアカウントのコメント（本人の判断と、精査が止めた理由など）を付ける。ほかの人が書いた本文とコメントは渡さない
     - 付けられるラベルは`auto-ready`・`needs-decision`・`protected`・`auto-decided`だけ。`needs-decision`か`protected`（`.github/`の変更など、自動開発に任せないもの）のIssueには`auto-ready`を付けない。`auto-ready`もこの2つもない案は、誰も拾わないIssueになるので`needs-decision`にする。知らないラベルは付けずにログに残す
     - 優先の`p2`は、企画の案には1回に1件まで付けられ（`auto-ready`の案だけ）、精査がPRから見つけた問題（`auto-finding`）には必ず付く。`p1`は本人だけが付ける（Claudeが`p1`と書いても`p2`にする）
     - 1回に作るのは、着手できる`auto-ready`のIssueが8件になるまで。すでに8件あれば企画しない。件数は上限で、出す価値のある案がなければ1件も作らない
