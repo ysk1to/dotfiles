@@ -8,7 +8,7 @@
 #   --once で1回だけ出して終わる / --toggle で監視用のペインを開け閉めする（C-q + M）
 #   --repo でそのリポジトリの状況・実行中の回・できごとだけを出す。--toggle は、今のペインのリポジトリに絞って開く
 # 状況は tmux-claude-auto-dev と同じキャッシュを読み、古ければ tmux-claude-auto-dev に裏で取り直させる。
-# 書き直す間隔は CLAUDE_AUTO_DEV_WATCH_INTERVAL（秒、既定 10）、開くときの幅は CLAUDE_AUTO_DEV_WATCH_WIDTH（既定 60）
+# 書き直す間隔は CLAUDE_AUTO_DEV_WATCH_INTERVAL（秒、既定 10）、左右に割って開くときの幅は CLAUDE_AUTO_DEV_WATCH_WIDTH（既定 60）
 
 bar="$(dirname "$0")/tmux-claude-auto-dev"
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-auto-dev-status.json"
@@ -23,7 +23,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# 印（@auto_dev_watch）の付いたペインがあれば閉じ、なければ右下のペインを左右に割って開く。
+# 印（@auto_dev_watch）の付いたペインがあれば閉じ、なければ右下のペインを割って開く。
 # 今のペインがリポジトリ（worktree なら元のリポジトリ）の中なら、そのリポジトリに絞る
 if [ "$mode" = --toggle ]; then
   pane=$(tmux list-panes -F '#{pane_id} #{@auto_dev_watch}' | awk '$2 == 1 { print $1; exit }')
@@ -33,7 +33,13 @@ if [ "$mode" = --toggle ]; then
     cmd=$0
     common=$(git -C "$(tmux display -p '#{pane_current_path}')" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
       cmd="$0 --repo $(printf '%q' "$(basename "$(dirname "$common")")")"
-    tmux split-window -d -h -l "${CLAUDE_AUTO_DEV_WATCH_WIDTH:-60}" -t '{bottom-right}' "$cmd"
+    # 右の列のペインが1つだけ（claude-team のウィンドウで、右下の監視を閉じたあと）なら、上下に割って元の右下に開く
+    br=$(tmux display -p -t '{bottom-right}' '#{pane_id}')
+    if [ "$br" = "$(tmux display -p -t '{top-right}' '#{pane_id}')" ] && [ "$br" != "$(tmux display -p -t '{top-left}' '#{pane_id}')" ]; then
+      tmux split-window -d -v -t '{bottom-right}' "$cmd"
+    else
+      tmux split-window -d -h -l "${CLAUDE_AUTO_DEV_WATCH_WIDTH:-60}" -t '{bottom-right}' "$cmd"
+    fi
   fi
   exit 0
 fi
