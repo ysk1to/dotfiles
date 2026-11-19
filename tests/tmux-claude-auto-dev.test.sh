@@ -99,6 +99,8 @@ echo "[$(repo '.error = "gh で取得できません"')]" > "$cache"
 assert_eq "gh の失敗は 🚨" "🔧 app  🚨" "$(show)"
 echo "[$(repo '.notices = [{at: 1, title: "が失敗", message: "m"}]')]" > "$cache"
 assert_eq "失敗の通知は 🚨" "🔧 app  🚨" "$(show)"
+echo "[$(repo '.notices = [{at: 1, title: "が失敗", message: "m", resolved: true}]')]" > "$cache"
+assert_eq "後の回が正常に終わった失敗は 🚨 にしない" "🔧 app  ✓" "$(show)"
 echo "[$(repo '.notices = [{at: 1, title: "が判断待ち", message: "m"}]')]" > "$cache"
 assert_eq "失敗でない通知は 🚨 にしない" "🔧 app  ✓" "$(show)"
 

@@ -61,7 +61,7 @@ jq -r --argjson running "$running" --argjson now "$now" '
   def run: if .mode == "implement" then "#\(.issue)" elif .mode == "plan" then "企画" else "精査" end + " \(.started_at | elapsed)";
   def segment:
     ($running[.name] // null) as $r | .label as $label
-    | (.schedule.missed_at or .error or any(.notices[]; .title | test("失敗"))) as $warn
+    | (.schedule.missed_at or .error or any(.notices[]; (.title | test("失敗")) and (.resolved | not))) as $warn
     | [if $r then "🏃 \($r | run)" else empty end,
        (.decisions | length) as $d | if $d > 0 then "🙋 \($d)" else empty end,
        (.prs | length) as $p | if $p > 0 then "🔀 \($p)" else empty end,

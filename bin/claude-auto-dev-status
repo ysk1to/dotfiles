@@ -78,14 +78,16 @@ label() {
 
 # 1つのリポジトリの集計を JSON で出す
 collect() {
-  local name="$1" repo issues prs error='' runs notices schedule
+  local name="$1" repo issues prs error='' runs notices schedule ok
   repo=$(cat "$state_dir/repos/$name" 2>/dev/null)
   runs=$(runs "$name" | jq -s .)
   schedule=$(schedule "$repo" "$(cat "$state_dir/checked/$name" 2>/dev/null)")
+  # 後の回が正常に終わっていれば（ok にその回を起動した時刻がある）、それより前の通知には resolved を付ける
+  ok=$(cat "$state_dir/ok/$name" 2>/dev/null)
   notices='[]'
   [ ! -f "$state_dir/notices/$name.tsv" ] ||
-    notices=$(jq -Rn --argjson since "$since" '[inputs | split("\t") | {at: (.[0] | tonumber), title: .[1], message: .[2]}
-      | select(.at >= $since)]' < "$state_dir/notices/$name.tsv" 2>/dev/null) || notices='[]'
+    notices=$(jq -Rn --argjson since "$since" --argjson ok "${ok:-0}" '[inputs | split("\t") | {at: (.[0] | tonumber), title: .[1], message: .[2]}
+      | select(.at >= $since) | if .at < $ok then .resolved = true else . end]' < "$state_dir/notices/$name.tsv" 2>/dev/null) || notices='[]'
   if ! issues=$(cd "$repo" 2>/dev/null && gh issue list --state all --limit 300 --json number,title,state,labels,createdAt) ||
     ! prs=$(cd "$repo" && gh pr list --state all --limit 100 --json number,title,state,labels,mergedAt); then
     error="gh で Issue と PR を取得できません"

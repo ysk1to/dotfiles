@@ -950,6 +950,18 @@ setup
 FAKE_GH_FAIL=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "起動の前に gh で止まったときも通知を残す" "gh で Issue を取得できません" "$(cut -f3 "$CLAUDE_AUTO_DEV_STATE_DIR/notices/my-app.tsv" 2>/dev/null)"
 
+# 前の失敗が一時的なものだったとわかるよう、正常に終わった回は、その回を起動した時刻を残す
+setup
+before=$(date +%s)
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+ok=$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/ok/my-app" 2>/dev/null)
+assert_eq "正常に終わった回は、起動した時刻を残す" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/checked/my-app" 2>/dev/null)" "${ok:-なし}"
+assert_eq "正常に終わった回の時刻は、起動より前にならない" "yes" "$([ "${ok:-0}" -ge "$before" ] && echo yes || echo no)"
+
+setup
+FAKE_GH_FAIL=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "失敗した回は、正常に終わった時刻を残さない" "no" "$([ -f "$CLAUDE_AUTO_DEV_STATE_DIR/ok/my-app" ] && echo yes || echo no)"
+
 # tmux の表示が読めるよう、できごと（時刻・リポジトリ・種類・本文）を1つのファイルにタブ区切りで残す
 events() { cut -f2- "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" 2>/dev/null; }
 setup

@@ -134,6 +134,13 @@ mkdir -p "$state/notices"
 printf '%s\t%s\t%s\n' "$((now - 86400 * 2))" "が失敗" "古い" "$((now - 600))" "が失敗" "#8: 止まりました" > "$state/notices/my-app.tsv"
 assert_eq "直近の通知を出す" "[{\"at\":$((now - 600)),\"title\":\"が失敗\",\"message\":\"#8: 止まりました\"}]" "$(q '.[0].notices')"
 
+# 後の回が正常に終わっていれば、それより前の通知は片付いたものとして印を付ける
+setup
+mkdir -p "$state/notices" "$state/ok"
+printf '%s\t%s\t%s\n' "$((now - 7200))" "が失敗" "gh で Issue を取得できません" "$((now - 600))" "が失敗" "#8: 止まりました" > "$state/notices/my-app.tsv"
+echo "$((now - 3600))" > "$state/ok/my-app"
+assert_eq "後の回が正常に終わった通知は resolved にする" '[true,null]' "$(q '[.[0].notices[].resolved]')"
+
 agent() { # StartCalendarInterval の JSON [リポジトリのパス]
   jq -n --argjson cal "$1" --arg repo "${2:-$tmp/my-app}" '{Label: "local.test", StartCalendarInterval: $cal,
     ProgramArguments: ["/bin/zsh", "-lc", "exec claude-auto-dev \($repo)"]}' > "$tmp/agents/test.plist"
