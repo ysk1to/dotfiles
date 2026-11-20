@@ -56,6 +56,7 @@ fake_bin() {
 #!/bin/bash
 { echo "claude pwd=$PWD"; echo "claude head=$(git rev-parse HEAD)"; printf 'claude arg=%s\n' "$@"; } >> "$FAKE_LOG"
 echo "claude run=$(cat "$CLAUDE_AUTO_DEV_STATE_DIR"/locks/*/run 2>/dev/null | tr -d '\n')" >> "$FAKE_LOG"
+echo "claude cache5m=$FORCE_PROMPT_CACHING_5M" >> "$FAKE_LOG"
 if [ -n "$CLAUDE_AUTO_DEV_REVIEW_DIR" ]; then
   for n in $FAKE_REVIEW_FILES; do printf '%s\n' "$FAKE_REVIEW_TEXT" > "$CLAUDE_AUTO_DEV_REVIEW_DIR/$n.md"; done
   i=1
@@ -81,6 +82,7 @@ fi
 [ -n "$FAKE_NO_RESULT" ] || echo '{"type":"result","result":"PR を作りました","num_turns":3,"total_cost_usd":0.5,"duration_ms":245000,"permission_denials":[{"tool_name":"Bash"}]}'
 exit "$FAKE_CLAUDE_EXIT"
 EOF
+  printf '#!/bin/bash\necho "sleep $1" >> "$FAKE_LOG"\nexec /bin/sleep "$@"\n' > "$tmp/bin/sleep"
   cat > "$tmp/bin/gh" <<'EOF'
 #!/bin/bash
 [ -z "$FAKE_GH_FAIL" ] || exit 1
@@ -137,6 +139,20 @@ assert_eq "プロンプトで手順のファイルを読ませる" "yes" "$(echo
 system_prompt=$(sed -n '/^claude arg=--append-system-prompt$/{n;p;}' "$FAKE_LOG")
 assert_eq "システムプロンプトで日本語で書くよう指示する" "yes" "$(echo "$system_prompt" | grep -q '日本語' && echo yes || echo no)"
 assert_eq "プロンプトに設定ファイルの中身を入れる" "yes" "$(grep -q 'https://example.com/notion' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "キャッシュの保持を5分にして claude を起動する（回は数分で終わるので）" "claude cache5m=1" "$(grep '^claude cache5m=' "$FAKE_LOG")"
+assert_eq "時間の上限の既定は1時間" "yes" "$(grep -qx 'sleep 3600' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "キャッシュの保持の設定を、起動した側の環境に残さない" "" "$FORCE_PROMPT_CACHING_5M"
+
+# 手順（.claude/auto-dev.md）と Issue の中身はプロンプトに入れて渡す（読むためのターンを使わせない）
+setup
+(cd "$tmp/seed" && mkdir -p .claude && echo "手順の中身です" > .claude/auto-dev.md && git add .claude && git commit -qm procedure && git push -q origin main)
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+prompt=$(awk '/^claude arg=-p$/ { on = 1; next } on && /^claude arg=--/ { on = 0 } on' "$FAKE_LOG" | sed 's/^claude arg=//')
+assert_eq "手順の中身をプロンプトに入れる" "yes" "$(echo "$prompt" | grep -q '手順の中身です' && echo yes || echo no)"
+assert_eq "Issue の本文をプロンプトに入れる" "yes" "$(echo "$prompt" | grep -q '本文です' && echo yes || echo no)"
+assert_eq "Issue のコメントを、仕分けの見出しと一緒にプロンプトに入れる" "yes" "$(echo "$prompt" | grep -B1 'A にしてください' | grep -q '本人の判断' && echo yes || echo no)"
+assert_eq "中身を入れたときは、読み直さなくてよいと伝える" "yes" "$(echo "$prompt" | grep -q '読み直さなくてよい' && echo yes || echo no)"
+assert_eq "手元の clone にない手順も、origin/main から入れる" "no" "$([ -f "$repo/.claude/auto-dev.md" ] && echo yes || echo no)"
 
 # gh の一覧は、件数を指定しないと30件で切れる（新しい順）。着手できる Issue が30件を超えても、
 # 古い Issue（番号の小さいもの、p1 のもの）を取りこぼさないよう、件数を指定して取得する

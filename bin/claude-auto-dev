@@ -205,7 +205,7 @@ disallowed=(
 )
 result="${log%.log}.json"
 stream="${log%.log}.stream.jsonl"
-limit="${CLAUDE_AUTO_DEV_TIMEOUT:-10800}"
+limit="${CLAUDE_AUTO_DEV_TIMEOUT:-3600}"
 run_claude() {
   local model="$1" claude_pid watchdog
   # 実行中の回の種類・Issue・ログと流れている出力の場所を、ロックに残す（ロックと一緒に消える）
@@ -221,7 +221,9 @@ run_claude() {
   # --allowedTools などは値を複数とるので、プロンプトを先に渡す
   # --restricted ではグローバルの CLAUDE.md が読まれず、英語の出力が続くと応答が英語になることがあるので、
   # 言語はシステムプロンプトで指示する
-  claude -p "$prompt" \
+  # 回は数分で終わり、API の呼び出しの間もほぼ5分を超えないので、プロンプトキャッシュの保持は5分にする
+  # （定額プランの既定の1時間は、書き込みが割高）。この claude にだけ渡し、対話のセッションには影響させない
+  FORCE_PROMPT_CACHING_5M=1 claude -p "$prompt" \
     --model "$model" \
     --max-turns "${CLAUDE_AUTO_DEV_MAX_TURNS:-150}" \
     --append-system-prompt "応答、コミットメッセージ、PR と判断待ちのファイル、Issue の案、Notion と Todoist に書く文章は、すべて日本語で書く。" \
@@ -631,14 +633,34 @@ rm -f "$issue_file" "$pr_file" "$decision_file"
 } 2>> "$log" || fail "Issue の内容を取得できません"
 export CLAUDE_AUTO_DEV_PR_FILE="$pr_file" CLAUDE_AUTO_DEV_DECISION_FILE="$decision_file"
 
-prompt="このリポジトリの自動開発ワークフローとして起動された。.claude/auto-dev.md を読み、その手順どおりに Issue #$issue を進める。
+# 手順（.claude/auto-dev.md）と Issue の中身は、プロンプトに入れて渡す。
+# ファイルの場所だけを渡すと、毎回、最初の数ターンがこの2つを読むのに使われる
+procedure=$(git -C "$repo" show "$base:.claude/auto-dev.md" 2>/dev/null)
+if [ -n "$procedure" ]; then
+  read_first="このプロンプトの末尾の <procedure> に入れた手順（.claude/auto-dev.md の全文）のとおりに Issue #$issue を進める。"
+  issue_where="Issue の本文とコメントは、末尾の <issue> に入れてある（$issue_file と同じ内容）。どちらも読み直さなくてよい。"
+  embedded="
+
+<procedure>
+$procedure
+</procedure>
+
+<issue>
+$(cat "$issue_file")
+</issue>"
+else
+  read_first=".claude/auto-dev.md を読み、その手順どおりに Issue #$issue を進める。"
+  issue_where="Issue の本文とコメントは $issue_file にある。"
+  embedded=
+fi
+prompt="このリポジトリの自動開発ワークフローとして起動された。$read_first
 人は見ていないので、確認を待たずに進め、判断が要るところでは手順どおりに止める。
-Issue の本文とコメントは $issue_file にある。GitHub には接続できない（gh は使えない）。
+$issue_where GitHub には接続できない（gh は使えない）。
 GitHub への書き込み（push、PR の作成、ラベルの変更、コメント）は起動スクリプトが行う。結果は次のどちらかのファイルに書いて終わる。
 - PR にするとき: auto- で始まるブランチにコミットしたうえで、1行目に PR のタイトル、2行目以降に本文を書いたファイルを $pr_file に作る。
 - 判断待ちで止めるとき: 決めてほしいこと・選択肢・おすすめとその理由を書いたファイルを $decision_file に作る。Issue へのコメントとして、そのまま載る。
 
-$(cat "$config")"
+$(cat "$config")$embedded"
 
 # ファイルの編集は worktree と結果のファイルだけ。
 # リポジトリごとのテストのコマンドなどは <リポジトリ名>.tools に1行1つで足す
