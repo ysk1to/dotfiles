@@ -42,7 +42,7 @@ macOS用の設定ファイル管理リポジトリ
 - `bin/claude-team` - 共通のtmuxセッション `claude` に、指定ディレクトリでClaude Codeを2ペインと自動開発の監視（`claude-auto-dev-watch`）を1ペイン開くウィンドウを作る（リポジトリごとに1ウィンドウ）。シェルは`C-q + S`のポップアップで開く
 - `bin/claude-statusline` - Claude CodeのstatusLine（モデル・effort・トークン数・コンテキスト使用率など）
 - `bin/claude-context-guard` - Claude Codeのフック。コンテキストが自動圧縮に近づいたら（既定25万トークン）、圧縮前にNotionへ途中経過を記録するよう促す
-- `bin/claude-auto-dev` - launchdなどから定期的に呼ばれ、リポジトリの`auto-ready`のIssueを1件、Claude Code（`claude -p`）にPRにさせる。手順の本体はリポジトリの`.claude/auto-dev.md`。Issueがない回はClaudeを起動しない。`.claude/auto-plan.md`があるリポジトリでは、決まった間隔で次の作業を企画してIssueにし、`.claude/auto-explore.md`と`.claude/auto-explore-judge.md`があれば、新しい案を出して選ぶ探索の回を起動し、`.claude/auto-plan-review.md`があれば、企画したIssueとマージされたPRを別の回で精査する
+- `bin/claude-auto-dev` - launchdなどから定期的に呼ばれ、リポジトリの`auto-ready`のIssueを1件、Claude Code（`claude -p`）にPRにさせる。手順の本体はリポジトリの`.claude/auto-dev.md`。Issueがない回はClaudeを起動しない。`.claude/auto-plan.md`があるリポジトリでは、決まった間隔で次の作業を企画してIssueにし、`.claude/auto-explore.md`と`.claude/auto-explore-judge.md`があれば、新しい案を出して選ぶ探索の回を起動し、`.claude/auto-plan-review.md`があれば、企画したIssueとマージされたPRを別の回で精査する。週の使用率を各回の出力から読み、週の経過に比例した目標より上なら実装の回だけを2時間おきに、目標の近くなら1時間おきに起動する。目標を10ポイント以上下回るか、リセット前の24時間なら、呼ばれるたびに起動する（launchdからは20分おきに呼ぶ）。平日の日中は5時間の枠が70%を超えたら起動しない。Fableの枠が80%を超えたら探索を休み、尽きたら精査と企画も休む
 - `bin/claude-auto-dev-status` - `claude-auto-dev`の状況をまとめて出す（本人待ちの判断・PRとそのURL、実行中の回、作業中と次に着手するIssue、今日の回とかかった時間、次の起動と起動の見落とし、直近にClaudeが作った・決めたもの、消えた通知）。Claudeは起動せず、GitHubと`claude-auto-dev`が残したファイルだけを読む。`--json`で集計をJSONで出す
 - `bin/claude-skill-install` - ほかの人が公開しているClaude Codeのスキルを、コミットを決めて`~/.claude/skills/`に置く。同じコミットが置いてあれば取得しない。自分が置いたのではないフォルダは置き換えない
 - `bin/claude-usage-refresh` - usage APIからプラン使用率を取得してキャッシュ（Claude Codeを起動していない間の利用もtmuxに反映する）
