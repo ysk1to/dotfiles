@@ -38,6 +38,7 @@ setup() {
 # FAKE_ALL_ISSUES_AFTER があれば、Issue を作ったあとの全件の一覧にそれを返す。FAKE_CREATE_FAIL があれば Issue の作成に失敗する。
 # claude は FAKE_CLAUDE_BRANCH のブランチを作り、FAKE_CLAUDE_COMMIT=1 ならコミットし、
 # FAKE_PR_TEXT があれば PR のファイルに、FAKE_DECISION_TEXT があれば判断待ちのファイルに書く。
+# 起動したときに読むだけの場所（state の refs）にあったファイルを、claude refs= に残す。
 # 企画の回（CLAUDE_AUTO_DEV_PLAN_DIR がある）では、FAKE_PLAN_TEXT を FAKE_PLAN_COUNT 個の Issue のファイルに書く。
 # 精査の回（CLAUDE_AUTO_DEV_REVIEW_DIR がある）では、FAKE_REVIEW_FILES の番号のファイルに FAKE_REVIEW_TEXT を書き、
 # FAKE_REVIEW_NEW 個の new-0N.md に FAKE_PLAN_TEXT を書き、FAKE_REVIEW_EXIT があればその終了コードで終わる。
@@ -57,6 +58,7 @@ fake_bin() {
 { echo "claude pwd=$PWD"; echo "claude head=$(git rev-parse HEAD)"; printf 'claude arg=%s\n' "$@"; } >> "$FAKE_LOG"
 echo "claude run=$(cat "$CLAUDE_AUTO_DEV_STATE_DIR"/locks/*/run 2>/dev/null | tr -d '\n')" >> "$FAKE_LOG"
 echo "claude cache5m=$FORCE_PROMPT_CACHING_5M" >> "$FAKE_LOG"
+echo "claude refs=$(cd "$CLAUDE_AUTO_DEV_STATE_DIR/refs" 2>/dev/null && find . -type f | sort | tr '\n' ' ')" >> "$FAKE_LOG"
 if [ -n "$CLAUDE_AUTO_DEV_REVIEW_DIR" ]; then
   for n in $FAKE_REVIEW_FILES; do printf '%s\n' "$FAKE_REVIEW_TEXT" > "$CLAUDE_AUTO_DEV_REVIEW_DIR/$n.md"; done
   i=1
@@ -1224,5 +1226,45 @@ setup
 enable_plan
 FAKE_ISSUES='[]' FAKE_CREATE_SEQ=1 FAKE_PLAN_COUNT=2 FAKE_PLAN_TEXT_2=$'🤖 [add] 見本が要る\nlabels: needs-decision\ndepends: 01\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "判断待ちの案は、前提があっても auto-blocked にしない（前提の行は書く）" "auto-planned needs-decision " "$(create_labels 2)"
+
+# ---- 読むだけの場所 ----
+# 設定の <リポジトリ名>.refs に書いたリポジトリ（1行に1つ、パス）は、リモートの既定のブランチの中身を取り出して、
+# 読むだけの場所として渡す（ほかのリポジトリのコードを、実物で読ませるため）。
+# 本人の作業ツリーを渡さないのは、.env のような Git 管理外のファイルや、書きかけの変更を読ませないため
+setup_ref() {
+  git init -q --bare -b main "$tmp/lib-origin.git"
+  git clone -q "$tmp/lib-origin.git" "$tmp/lib-seed" 2>/dev/null
+  (cd "$tmp/lib-seed" && mkdir bin && echo tool > bin/tool.sh && git add bin && git commit -qm init && git push -q origin main)
+  git clone -q "$tmp/lib-origin.git" "$tmp/lib"
+  echo secret > "$tmp/lib/.env"
+  echo draft >> "$tmp/lib/bin/tool.sh"
+  (cd "$tmp/lib-seed" && echo new > new.txt && git add new.txt && git commit -qm second && git push -q origin main)
+  echo "$tmp/lib" > "$CLAUDE_AUTO_DEV_CONFIG_DIR/my-app.refs"
+}
+setup
+setup_ref
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "読むだけの場所があっても成功する" "0" "$?"
+refs=$(grep '^claude refs=' "$FAKE_LOG" | cut -d= -f2)
+assert_eq "参照のリポジトリの中身を、リモートの最新で取り出す（管理外のファイルは入れない）" "./my-app/lib/bin/tool.sh ./my-app/lib/new.txt " "$refs"
+assert_eq "読むだけの場所を読めるようにする" "yes" "$(has_line "$(args_after --add-dir)" "$CLAUDE_AUTO_DEV_STATE_DIR/refs/my-app")"
+assert_eq "読むだけの場所は編集を許さない" "no" "$(args_after --allowedTools | grep -q 'refs' && echo yes || echo no)"
+prompt=$(awk '/^claude arg=-p$/ { on = 1; next } on && /^claude arg=--/ { on = 0 } on' "$FAKE_LOG" | sed 's/^claude arg=//')
+assert_eq "読むだけの場所をプロンプトで伝える" "yes" "$(echo "$prompt" | grep -q "$CLAUDE_AUTO_DEV_STATE_DIR/refs/my-app/lib" && echo yes || echo no)"
+assert_eq "終わったら読むだけの場所を消す" "no" "$([ -e "$CLAUDE_AUTO_DEV_STATE_DIR/refs/my-app" ] && echo yes || echo no)"
+assert_eq "本人の作業ツリーには触らない" "secret" "$(cat "$tmp/lib/.env")"
+
+# 設定がなければ、読むだけの場所は渡さない
+setup
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "設定がなければ読むだけの場所を渡さない" "no" "$(args_after --add-dir | grep -q '/refs/' && echo yes || echo no)"
+
+# 参照のリポジトリを取り出せなければ、claude を起動せず、判断待ちにして知らせる
+setup
+echo "$tmp/none" > "$CLAUDE_AUTO_DEV_CONFIG_DIR/my-app.refs"
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "参照を取り出せなければ失敗で終わる" "1" "$?"
+assert_eq "参照を取り出せなければ claude を起動しない" "0" "$(claude_calls)"
+assert_eq "参照を取り出せなければ判断待ちにして、理由をコメントする" "yes" "$(grep -q '^gh issue edit .*--add-label needs-decision' "$FAKE_LOG" && grep -q '^gh issue comment arg=.*読むだけの場所（none）を取り出せません' "$FAKE_LOG" && echo yes || echo no)"
 
 [ "$failures" -eq 0 ] || exit 1
