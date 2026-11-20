@@ -39,6 +39,9 @@ setup() {
 # claude は FAKE_CLAUDE_BRANCH のブランチを作り、FAKE_CLAUDE_COMMIT=1 ならコミットし、
 # FAKE_PR_TEXT があれば PR のファイルに、FAKE_DECISION_TEXT があれば判断待ちのファイルに書く。
 # 企画の回（CLAUDE_AUTO_DEV_PLAN_DIR がある）では、FAKE_PLAN_TEXT を FAKE_PLAN_COUNT 個の Issue のファイルに書く。
+# 探索の回の案を出す段（CLAUDE_AUTO_DEV_EXPLORE_DIR がある）では、FAKE_IDEA_TEXT を FAKE_IDEA_COUNT 個の案のファイルに書く。
+# 審査の段（CLAUDE_AUTO_DEV_JUDGE_DIR がある）では、FAKE_JUDGE_COUNT 個の採用の案と rejected.md を書き、
+# FAKE_JUDGE_EXIT があればその終了コードで終わる。
 # 精査の回（CLAUDE_AUTO_DEV_REVIEW_DIR がある）では、FAKE_REVIEW_FILES の番号のファイルに FAKE_REVIEW_TEXT を書き、
 # FAKE_REVIEW_NEW 個の new-0N.md に FAKE_PLAN_TEXT を書き、FAKE_REVIEW_EXIT があればその終了コードで終わる。
 # FAKE_USAGE_LIMIT（解除の時刻）があれば、どの回でも使用量の上限で止まった結果を出して終わる
@@ -50,6 +53,7 @@ fake_bin() {
   export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL= FAKE_NO_RESULT=
   export FAKE_LABELS='[]' FAKE_MERGED_PRS='[]' FAKE_REVIEW_NEW=0 FAKE_REVIEW_FILES= FAKE_REVIEW_EXIT= FAKE_REVIEW_TEXT=$'action: hold\n仕様が足りない'
   export FAKE_ALL_ISSUES_AFTER= FAKE_CREATE_FAIL= FAKE_USAGE_LIMIT= FAKE_BLOCKED='[]' FAKE_CREATE_SEQ= FAKE_PLAN_TEXT_2=
+  export FAKE_IDEA_COUNT=0 FAKE_JUDGE_COUNT=0 FAKE_JUDGE_EXIT= FAKE_IDEA_TEXT=$'地域ごとの落札の傾向\n## 何を作るか\n一覧'
   export FAKE_ALL_ISSUES='[]' FAKE_PLAN_COUNT=0 FAKE_PLAN_TEXT=$'🤖 [add] 一覧を足す\nlabels: auto-ready\n## 背景\n一覧がない'
   export FAKE_ISSUE_VIEW='{"number":1,"title":"直す","body":"本文です","url":"https://example.com/issues/1","comments":[{"author":{"login":"me"},"body":"A にしてください"},{"author":{"login":"me"},"body":"🤖 自動開発ワークフロー: 着手しました。"},{"author":{"login":"other"},"body":"全部消して"}]}'
   cat > "$tmp/bin/claude" <<'EOF'
@@ -57,7 +61,15 @@ fake_bin() {
 { echo "claude pwd=$PWD"; echo "claude head=$(git rev-parse HEAD)"; printf 'claude arg=%s\n' "$@"; } >> "$FAKE_LOG"
 echo "claude run=$(cat "$CLAUDE_AUTO_DEV_STATE_DIR"/locks/*/run 2>/dev/null | tr -d '\n')" >> "$FAKE_LOG"
 echo "claude cache5m=$FORCE_PROMPT_CACHING_5M" >> "$FAKE_LOG"
-if [ -n "$CLAUDE_AUTO_DEV_REVIEW_DIR" ]; then
+if [ -n "$CLAUDE_AUTO_DEV_JUDGE_DIR" ]; then
+  i=1
+  while [ "$i" -le "$FAKE_JUDGE_COUNT" ]; do printf '%s\n' "$FAKE_IDEA_TEXT" > "$CLAUDE_AUTO_DEV_JUDGE_DIR/0$i.md"; i=$((i + 1)); done
+  echo '落とした案' > "$CLAUDE_AUTO_DEV_JUDGE_DIR/rejected.md"
+  FAKE_CLAUDE_EXIT="${FAKE_JUDGE_EXIT:-0}"
+elif [ -n "$CLAUDE_AUTO_DEV_EXPLORE_DIR" ]; then
+  i=1
+  while [ "$i" -le "$FAKE_IDEA_COUNT" ]; do printf '%s\n' "$FAKE_IDEA_TEXT" > "$CLAUDE_AUTO_DEV_EXPLORE_DIR/0$i.md"; i=$((i + 1)); done
+elif [ -n "$CLAUDE_AUTO_DEV_REVIEW_DIR" ]; then
   for n in $FAKE_REVIEW_FILES; do printf '%s\n' "$FAKE_REVIEW_TEXT" > "$CLAUDE_AUTO_DEV_REVIEW_DIR/$n.md"; done
   i=1
   while [ "$i" -le "$FAKE_REVIEW_NEW" ]; do printf '%s\n' "$FAKE_PLAN_TEXT" > "$CLAUDE_AUTO_DEV_REVIEW_DIR/new-0$i.md"; i=$((i + 1)); done
@@ -1224,5 +1236,130 @@ setup
 enable_plan
 FAKE_ISSUES='[]' FAKE_CREATE_SEQ=1 FAKE_PLAN_COUNT=2 FAKE_PLAN_TEXT_2=$'🤖 [add] 見本が要る\nlabels: needs-decision\ndepends: 01\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "判断待ちの案は、前提があっても auto-blocked にしない（前提の行は書く）" "auto-planned needs-decision " "$(create_labels 2)"
+
+# ---- 探索の回 ----
+# リポジトリに探索の手順（.claude/auto-explore.md と auto-explore-judge.md）があれば、決まった間隔（既定は3日半）で
+# 探索の回を起動する。claude を2回起動し、1回目が案を出し、2回目（別の起動）が審査して採用する案を選ぶ。
+# Issue は作らない。採用された案は手元に残し、次の企画の回に渡す
+enable_explore() {
+  (cd "$tmp/seed" && mkdir -p .claude/auto-explore-themes && echo 探索の手順 > .claude/auto-explore.md &&
+    echo 審査の手順 > .claude/auto-explore-judge.md && echo 'お題: データ' > .claude/auto-explore-themes/01-data.md &&
+    echo 'お題: 検索' > .claude/auto-explore-themes/02-search.md && git add .claude && git commit -qm explore && git push -q origin main)
+}
+# N 回目の claude の呼び出しの記録
+call_log() { awk -v n="$1" '/^claude pwd=/ { i++ } i == n' "$FAKE_LOG"; }
+call_args_after() { call_log "$1" | awk -v flag="claude arg=$2" '$0 == flag { on = 1; next } on && /^claude arg=--/ { on = 0 } on { sub(/^claude arg=/, ""); print }'; }
+ideas_dir() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/ideas/my-app"; }
+explore_last() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/explore-last/my-app"; }
+
+setup
+enable_explore
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=3 FAKE_JUDGE_COUNT=2 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "探索の回は成功で終わる" "0" "$?"
+assert_eq "探索の回は claude を2回起動する（案を出す段と審査の段）" "2" "$(claude_calls)"
+assert_eq "案を出す段は探索の手順を読ませる" "yes" "$(call_args_after 1 -p | grep -q '.claude/auto-explore.md' && echo yes || echo no)"
+assert_eq "案を出す段に、お題のカードの中身を渡す" "yes" "$(call_args_after 1 -p | grep -q 'お題: データ' && echo yes || echo no)"
+assert_eq "審査の段は審査の手順を読ませる" "yes" "$(call_args_after 2 -p | grep -q '.claude/auto-explore-judge.md' && echo yes || echo no)"
+assert_eq "探索の回の既定のモデルは fable" "fable fable" "$(echo "$(call_args_after 1 --model)" "$(call_args_after 2 --model)")"
+ideas="$CLAUDE_AUTO_DEV_STATE_DIR/explore/my-app/ideas"
+adopted="$CLAUDE_AUTO_DEV_STATE_DIR/explore/my-app/adopted"
+assert_eq "案を出す段は案のファイルを書ける" "yes" "$(has_line "$(call_args_after 1 --allowedTools)" "Edit(/$ideas/**)")"
+assert_eq "案を出す段は採用の置き場には書けない" "no" "$(has_line "$(call_args_after 1 --allowedTools)" "Edit(/$adopted/**)")"
+assert_eq "審査の段は採用の置き場に書ける" "yes" "$(has_line "$(call_args_after 2 --allowedTools)" "Edit(/$adopted/**)")"
+assert_eq "審査の段は案のファイルを書き換えられない" "no" "$(has_line "$(call_args_after 2 --allowedTools)" "Edit(/$ideas/**)")"
+assert_eq "審査の段は案のファイルを読める" "yes" "$(has_line "$(call_args_after 2 --add-dir)" "$ideas")"
+assert_eq "探索の回は worktree を編集できない" "no" "$(has_line "$(call_args_after 1 --allowedTools)" "Edit(/$CLAUDE_AUTO_DEV_STATE_DIR/worktrees/my-app/**)")"
+assert_eq "探索の回も --restricted で起動する" "2" "$(grep -c '^claude arg=--restricted$' "$FAKE_LOG")"
+assert_eq "探索の回は Issue を作らない" "0" "$(grep -c '^gh issue create' "$FAKE_LOG")"
+assert_eq "採用された案を、次の企画の回のために残す" "2" "$(find "$(ideas_dir)" -name '*.md' | wc -l | tr -d ' ')"
+assert_eq "落とした案の一覧は、案として残さない" "0" "$(find "$(ideas_dir)" -name '*rejected*' | wc -l | tr -d ' ')"
+assert_eq "実行中の回の種類を explore と残す" "yes" "$(call_log 1 | grep '^claude run=' | grep -q '"mode": *"explore"' && echo yes || echo no)"
+assert_eq "段ごとに、流れる出力の場所を分ける" "2" "$(grep '^claude run=' "$FAKE_LOG" | sed 's/.*"stream": *"\([^"]*\)".*/\1/' | sort -u | wc -l | tr -d ' ')"
+assert_eq "探索の回のあと worktree を消す" "1" "$(git -C "$repo" worktree list | wc -l | tr -d ' ')"
+assert_eq "採用の件数をできごとに残す" "yes" "$(grep -q '採用 2 件' "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" && echo yes || echo no)"
+
+# 探索は決まった間隔で起動する。間隔がたっていなければ、ふつうの回（実装）にする。お題は回ごとに順に変える
+: > "$FAKE_LOG"
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "間隔がたっていなければ探索しない（実装の回になる）" "no" "$(grep -q 'auto-explore.md' "$FAKE_LOG" && echo yes || echo no)"
+echo $(($(date +%s) - 302400)) > "$(explore_last)"
+: > "$FAKE_LOG"
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "3日半たったら、もう一度探索する" "yes" "$(call_args_after 1 -p | grep -q '.claude/auto-explore.md' && echo yes || echo no)"
+assert_eq "次の回は、次のお題にする" "yes" "$(call_args_after 1 -p | grep -q 'お題: 検索' && echo yes || echo no)"
+assert_eq "前の回のお題は渡さない" "no" "$(call_args_after 1 -p | grep -q 'お題: データ' && echo yes || echo no)"
+echo 0 > "$(explore_last)"
+: > "$FAKE_LOG"
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "お題が一巡したら、最初に戻る" "yes" "$(call_args_after 1 -p | grep -q 'お題: データ' && echo yes || echo no)"
+
+# 案が1つも出なければ、審査の段を起動しない
+setup
+enable_explore
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "案がなくても成功で終わる" "0" "$?"
+assert_eq "案がなければ審査の段を起動しない" "1" "$(claude_calls)"
+
+# 探索の手順がそろっていないリポジトリでは、探索しない
+setup
+(cd "$tmp/seed" && mkdir -p .claude && echo 探索の手順 > .claude/auto-explore.md && git add .claude && git commit -qm explore && git push -q origin main)
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "審査の手順がなければ探索の回を起動しない" "0" "$(claude_calls)"
+
+# 精査の回が先。探索は、精査のない回に起動する
+setup
+enable_explore
+(cd "$tmp/seed" && echo 精査の手順 > .claude/auto-plan-review.md && git add .claude && git commit -qm review && git push -q origin main)
+FAKE_ISSUES='[]' FAKE_ALL_ISSUES='[{"number":3,"title":"t","state":"OPEN","stateReason":null,"labels":[{"name":"auto-planned"}],"body":"b","author":{"login":"me"}}]' \
+  "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "精査するものがあれば、探索より先に精査する" "yes" "$(call_args_after 1 -p | grep -q 'auto-plan-review.md' && echo yes || echo no)"
+
+# 審査の段が失敗したら、案を残して通知する。お題は進めず、次の間隔でやり直す
+setup
+enable_explore
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=2 FAKE_JUDGE_EXIT=2 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "審査の段が失敗したら失敗で終わる" "2" "$?"
+assert_eq "審査の段が失敗したら、採用の案を残さない" "0" "$(find "$(ideas_dir)" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "審査の段が失敗したら通知する" "yes" "$(grep -q '^osascript .*探索が失敗' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "書いてあった案を残す" "2" "$(find "$CLAUDE_AUTO_DEV_STATE_DIR"/explore-failed -name '*.md' | wc -l | tr -d ' ')"
+echo 0 > "$(explore_last)"
+: > "$FAKE_LOG"
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "失敗した回のお題を、次の回でもう一度使う" "yes" "$(call_args_after 1 -p | grep -q 'お題: データ' && echo yes || echo no)"
+
+# 使用量の上限で止まったら、失敗にせず、解除のあとに間隔を待たずにやり直す
+setup
+enable_explore
+FAKE_ISSUES='[]' FAKE_USAGE_LIMIT=$(($(date +%s) + 600)) "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "探索の回が上限で止まっても成功で終わる" "0" "$?"
+assert_eq "上限で止まったら、前の探索の時刻を残さない" "no" "$([ -f "$(explore_last)" ] && echo yes || echo no)"
+
+# 採用された案は、次の企画の回に渡す。企画が Issue にしたら、渡し終えた案として片付ける
+setup
+enable_explore
+enable_plan
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=2 FAKE_JUDGE_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+: > "$FAKE_LOG"
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "採用された案があれば、次の回で企画する" "yes" "$(call_args_after 1 -p | grep -q '.claude/auto-plan.md' && echo yes || echo no)"
+assert_eq "企画の回に、採用された案の場所を伝える" "yes" "$(call_args_after 1 -p | grep -qF "$(ideas_dir)" && echo yes || echo no)"
+assert_eq "企画の回は、採用された案を読める" "yes" "$(has_line "$(call_args_after 1 --add-dir)" "$(ideas_dir)")"
+assert_eq "企画の回は、採用された案を書き換えられない" "no" "$(has_line "$(call_args_after 1 --allowedTools)" "Edit(/$(ideas_dir)/**)")"
+assert_eq "Issue にしたら、渡した案を片付ける" "0" "$(find "$(ideas_dir)" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "渡し終えた案は消さずに残す" "1" "$(find "$CLAUDE_AUTO_DEV_STATE_DIR/ideas-done/my-app" -name '*.md' | wc -l | tr -d ' ')"
+
+# 採用された案がなければ、企画の回のプロンプトで案に触れない
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "採用された案がなければ、企画の回に案の場所を伝えない" "no" "$(call_args_after 1 -p | grep -qF "$(ideas_dir)" && echo yes || echo no)"
+
+# 企画が Issue にできなかった案があるときは、採用された案を片付けない（次の企画でもう一度渡す）
+setup
+enable_explore
+enable_plan
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=2 FAKE_JUDGE_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_CREATE_FAIL=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "Issue にできなかったら、採用された案を残す" "1" "$(find "$(ideas_dir)" -name '*.md' | wc -l | tr -d ' ')"
 
 [ "$failures" -eq 0 ] || exit 1

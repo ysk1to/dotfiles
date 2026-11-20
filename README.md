@@ -42,7 +42,7 @@ macOS用の設定ファイル管理リポジトリ
 - `bin/claude-team` - 共通のtmuxセッション `claude` に、指定ディレクトリでClaude Codeを2ペインと自動開発の監視（`claude-auto-dev-watch`）を1ペイン開くウィンドウを作る（リポジトリごとに1ウィンドウ）。シェルは`C-q + S`のポップアップで開く
 - `bin/claude-statusline` - Claude CodeのstatusLine（モデル・effort・トークン数・コンテキスト使用率など）
 - `bin/claude-context-guard` - Claude Codeのフック。コンテキストが自動圧縮に近づいたら（既定25万トークン）、圧縮前にNotionへ途中経過を記録するよう促す
-- `bin/claude-auto-dev` - launchdなどから定期的に呼ばれ、リポジトリの`auto-ready`のIssueを1件、Claude Code（`claude -p`）にPRにさせる。手順の本体はリポジトリの`.claude/auto-dev.md`。Issueがない回はClaudeを起動しない。`.claude/auto-plan.md`があるリポジトリでは、決まった間隔で次の作業を企画してIssueにし、`.claude/auto-plan-review.md`があれば、企画したIssueとマージされたPRを別の回で精査する
+- `bin/claude-auto-dev` - launchdなどから定期的に呼ばれ、リポジトリの`auto-ready`のIssueを1件、Claude Code（`claude -p`）にPRにさせる。手順の本体はリポジトリの`.claude/auto-dev.md`。Issueがない回はClaudeを起動しない。`.claude/auto-plan.md`があるリポジトリでは、決まった間隔で次の作業を企画してIssueにし、`.claude/auto-explore.md`と`.claude/auto-explore-judge.md`があれば、新しい案を出して選ぶ探索の回を起動し、`.claude/auto-plan-review.md`があれば、企画したIssueとマージされたPRを別の回で精査する
 - `bin/claude-auto-dev-status` - `claude-auto-dev`の状況をまとめて出す（本人待ちの判断・PRとそのURL、実行中の回、作業中と次に着手するIssue、今日の回とかかった時間、次の起動と起動の見落とし、直近にClaudeが作った・決めたもの、消えた通知）。Claudeは起動せず、GitHubと`claude-auto-dev`が残したファイルだけを読む。`--json`で集計をJSONで出す
 - `bin/claude-skill-install` - ほかの人が公開しているClaude Codeのスキルを、コミットを決めて`~/.claude/skills/`に置く。同じコミットが置いてあれば取得しない。自分が置いたのではないフォルダは置き換えない
 - `bin/claude-usage-refresh` - usage APIからプラン使用率を取得してキャッシュ（Claude Codeを起動していない間の利用もtmuxに反映する）
@@ -108,6 +108,12 @@ make check
     - 前の企画から、mainもIssueの開閉も変わっていなければくり返さない（出せる案がないのに毎回起動しないため）。企画が自分で作ったIssueは、変化に数えない
     - 失敗したら通知し、次の間隔（6時間後）に、状態が同じでもやり直す。Issueにできなかった案と、止まるまでに書いてあった案は、`~/.local/state/claude-auto-dev/plan-failed/<ログと同じ名前>/`に残し、通知で場所を伝える
     - 今あるIssue（開いているものは本文つき、閉じたものはタイトルだけ）は、スクリプトがファイルで渡す
+  - 探索の回: リポジトリに`.claude/auto-explore.md`と`.claude/auto-explore-judge.md`があれば、前の探索から3日半たった回に、探索の回を起動する（`CLAUDE_AUTO_DEV_EXPLORE_INTERVAL`で秒数を変えられる）。企画は今ある材料から次の作業をIssueにするので、設計の残りと手直しに寄る。新しい案を考える回を分けた。Issueは作らず、コードも変えられない
+    - Claudeを2回起動する。案を出す段は、案を1件1ファイルで書く。審査の段は別の起動で、案を読んで採用するものを選ぶ（3件まで。`CLAUDE_AUTO_DEV_EXPLORE_ADOPT`）。段を分けるのは、案を書いた流れのまま自分で選ぶと甘くなるため。モデルは`CLAUDE_AUTO_DEV_EXPLORE_MODEL`と`CLAUDE_AUTO_DEV_JUDGE_MODEL`（どちらも既定は`fable`）
+    - お題のカード（`.claude/auto-explore-themes/`の`.md`）を、回ごとに1枚、名前の順に選んでプロンプトに入れる。一巡したら最初に戻る。失敗した回のお題は、次の回でもう一度使う
+    - 採用された案は`~/.local/state/claude-auto-dev/ideas/<リポジトリ名>/`に残し、次の企画の回に場所を伝えて読ませる（企画の間隔は待たない）。企画がIssueを作り終えたら`ideas-done/<リポジトリ名>/`に移す。Issueにできなかった案があった回は移さず、次の企画でもう一度渡す
+    - 案が1件も出なければ、審査の段は起動しない。失敗したら通知し、書いてあった案を`explore-failed/<ログと同じ名前>/`に残す。使用量の上限で止まったら、解除のあとに間隔を待たずにやり直す
+    - 審査の段の結果と出力は、`logs/<リポジトリ名>-2-<日時>.json`と`.stream.jsonl`に残す
   - 精査の回: リポジトリに`.claude/auto-plan-review.md`があれば、前の精査から1日たった回に、企画でも実装でもなく精査の回を起動する。企画と同じ回にしないのは、案を書いた流れに引きずられないようにするため。コードは変えられない
     - 見るのは、企画が作ったIssue（`auto-planned`）のうちまだ精査していないものと、マージされたPR（自動開発のものも、手元の作業のものも。1回10件まで）。どちらもなければ起動しない
     - Issueに問題があれば、Claudeが`<番号>.md`を書く（1行目が`action: hold`か`action: close`、2行目以降が理由）。スクリプトが理由をコメントし、`hold`は`auto-ready`を外して`needs-decision`に、`close`は閉じる。対象でないIssueのファイルは無視する
