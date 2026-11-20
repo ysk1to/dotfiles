@@ -56,7 +56,8 @@ setup() {
 # 精査の回（CLAUDE_AUTO_DEV_REVIEW_DIR がある）では、FAKE_REVIEW_FILES の番号のファイルに FAKE_REVIEW_TEXT を書き、
 # FAKE_REVIEW_NEW 個の new-0N.md に FAKE_PLAN_TEXT を書き、FAKE_REVIEW_EXIT があればその終了コードで終わる。
 # FAKE_USAGE_LIMIT（解除の時刻）があれば、どの回でも使用量の上限で止まった結果を出して終わる。
-# FAKE_FABLE_LIMIT（解除の時刻）があれば、Fable の枠だけが尽きた結果を出して終わる
+# FAKE_FABLE_LIMIT（解除の時刻）があれば、Fable の枠だけが尽きた結果を出して終わる。
+# FAKE_FABLE_CREDITS があれば、Fable の枠が尽きたときの別の形（追加の利用を求めるエラー。使用率は流れない）で終わる
 fake_bin() {
   mkdir -p "$tmp/bin"
   export PATH="$tmp/bin:$PATH" FAKE_LOG="$tmp/fake.log"
@@ -64,7 +65,7 @@ fake_bin() {
   export FAKE_CLAUDE_BRANCH=auto-1-test FAKE_CLAUDE_COMMIT=0 FAKE_PR_TEXT= FAKE_DECISION_TEXT='A と B のどちらにするか'
   export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL= FAKE_NO_RESULT=
   export FAKE_LABELS='[]' FAKE_MERGED_PRS='[]' FAKE_REVIEW_NEW=0 FAKE_REVIEW_FILES= FAKE_REVIEW_EXIT= FAKE_REVIEW_TEXT=$'action: hold\n仕様が足りない'
-  export FAKE_ALL_ISSUES_AFTER= FAKE_CREATE_FAIL= FAKE_USAGE_LIMIT= FAKE_FABLE_LIMIT= FAKE_BLOCKED='[]' FAKE_CREATE_SEQ= FAKE_PLAN_TEXT_2=
+  export FAKE_ALL_ISSUES_AFTER= FAKE_CREATE_FAIL= FAKE_USAGE_LIMIT= FAKE_FABLE_LIMIT= FAKE_FABLE_CREDITS= FAKE_BLOCKED='[]' FAKE_CREATE_SEQ= FAKE_PLAN_TEXT_2=
   export FAKE_RESEARCH_MEMO='ほかのサイトの調査メモ' FAKE_RESEARCH_EXIT=
   export FAKE_IDEA_COUNT=0 FAKE_JUDGE_COUNT=0 FAKE_JUDGE_EXIT= FAKE_IDEA_TEXT=$'地域ごとの落札の傾向\n## 何を作るか\n一覧'
   export FAKE_ALL_ISSUES='[]' FAKE_PLAN_COUNT=0 FAKE_PLAN_TEXT=$'🤖 [add] 一覧を足す\nlabels: auto-ready\n## 背景\n一覧がない'
@@ -104,6 +105,10 @@ fi
 [ -z "$FAKE_CLAUDE_SLEEP" ] || sleep "$FAKE_CLAUDE_SLEEP"
 echo '{"type":"system","subtype":"init"}'
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"make test"}}]}}'
+if [ -n "$FAKE_FABLE_CREDITS" ]; then
+  echo '{"type":"result","is_error":true,"api_error":"model_requires_usage_credits","result":"You have reached your Fable limit","num_turns":1,"total_cost_usd":0,"duration_ms":1000,"permission_denials":[]}'
+  exit 1
+fi
 if [ -n "$FAKE_FABLE_LIMIT" ]; then
   echo "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":$FAKE_FABLE_LIMIT,\"unifiedWindows\":{\"five_hour\":{\"utilization\":0.2,\"resetsAt\":$FAKE_FABLE_LIMIT},\"seven_day\":{\"utilization\":0.5,\"resetsAt\":$FAKE_FABLE_LIMIT},\"seven_day_overage_included\":{\"utilization\":1,\"resetsAt\":$FAKE_FABLE_LIMIT,\"status\":\"rejected\"}}}}"
   echo '{"type":"result","is_error":true,"api_error":"usage_limit_reached","result":"You have reached your Fable limit","num_turns":1,"total_cost_usd":0.1,"duration_ms":1000,"permission_denials":[]}'
@@ -1677,6 +1682,40 @@ echo 0 > "$(pace_last)"
 : > "$FAKE_LOG"
 run
 assert_eq "Fable の枠が解除されるまでも、実装の回は起動する" "opus" "$(args_after --model)"
+
+# Fable の枠が尽きると、追加の利用を求めるエラーで止まる（対話のセッションの記録にあった形）。使用率が流れないので、
+# 解除の時刻は週の枠の読みから取る
+setup
+enable_plan
+usage 0.1 0.5
+FAKE_FABLE_CREDITS=1 run
+assert_eq "追加の利用を求めるエラーで止まった回は、失敗で終わらない" "0" "$?"
+assert_eq "追加の利用を求めるエラーでも、全体の解除の時刻は残さない" "no" "$([ -e "$(usage_limit_file)" ] && echo yes || echo no)"
+assert_eq "追加の利用を求めるエラーなら、週のリセットまで Fable の回を休む" "$week_reset" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/fable-limit" 2>/dev/null)"
+assert_eq "追加の利用を求めるエラーは、失敗としてではなく知らせる" "notice" "$(cut -f3 "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" | tail -n 1)"
+
+# 1日に1回、週の枠の見通しを知らせる
+outlook() { events | grep -c '週の枠'; }
+setup
+usage 0.1 0.5 0.3
+run
+echo 0 > "$(pace_last)"
+run
+assert_eq "見通しは1日に1回だけ知らせる" "1" "$(outlook)"
+assert_eq "見通しに、使用率と目標と Fable の枠を書く" "yes" "$(events | grep -q '週の枠 50%（目標 51%）.*Fable の枠 30%' && echo yes || echo no)"
+assert_eq "尽きないペースなら、リセットの時点の見込みを書く" "yes" "$(events | grep -q 'リセットの時点で約96%' && echo yes || echo no)"
+setup
+usage 0.1 0.7
+run
+assert_eq "尽きるペースなら、尽きる日時を書く" "yes" "$(events | grep -q '11/20 01時ごろに尽きます' && echo yes || echo no)"
+setup
+export CLAUDE_AUTO_DEV_NOW="$wed_night"
+usage 0.1 0.5
+run
+assert_eq "朝の8時より前は、見通しを知らせない" "0" "$(outlook)"
+setup
+run
+assert_eq "使用率の読みがなければ、見通しを知らせない" "0" "$(outlook)"
 
 # 土日は本人がマージできないので、マージ待ちの PR を4件まで積む
 setup

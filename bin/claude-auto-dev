@@ -249,6 +249,27 @@ fi
 mkdir -p "$state_dir/pace"
 echo "$pace" > "$pace_file"
 
+# 1日に1回、朝の8時以降の最初の回で、週の枠の見通しを知らせる（全リポジトリで1回）。
+# 本人が、対話のセッションの使い方を週の途中で調整できるようにするため
+outlook_file="$state_dir/pace-notice"
+outlook_day=$(date -r "$now" +%Y-%m-%d)
+if [ -n "$pace" ] && [ "$((10#$(date -r "$now" +%H)))" -ge "${CLAUDE_AUTO_DEV_OUTLOOK_FROM:-8}" ] &&
+  [ "$(cat "$outlook_file" 2>/dev/null)" != "$outlook_day" ]; then
+  echo "$outlook_day" > "$outlook_file"
+  week_elapsed=$((604800 - week_left))
+  outlook="週の枠 ${week_used}%（目標 ${week_target}%）"
+  [ -z "$fable_reset" ] || outlook="${outlook}、Fable の枠 ${fable_used}%"
+  if [ "$week_used" -gt 0 ] && [ "$week_elapsed" -gt 0 ]; then
+    week_end_used=$((week_used * 604800 / week_elapsed))
+    if [ "$week_end_used" -gt 100 ]; then
+      outlook="${outlook}。このペースだと $(date -r $((week_reset - 604800 + week_elapsed * 100 / week_used)) '+%m/%d %H時')ごろに尽きます"
+    else
+      outlook="${outlook}。このペースだとリセットの時点で約${week_end_used}%です"
+    fi
+  fi
+  notify "の見通し" "$outlook"
+fi
+
 # 速めるときは、着手待ちの Issue の目標を増やし、探索の間隔を縮める（実装の回だけでは、Issue が先になくなるため）
 plan_target="${CLAUDE_AUTO_DEV_PLAN_TARGET:-8}"
 explore_interval="${CLAUDE_AUTO_DEV_EXPLORE_INTERVAL:-302400}"
@@ -448,14 +469,22 @@ run_claude() {
 # 使用量の上限で止まったか。止まっていれば、解除の時刻を残し、$limit_until に時刻（時:分）を入れる。
 # 解除の時刻は、流れた出力の最後の rate_limit_event にある。なければ1時間待つ
 hit_usage_limit() {
-  local at
-  [ "$(jq -r '.api_error // empty' "$result" 2>/dev/null)" = usage_limit_reached ] || return 1
+  local at err
+  err=$(jq -r '.api_error // empty' "$result" 2>/dev/null)
+  [ "$err" = usage_limit_reached ] || [ "$err" = model_requires_usage_credits ] || return 1
   # Fable の枠だけが尽きたときは、Fable を使う回だけを止める。解除は週のリセットなので、全部の回を止めると、
   # 全モデルの枠が残っていても実装の回まで何日も止まる
   at=$(jq -rs 'map(select(.type == "rate_limit_event")) | last | .rate_limit_info.unifiedWindows
     | select((.seven_day_overage_included | .status == "rejected" or .utilization >= 1)
       and (.seven_day.utilization // 0) < 1 and (.five_hour.utilization // 0) < 1)
     | .seven_day_overage_included.resetsAt // empty' "$stream" 2>/dev/null)
+  # Fable の枠が尽きると、追加の利用を求めるエラー（model_requires_usage_credits）で止まることもある。
+  # このときは使用率が流れないので、解除の時刻は前の読みから取る（Fable の枠、なければ週の枠。どちらも同じ時刻に解除される）
+  if [ -z "$at" ] && [ "$err" = model_requires_usage_credits ]; then
+    at=$fable_reset
+    [ "${at:-0}" -gt "$now" ] || at=$week_reset
+    [ "${at:-0}" -gt "$now" ] || at=$(($(date +%s) + 3600))
+  fi
   if [ -n "$at" ]; then
     echo "$at" > "$fable_limit_file"
     limit_until="$(date -r "$at" '+%m/%d %H:%M')（Fable の枠）"
