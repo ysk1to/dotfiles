@@ -90,6 +90,63 @@ for n in $stale; do
   notify "が失敗" "#${n}: 前の回が途中で止まっていました"
 done
 
+all_issues=
+fetch_all_issues() {
+  [ -z "$all_issues" ] || return 0
+  all_issues=$(gh issue list --state all --limit "$issue_limit" --json number,title,state,stateReason,labels,body,author) || {
+    notify "が失敗" "gh で Issue を取得できません"
+    exit 1
+  }
+}
+
+# 前提の Issue を待っている Issue（auto-blocked）は、本文の「前提の Issue: #N …」の行の Issue がすべて完了で閉じたら、
+# auto-ready に付け替える。前提どうしの順を、人が見張ってラベルを付け替えなくても進められるようにするため。
+# 前提が「やらない」で閉じた、前提が見つからない、前提の行がない、のときは進め方が決まらないので、判断待ちにして知らせる。
+# 判断待ち・作業中のものには触らない
+blocked=$(set -o pipefail; gh issue list --label auto-blocked --state open --limit "$issue_limit" --json number,body,labels |
+  jq -c '[.[] | select([.labels[].name] | index("needs-decision") or index("auto-in-progress") or index("in-progress") | not)]') || {
+  notify "が失敗" "gh で Issue を取得できません"
+  exit 1
+}
+block_hold() {
+  {
+    comment "$1" "$2" &&
+      gh issue edit "$1" --remove-label auto-blocked --add-label needs-decision
+  } >> "$log" 2>&1
+  notify "が判断待ち" "#$1: $2"
+}
+if [ "$blocked" != "[]" ]; then
+  fetch_all_issues
+  for n in $(echo "$blocked" | jq -r '.[].number'); do
+    deps=$(echo "$blocked" | jq -r --argjson n "$n" '.[] | select(.number == $n) | .body' |
+      grep -m 1 '^前提の Issue:' | grep -oE '#[0-9]+' | tr '\n' ' ')
+    deps="${deps% }"
+    if [ -z "$deps" ]; then
+      block_hold "$n" "本文に「前提の Issue: #番号」の行がないので、前提を確かめられません。"
+      continue
+    fi
+    waiting=no
+    bad=
+    for d in $deps; do
+      case "$(echo "$all_issues" | jq -r --argjson d "${d#\#}" '.[] | select(.number == $d) | "\(.state) \(.stateReason)"')" in
+        "") bad="前提の $d が見つかりません。"; break ;;
+        "CLOSED NOT_PLANNED") bad="前提の $d が「やらない」で閉じられました。この Issue を進めるかを決めてください。"; break ;;
+        CLOSED*) ;;
+        *) waiting=yes ;;
+      esac
+    done
+    if [ -n "$bad" ]; then
+      block_hold "$n" "$bad"
+    elif [ "$waiting" = no ]; then
+      {
+        comment "$n" "前提の $deps が閉じたので、着手できるようにしました。" &&
+          gh issue edit "$n" --remove-label auto-blocked --add-label auto-ready
+      } >> "$log" 2>&1
+      event notice "#$n: 前提の $deps が閉じたので、着手できるようにした"
+    fi
+  done
+fi
+
 # 着手できる Issue（auto-ready のうち、判断待ち・作業中でないもの）を、着手の順に並べる。
 # 順は p1 → p2 → ラベルなしで、同じ段階の中では番号の小さい順。あとから出た大事な Issue を、先に並んだものより前にできる
 ready=$(set -o pipefail; gh issue list --label auto-ready --state open --limit "$issue_limit" --json number,labels |
@@ -120,14 +177,6 @@ plan_key_of() {
 has_file() { git -C "$repo" cat-file -e "$base:$1" 2>/dev/null; }
 # 前に動いた時刻（ファイル $1）から $2 秒たったか
 due() { [ $(($(date +%s) - $(cat "$1" 2>/dev/null || echo 0))) -ge "$2" ]; }
-all_issues=
-fetch_all_issues() {
-  [ -z "$all_issues" ] || return 0
-  all_issues=$(gh issue list --state all --limit "$issue_limit" --json number,title,state,stateReason,labels,body,author) || {
-    notify "が失敗" "gh で Issue を取得できません"
-    exit 1
-  }
-}
 
 # 精査の回にするか決める。精査の手順があるリポジトリで、前の精査から決まった間隔（既定は1日）がたっていて、
 # まだ精査していないものがあれば精査する。見るのは、企画が作った Issue（auto-planned。作業中のものは除く）と、
@@ -308,13 +357,17 @@ readonly_tools=(
 # Issue にできなかった件数を $skipped に足す。$failed_dir があれば、Issue にできなかったファイルをそこに残す
 # （書いた案が消えると、開発ログには出したと残るのに Issue がない、というずれになるため）。
 # 優先のラベルは p2 まで。p1 は本人だけが付ける（claude が自分の案をいちばん前に差し込めないようにする）。
-# 企画の案に付けるのは1回に1件まで。精査が見つけた問題（auto-finding）には必ず付け、新しい作業より先に直す
+# 企画の案に付けるのは1回に1件まで。精査が見つけた問題（auto-finding）には必ず付け、新しい作業より先に直す。
+# 3行目が「depends: 01, #7」の案は、前提の Issue がある（01 は同じ回の案のファイル名、#7 は今ある Issue）。
+# 本文の先頭に「前提の Issue: #番号 …」と書き、auto-ready の代わりに auto-blocked を付ける（付け替えるのは上の処理）。
+# 同じ回の案を前提にできるのは、先に Issue になったものだけ。なっていなければ、その案は Issue にしない
 keep_failed() {
   [ -n "$failed_dir" ] || return 0
   mkdir -p "$failed_dir" && mv "$@" "$failed_dir"/
 }
 create_issues() {
   local base_label="$1" max="$2" by="$3" created=0 f url title labels_line auto_ready hold labels asked l p2 p2_used=0 line
+  local made=" " body_from deps d key
   shift 3
   for f in "$@"; do
     [ -f "$f" ] || continue
@@ -331,6 +384,38 @@ create_issues() {
       keep_failed "$f"
       continue
     fi
+    body_from=3
+    deps=
+    line=$(sed -n 3p "$f")
+    case "$line" in
+      depends:*)
+        body_from=4
+        line="${line#depends:}"
+        IFS=, read -ra asked <<< "${line//、/,}"
+        for d in "${asked[@]}"; do
+          d="${d// /}"
+          key="${d%.md}"
+          case "$d" in
+            "") ;;
+            \#*[!0-9]* | \#) deps=bad ;;
+            \#*) deps="$deps $d" ;;
+            *)
+              case "$made" in
+                *" $key="*) key="${made##* "$key"=}"; deps="$deps #${key%% *}" ;;
+                *) deps=bad ;;
+              esac ;;
+          esac
+          [ "$deps" != bad ] || break
+        done
+        ;;
+    esac
+    if [ "$deps" = bad ]; then
+      echo "前提（${d}）が Issue になっていないので Issue にしません: $(basename "$f")" >> "$log"
+      skipped=$((skipped + 1))
+      keep_failed "$f"
+      continue
+    fi
+    deps="${deps# }"
     # 付けるラベルは決まったものだけ。自動開発に任せない Issue（protected・needs-decision）には auto-ready を付けない。
     # 区切りは読点（、）でも読む。知らないラベルは付けずに、ログに残す
     auto_ready=no
@@ -367,14 +452,21 @@ create_issues() {
       labels+=(--label p2)
       p2_used=$((p2_used + 1))
     fi
-    [ "$hold" = yes ] || labels+=(--label auto-ready)
+    if [ "$hold" = no ] && [ -n "$deps" ]; then
+      labels+=(--label auto-blocked)
+    elif [ "$hold" = no ]; then
+      labels+=(--label auto-ready)
+    fi
     if url=$({
-      tail -n +3 "$f"
+      [ -z "$deps" ] || printf '前提の Issue: %s\n\n' "$deps"
+      tail -n +"$body_from" "$f"
       printf '\n---\n🤖 自動開発ワークフロー（%s）が作成\n' "$by"
     } | gh issue create --title "$title" --body-file - "${labels[@]}" 2>> "$log"); then
       echo "$url" >> "$log"
       event issue "#${url##*/} $title"
       created=$((created + 1))
+      key=$(basename "$f")
+      made="$made${key%.md}=${url##*/} "
     else
       skipped=$((skipped + 1))
       keep_failed "$f"
@@ -457,7 +549,7 @@ $(cat "$config")"
   fi
   [ "$status" -eq 0 ] || review_fail "claude が終了コード ${status} で止まりました" "$status"
 
-  ensure_labels auto-reviewed auto-finding auto-ready needs-decision protected auto-decided p2
+  ensure_labels auto-reviewed auto-finding auto-ready auto-blocked needs-decision protected auto-decided p2
   # 対象の Issue だけを見る。claude がほかの番号のファイルを書いても、その Issue には触らない
   skipped=0
   for n in $(echo "$review_targets" | jq -r '.[]'); do
@@ -558,7 +650,8 @@ if [ "$mode" = plan ]; then
 Issue の案は、1件につき1ファイルで $plan_dir に作る（ファイル名は 01.md、02.md … で、着手してほしい順）。${plan_max} 件まで。これは上限で、埋める必要はない。出す価値のある案がなければ、1つも作らずに終わる。
 - 1行目: Issue のタイトル
 - 2行目: labels: に続けて、付けるラベルをカンマ区切りで書く。使えるのは auto-ready・needs-decision・protected・auto-decided と、ほかの Issue より先に着手してほしい案に付ける p2（1回に1件まで）だけ
-- 3行目以降: Issue の本文
+- 3行目（前提の Issue がある案だけ）: depends: に続けて、前提をカンマ区切りで書く。同じ回の案はファイル名の番号（01）、今ある開いている Issue は #番号（#52）。前提にできる同じ回の案は、自分より番号の小さいファイルだけ。この行がある案は、前提がすべて完了で閉じるまで着手されない（起動スクリプトが auto-ready の代わりに auto-blocked を付け、閉じたら付け替える）
+- そのあと: Issue の本文
 
 $(cat "$config")"
   allowed=("${readonly_tools[@]}" "Edit(/$plan_dir/**)")
@@ -583,7 +676,7 @@ $(cat "$config")"
   [ "$status" -eq 0 ] || plan_fail "claude が終了コード ${status} で止まりました" "$status"
 
   skipped=0
-  ensure_labels auto-planned auto-ready needs-decision protected auto-decided p2
+  ensure_labels auto-planned auto-ready auto-blocked needs-decision protected auto-decided p2
   create_issues auto-planned "$plan_max" 企画 "$plan_dir"/*.md
   rm -rf "$plan_dir"
   if [ "$skipped" -ne 0 ]; then
