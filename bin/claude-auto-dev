@@ -46,7 +46,7 @@ work_created=no
 on_exit() {
   [ $? -ne 0 ] || echo "$started" > "$state_dir/ok/$name"
   [ "$work_created" = no ] || cleanup
-  rm -rf "$lock"
+  rm -rf "$state_dir/refs/$name" "$lock"
 }
 trap on_exit EXIT
 
@@ -746,6 +746,32 @@ else
   issue_where="Issue の本文とコメントは $issue_file にある。"
   embedded=
 fi
+# 読むだけの場所: <リポジトリ名>.refs に書いたリポジトリ（1行に1つ、パス）の、リモートの既定のブランチの中身を取り出して渡す
+# （ほかのリポジトリのコードを、実物で読ませるため）。本人の作業ツリーを渡さないのは、.env のような Git 管理外の
+# ファイルや、書きかけの変更を読ませないため。編集は許さず、回が終わったら消す
+refs_section=
+if [ -f "$config_dir/$name.refs" ]; then
+  refs_dir="$state_dir/refs/$name"
+  rm -rf "$refs_dir"
+  refs_note=
+  while IFS= read -r ref_repo; do
+    [ -n "$ref_repo" ] || continue
+    ref_name=$(basename "$ref_repo")
+    {
+      git -C "$ref_repo" fetch -q origin
+      ref=$(git -C "$ref_repo" symbolic-ref -q --short refs/remotes/origin/HEAD) &&
+        mkdir -p "$refs_dir/$ref_name" &&
+        git -C "$ref_repo" archive "$ref" | tar -x -C "$refs_dir/$ref_name" &&
+        ref_sha=$(git -C "$ref_repo" rev-parse --short "$ref")
+    } >> "$log" 2>&1 || fail "読むだけの場所（${ref_name}）を取り出せません（$name.refs を確かめてください）"
+    refs_note="$refs_note
+- $refs_dir/$ref_name: $ref_name の ${ref}（${ref_sha}）の中身"
+  done < "$config_dir/$name.refs"
+  [ -z "$refs_note" ] || refs_section="
+
+## 読むだけの場所
+次の場所は読めるが、書き換えられない。ほかのリポジトリのコードは、ここにある実物を読む。$refs_note"
+fi
 prompt="このリポジトリの自動開発ワークフローとして起動された。$read_first
 人は見ていないので、確認を待たずに進め、判断が要るところでは手順どおりに止める。
 $issue_where GitHub には接続できない（gh は使えない）。
@@ -753,7 +779,7 @@ GitHub への書き込み（push、PR の作成、ラベルの変更、コメン
 - PR にするとき: auto- で始まるブランチにコミットしたうえで、1行目に PR のタイトル、2行目以降に本文を書いたファイルを $pr_file に作る。
 - 判断待ちで止めるとき: 決めてほしいこと・選択肢・おすすめとその理由を書いたファイルを $decision_file に作る。Issue へのコメントとして、そのまま載る。
 
-$(cat "$config")$embedded"
+$(cat "$config")$refs_section$embedded"
 
 # ファイルの編集は worktree と結果のファイルだけ。
 # リポジトリごとのテストのコマンドなどは <リポジトリ名>.tools に1行1つで足す
@@ -769,6 +795,7 @@ if [ -f "$config_dir/$name.tools" ]; then
   done < "$config_dir/$name.tools"
 fi
 add_dirs=("$state_dir/issue" "$state_dir/pr" "$state_dir/decision")
+[ -z "$refs_section" ] || add_dirs+=("$refs_dir")
 settings=$(sandbox_settings) ||
   fail "サンドボックスの設定を組み立てられません（$name.sandbox.json を確かめてください）"
 
