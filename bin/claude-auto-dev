@@ -170,6 +170,7 @@ mkdir -p "$state_dir/worktrees"
 # 作るのは、着手できる Issue が目標の件数になるまで（実装が速ければ多く、止まっていれば少なく作る）。
 # 前の企画から main も Issue の開閉も変わっていなければ、くり返さない（出せる案がないのに毎回起動して使用量を消費しないため）。
 # 比べる状態（main のコミットと、Issue の番号と開閉。$1 は Issue の JSON）は、企画がうまくいったときだけ残す
+# 企画の材料がリポジトリの外で増えるリポジトリでは、CLAUDE_AUTO_DEV_PLAN_ALWAYS を指定すると、変わっていなくても間隔ごとに企画する
 mode=implement
 plan_key_of() {
   {
@@ -220,7 +221,8 @@ plan_room=$((${CLAUDE_AUTO_DEV_PLAN_TARGET:-8} - $(echo "$ready" | jq length)))
 if [ "$mode" = implement ] && has_file .claude/auto-plan.md && [ "$plan_room" -gt 0 ] &&
   due "$plan_last_file" "${CLAUDE_AUTO_DEV_PLAN_INTERVAL:-21600}"; then
   fetch_all_issues
-  { ! has_ideas && [ "$(plan_key_of "$all_issues")" = "$(cat "$plan_key_file" 2>/dev/null)" ]; } || mode=plan
+  { ! has_ideas && [ -z "${CLAUDE_AUTO_DEV_PLAN_ALWAYS:-}" ] &&
+    [ "$(plan_key_of "$all_issues")" = "$(cat "$plan_key_file" 2>/dev/null)" ]; } || mode=plan
 fi
 
 # 使用量の上限に当たった回が残した解除の時刻までは、どの回も Claude を起動しない。

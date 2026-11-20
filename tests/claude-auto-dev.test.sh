@@ -611,6 +611,21 @@ FAKE_ISSUES='[]' FAKE_ALL_ISSUES='[{"number":9,"title":"閉じた","state":"CLOS
 assert_eq "Issue の状態が変わったら、もう一度企画する" "3" "$(claude_calls)"
 unset CLAUDE_AUTO_DEV_PLAN_INTERVAL
 
+# 材料がリポジトリの外で増えるリポジトリ（main も Issue も変わらないまま、企画の材料だけが増える）では、
+# 何も変わっていなくても、間隔がたつたびに企画できる
+setup
+enable_plan
+export CLAUDE_AUTO_DEV_PLAN_INTERVAL=0
+FAKE_ISSUES='[]' CLAUDE_AUTO_DEV_PLAN_ALWAYS=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+FAKE_ISSUES='[]' CLAUDE_AUTO_DEV_PLAN_ALWAYS=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "指定すれば、何も変わっていなくても企画をくり返す" "2" "$(claude_calls)"
+unset CLAUDE_AUTO_DEV_PLAN_INTERVAL
+setup
+enable_plan
+FAKE_ISSUES='[]' CLAUDE_AUTO_DEV_PLAN_ALWAYS=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+FAKE_ISSUES='[]' CLAUDE_AUTO_DEV_PLAN_ALWAYS=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "指定しても、間隔がたつまでは企画をくり返さない" "1" "$(claude_calls)"
+
 # 企画が自分で作った Issue は、状態の変化に数えない（作っただけで次の企画が起動しないようにする）
 setup
 enable_plan
