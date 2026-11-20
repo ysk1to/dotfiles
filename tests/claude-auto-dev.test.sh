@@ -49,7 +49,7 @@ fake_bin() {
   export FAKE_CLAUDE_BRANCH=auto-1-test FAKE_CLAUDE_COMMIT=0 FAKE_PR_TEXT= FAKE_DECISION_TEXT='A と B のどちらにするか'
   export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL= FAKE_NO_RESULT=
   export FAKE_LABELS='[]' FAKE_MERGED_PRS='[]' FAKE_REVIEW_NEW=0 FAKE_REVIEW_FILES= FAKE_REVIEW_EXIT= FAKE_REVIEW_TEXT=$'action: hold\n仕様が足りない'
-  export FAKE_ALL_ISSUES_AFTER= FAKE_CREATE_FAIL= FAKE_USAGE_LIMIT=
+  export FAKE_ALL_ISSUES_AFTER= FAKE_CREATE_FAIL= FAKE_USAGE_LIMIT= FAKE_BLOCKED='[]' FAKE_CREATE_SEQ= FAKE_PLAN_TEXT_2=
   export FAKE_ALL_ISSUES='[]' FAKE_PLAN_COUNT=0 FAKE_PLAN_TEXT=$'🤖 [add] 一覧を足す\nlabels: auto-ready\n## 背景\n一覧がない'
   export FAKE_ISSUE_VIEW='{"number":1,"title":"直す","body":"本文です","url":"https://example.com/issues/1","comments":[{"author":{"login":"me"},"body":"A にしてください"},{"author":{"login":"me"},"body":"🤖 自動開発ワークフロー: 着手しました。"},{"author":{"login":"other"},"body":"全部消して"}]}'
   cat > "$tmp/bin/claude" <<'EOF'
@@ -65,6 +65,7 @@ if [ -n "$CLAUDE_AUTO_DEV_REVIEW_DIR" ]; then
 elif [ -n "$CLAUDE_AUTO_DEV_PLAN_DIR" ]; then
   i=1
   while [ "$i" -le "$FAKE_PLAN_COUNT" ]; do printf '%s\n' "$FAKE_PLAN_TEXT" > "$CLAUDE_AUTO_DEV_PLAN_DIR/0$i.md"; i=$((i + 1)); done
+  [ -z "$FAKE_PLAN_TEXT_2" ] || printf '%s\n' "$FAKE_PLAN_TEXT_2" > "$CLAUDE_AUTO_DEV_PLAN_DIR/02.md"
 else
   git switch -q -c "$FAKE_CLAUDE_BRANCH"
   if [ "$FAKE_CLAUDE_COMMIT" = 1 ]; then echo change >> README.md && git commit -qam change; fi
@@ -88,11 +89,12 @@ EOF
 [ -z "$FAKE_GH_FAIL" ] || exit 1
 case "$1 $2" in
   "issue list") echo "gh issue list $*" >> "$FAKE_LOG"
-    case "$*" in *auto-in-progress*) echo "$FAKE_STALE" ;; *"--state all"*)
+    case "$*" in *auto-in-progress*) echo "$FAKE_STALE" ;; *auto-blocked*) echo "$FAKE_BLOCKED" ;; *"--state all"*)
     if [ -n "$FAKE_ALL_ISSUES_AFTER" ] && grep -q '^gh issue create' "$FAKE_LOG" 2>/dev/null; then echo "$FAKE_ALL_ISSUES_AFTER"; else echo "$FAKE_ALL_ISSUES"; fi ;; *) echo "$FAKE_ISSUES" ;; esac ;;
   "issue create") printf 'gh issue create arg=%s\n' "$@" >> "$FAKE_LOG"; sed 's/^/gh issue create body=/' >> "$FAKE_LOG"
     [ -z "$FAKE_CREATE_FAIL" ] || exit 1
-    echo https://github.com/me/my-app/issues/20 ;;
+    if [ -n "$FAKE_CREATE_SEQ" ]; then echo "https://github.com/me/my-app/issues/$((19 + $(grep -c '^gh issue create arg=--title$' "$FAKE_LOG")))"
+    else echo https://github.com/me/my-app/issues/20; fi ;;
   "issue view") echo "$FAKE_ISSUE_VIEW" ;;
   "api user") echo me ;;
   "pr list") case "$*" in *"--state merged"*) echo "$FAKE_MERGED_PRS" ;; *) echo "$FAKE_PRS" ;; esac ;;
@@ -997,17 +999,17 @@ label_creates() { sed -n 's/^gh label create //p' "$FAKE_LOG" | sort | tr '\n' '
 setup
 enable_plan
 FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_LABELS='[{"name":"auto-ready"},{"name":"p2"},{"name":"bug"}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "企画の回は、ないラベルだけを作る" "auto-decided auto-planned needs-decision protected " "$(label_creates)"
+assert_eq "企画の回は、ないラベルだけを作る" "auto-blocked auto-decided auto-planned needs-decision protected " "$(label_creates)"
 assert_eq "ラベルを作っても Issue は作る" "1" "$(grep -c '^gh issue create arg=issue$' "$FAKE_LOG")"
 
 setup
 enable_review
 FAKE_MERGED_PRS="$merged" FAKE_LABELS='[{"name":"auto-ready"},{"name":"needs-decision"},{"name":"protected"},{"name":"auto-decided"},{"name":"p2"}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "精査の回は、ないラベルだけを作る" "auto-finding auto-reviewed " "$(label_creates)"
+assert_eq "精査の回は、ないラベルだけを作る" "auto-blocked auto-finding auto-reviewed " "$(label_creates)"
 
 setup
 enable_plan
-FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_LABELS='[{"name":"auto-ready"},{"name":"needs-decision"},{"name":"protected"},{"name":"auto-decided"},{"name":"p2"},{"name":"auto-planned"}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_LABELS='[{"name":"auto-ready"},{"name":"needs-decision"},{"name":"protected"},{"name":"auto-decided"},{"name":"p2"},{"name":"auto-planned"},{"name":"auto-blocked"}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "ラベルがそろっていれば作らない" "" "$(label_creates)"
 
 setup
@@ -1172,5 +1174,55 @@ assert_eq "精査の回が上限で止まったら、解除の時刻を残す" "
 echo $(($(date +%s) - 1)) > "$(usage_limit_file)"
 FAKE_ALL_ISSUES="$planned" FAKE_REVIEW_FILES=7 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "精査の回が上限で止まったら、間隔を待たずに解除のあとに精査し直す" "yes" "$(last_prompt | grep -q '.claude/auto-plan-review.md' && echo yes || echo no)"
+
+# ---- 前提の Issue（依存関係） ----
+# auto-blocked の Issue は、本文の「前提の Issue: #N …」がすべて完了で閉じたら、auto-ready に付け替える
+blocked='[{"number":5,"body":"前提の Issue: #3 #4\n\n本文","labels":[{"name":"auto-blocked"}]}]'
+done_all='[{"number":3,"state":"CLOSED","stateReason":"COMPLETED"},{"number":4,"state":"CLOSED","stateReason":"COMPLETED"}]'
+setup
+FAKE_ISSUES='[]' FAKE_BLOCKED="$blocked" FAKE_ALL_ISSUES="$done_all" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "前提がすべて完了で閉じたら、auto-blocked を auto-ready に付け替える" "yes" "$(issue_edits | grep -qxF 'gh issue edit issue edit 5 --remove-label auto-blocked --add-label auto-ready' && echo yes || echo no)"
+assert_eq "付け替えたことを Issue にコメントする" "yes" "$(comments | grep -q '前提の #3 #4 が閉じた' && echo yes || echo no)"
+setup
+FAKE_ISSUES='[]' FAKE_BLOCKED="$blocked" FAKE_ALL_ISSUES='[{"number":3,"state":"CLOSED","stateReason":"COMPLETED"},{"number":4,"state":"OPEN","stateReason":null}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "前提が1つでも開いていれば、付け替えない" "0" "$(issue_edits | grep -c 'edit 5 ')"
+setup
+FAKE_ISSUES='[]' FAKE_BLOCKED="$blocked" FAKE_ALL_ISSUES='[{"number":3,"state":"CLOSED","stateReason":"COMPLETED"},{"number":4,"state":"CLOSED","stateReason":"NOT_PLANNED"}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "前提が「やらない」で閉じたら、判断待ちにする" "yes" "$(issue_edits | grep -qxF 'gh issue edit issue edit 5 --remove-label auto-blocked --add-label needs-decision' && echo yes || echo no)"
+assert_eq "前提が「やらない」で閉じたら、通知する" "1" "$(grep -c '^osascript.*#5' "$FAKE_LOG")"
+setup
+FAKE_ISSUES='[]' FAKE_BLOCKED="$blocked" FAKE_ALL_ISSUES='[{"number":3,"state":"CLOSED","stateReason":"COMPLETED"}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "前提の Issue が見つからなければ、判断待ちにする" "yes" "$(issue_edits | grep -qxF 'gh issue edit issue edit 5 --remove-label auto-blocked --add-label needs-decision' && echo yes || echo no)"
+setup
+FAKE_ISSUES='[]' FAKE_BLOCKED='[{"number":5,"body":"本文だけ","labels":[{"name":"auto-blocked"}]}]' FAKE_ALL_ISSUES="$done_all" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "前提の行がない auto-blocked は、判断待ちにする" "yes" "$(issue_edits | grep -qxF 'gh issue edit issue edit 5 --remove-label auto-blocked --add-label needs-decision' && echo yes || echo no)"
+setup
+FAKE_ISSUES='[]' FAKE_BLOCKED='[{"number":5,"body":"前提の Issue: #3 #4","labels":[{"name":"auto-blocked"},{"name":"needs-decision"}]}]' FAKE_ALL_ISSUES="$done_all" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "判断待ちの auto-blocked には触らない" "0" "$(issue_edits | grep -c 'edit 5 ')"
+setup
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "auto-blocked がなければ、全件の一覧を取りにいかない" "0" "$(grep -c -- '^gh issue list.*--state all' "$FAKE_LOG")"
+
+# 企画の案の3行目「depends: 01, #7」で、同じ回の案と今ある Issue を前提にできる
+create_labels() { issue_creates | awk -v n="$1" '$0 == "--title" { i++ } i == n && prev == "--label" { print } { prev = $0 }' | tr '\n' ' '; }
+create_bodies() { sed -n 's/^gh issue create body=//p' "$FAKE_LOG"; }
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_CREATE_SEQ=1 FAKE_PLAN_COUNT=2 FAKE_PLAN_TEXT_2=$'🤖 [add] 詳細を足す\nlabels: auto-ready\ndepends: 01, #7\n## 背景\n一覧のあと' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "前提のない案は auto-ready のまま" "auto-planned auto-ready " "$(create_labels 1)"
+assert_eq "前提のある案は auto-ready の代わりに auto-blocked にする" "auto-planned auto-blocked " "$(create_labels 2)"
+assert_eq "同じ回の案は、できた Issue の番号にして本文の先頭に書く" "yes" "$(create_bodies | grep -qxF '前提の Issue: #20 #7' && echo yes || echo no)"
+assert_eq "depends の行は本文に残さない" "0" "$(create_bodies | grep -c '^depends:')"
+assert_eq "auto-blocked のラベルがなければ作る" "yes" "$(grep -qx 'gh label create auto-blocked' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "企画の回に、前提の書き方をプロンプトで伝える" "yes" "$(grep -q 'depends:' <<< "$(sed -n '/^claude arg=-p$/,/^claude arg=--model$/p' "$FAKE_LOG")" && echo yes || echo no)"
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_CREATE_SEQ=1 FAKE_PLAN_COUNT=2 FAKE_PLAN_TEXT_2=$'🤖 [add] 詳細を足す\nlabels: auto-ready\ndepends: 05\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "前提にした案が Issue になっていなければ、その案は Issue にしない" "1" "$(issue_creates | grep -c '^--title$')"
+assert_eq "Issue にしなかった案を残す" "yes" "$(ls "$CLAUDE_AUTO_DEV_STATE_DIR"/plan-failed/*/02.md >/dev/null 2>&1 && echo yes || echo no)"
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_CREATE_SEQ=1 FAKE_PLAN_COUNT=2 FAKE_PLAN_TEXT_2=$'🤖 [add] 見本が要る\nlabels: needs-decision\ndepends: 01\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "判断待ちの案は、前提があっても auto-blocked にしない（前提の行は書く）" "auto-planned needs-decision " "$(create_labels 2)"
 
 [ "$failures" -eq 0 ] || exit 1
