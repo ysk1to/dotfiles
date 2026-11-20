@@ -24,6 +24,28 @@ if [ ! -f "$config" ]; then
   exit 1
 fi
 
+# 速めるとき（下のペース配分の fast）は、1回の起動で続けて何回か動かす。launchd の間隔を縮めなくても、
+# 余っている使用量を使えるようにするため。1回ぶんはこのスクリプトをもう一度呼んで動かし、ロックや後始末は
+# 1回ごとに済ませる。続けるのは、前の回が Claude を起動して成功で終わり、まだ速める段階にあるときだけ
+# （Issue がない、上限に当たった、失敗した、のあとは続けない）。次の起動と重ならないよう、始めてから
+# CLAUDE_AUTO_DEV_FAST_WINDOW 秒（既定は45分）を過ぎたら続けない
+launched_file="$state_dir/launched/$name"
+pace_file="$state_dir/pace/$name"
+if [ -z "${CLAUDE_AUTO_DEV_CHAINED:-}" ]; then
+  chain_until=$(($(date +%s) + ${CLAUDE_AUTO_DEV_FAST_WINDOW:-2700}))
+  chain=0
+  while :; do
+    launched_before=$(cat "$launched_file" 2>/dev/null)
+    CLAUDE_AUTO_DEV_CHAINED=1 "$0" "$@"
+    chain_status=$?
+    chain=$((chain + 1))
+    { [ "$chain_status" -eq 0 ] && [ "$chain" -lt "${CLAUDE_AUTO_DEV_FAST_RUNS:-3}" ] &&
+      [ "$(date +%s)" -lt "$chain_until" ] && [ "$(cat "$pace_file" 2>/dev/null)" = fast ] &&
+      [ "$(cat "$launched_file" 2>/dev/null)" != "$launched_before" ] &&
+      [ "$(date +%s)" -ge "$(cat "$state_dir/usage-limit" 2>/dev/null || echo 0)" ]; } || exit "$chain_status"
+  done
+fi
+
 cd "$repo" || exit 1
 
 # claude-auto-dev-status が見つけられるよう、リポジトリの場所と、起動した時刻（止まっていないかの目安）を残す
@@ -224,6 +246,8 @@ if [ -n "$week_used" ]; then
     pace=normal
   fi
 fi
+mkdir -p "$state_dir/pace"
+echo "$pace" > "$pace_file"
 
 # 速めるときは、着手待ちの Issue の目標を増やし、探索の間隔を縮める（実装の回だけでは、Issue が先になくなるため）
 plan_target="${CLAUDE_AUTO_DEV_PLAN_TARGET:-8}"
@@ -301,7 +325,7 @@ if [ "$weekday" -le 5 ] && [ "$((10#$(date -r "$now" +%H)))" -ge "${CLAUDE_AUTO_
   exit 0
 fi
 
-# launchd からは短い間隔（20分）で呼ばれる。速めるとき以外は、前に Claude を起動してから決まった時間がたつまで待つ。
+# 速めるとき以外は、前に Claude を起動してから決まった時間がたつまで待つ（launchd の間隔が短くても、回を増やさない）。
 # 既定は、目標の近くで1時間、控えるときで2時間（呼ばれる時刻が数秒ずれても通るよう、少し短くしてある）
 pace_last_file="$state_dir/pace-last/$name"
 case "$pace" in
@@ -328,8 +352,9 @@ if [ "$mode" = implement ]; then
     echo "$today $((daily_count + 1))" > "$daily_file"
   fi
 fi
-mkdir -p "$state_dir/pace-last"
+mkdir -p "$state_dir/pace-last" "$state_dir/launched"
 date +%s > "$pace_last_file"
+echo $$ > "$launched_file"
 
 # worktree と、claude が作った手元のブランチを消す。push 済みのブランチはリモートに残る。
 # 本人のブランチを消さないよう、消すのは auto- で始まるものだけ
