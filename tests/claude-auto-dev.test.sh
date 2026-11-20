@@ -17,9 +17,17 @@ assert_eq() {
   fi
 }
 
+# ペース配分は曜日と時刻で変わるので、テストでは「いま」を決めておく（既定は平日の昼）
+at() { date -j -f '%Y-%m-%d %H:%M' "$1" +%s; }
+wed=$(at '2026-11-18 12:00')
+wed_night=$(at '2026-11-18 03:00')
+sat=$(at '2026-11-21 12:00')
+week_reset=$(at '2026-11-21 21:00')
+
 # 偽のリモート（main に1コミット）と、それを clone した作業用のリポジトリを作る
 setup() {
   tmp=$(mktemp -d)
+  export CLAUDE_AUTO_DEV_NOW="$wed"
   export CLAUDE_AUTO_DEV_CONFIG_DIR="$tmp/config"
   export CLAUDE_AUTO_DEV_STATE_DIR="$tmp/state"
   export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
@@ -47,7 +55,8 @@ setup() {
 # FAKE_JUDGE_EXIT があればその終了コードで終わる。
 # 精査の回（CLAUDE_AUTO_DEV_REVIEW_DIR がある）では、FAKE_REVIEW_FILES の番号のファイルに FAKE_REVIEW_TEXT を書き、
 # FAKE_REVIEW_NEW 個の new-0N.md に FAKE_PLAN_TEXT を書き、FAKE_REVIEW_EXIT があればその終了コードで終わる。
-# FAKE_USAGE_LIMIT（解除の時刻）があれば、どの回でも使用量の上限で止まった結果を出して終わる
+# FAKE_USAGE_LIMIT（解除の時刻）があれば、どの回でも使用量の上限で止まった結果を出して終わる。
+# FAKE_FABLE_LIMIT（解除の時刻）があれば、Fable の枠だけが尽きた結果を出して終わる
 fake_bin() {
   mkdir -p "$tmp/bin"
   export PATH="$tmp/bin:$PATH" FAKE_LOG="$tmp/fake.log"
@@ -55,7 +64,7 @@ fake_bin() {
   export FAKE_CLAUDE_BRANCH=auto-1-test FAKE_CLAUDE_COMMIT=0 FAKE_PR_TEXT= FAKE_DECISION_TEXT='A と B のどちらにするか'
   export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL= FAKE_NO_RESULT=
   export FAKE_LABELS='[]' FAKE_MERGED_PRS='[]' FAKE_REVIEW_NEW=0 FAKE_REVIEW_FILES= FAKE_REVIEW_EXIT= FAKE_REVIEW_TEXT=$'action: hold\n仕様が足りない'
-  export FAKE_ALL_ISSUES_AFTER= FAKE_CREATE_FAIL= FAKE_USAGE_LIMIT= FAKE_BLOCKED='[]' FAKE_CREATE_SEQ= FAKE_PLAN_TEXT_2=
+  export FAKE_ALL_ISSUES_AFTER= FAKE_CREATE_FAIL= FAKE_USAGE_LIMIT= FAKE_FABLE_LIMIT= FAKE_BLOCKED='[]' FAKE_CREATE_SEQ= FAKE_PLAN_TEXT_2=
   export FAKE_RESEARCH_MEMO='ほかのサイトの調査メモ' FAKE_RESEARCH_EXIT=
   export FAKE_IDEA_COUNT=0 FAKE_JUDGE_COUNT=0 FAKE_JUDGE_EXIT= FAKE_IDEA_TEXT=$'地域ごとの落札の傾向\n## 何を作るか\n一覧'
   export FAKE_ALL_ISSUES='[]' FAKE_PLAN_COUNT=0 FAKE_PLAN_TEXT=$'🤖 [add] 一覧を足す\nlabels: auto-ready\n## 背景\n一覧がない'
@@ -95,6 +104,11 @@ fi
 [ -z "$FAKE_CLAUDE_SLEEP" ] || sleep "$FAKE_CLAUDE_SLEEP"
 echo '{"type":"system","subtype":"init"}'
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"make test"}}]}}'
+if [ -n "$FAKE_FABLE_LIMIT" ]; then
+  echo "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":$FAKE_FABLE_LIMIT,\"unifiedWindows\":{\"five_hour\":{\"utilization\":0.2,\"resetsAt\":$FAKE_FABLE_LIMIT},\"seven_day\":{\"utilization\":0.5,\"resetsAt\":$FAKE_FABLE_LIMIT},\"seven_day_overage_included\":{\"utilization\":1,\"resetsAt\":$FAKE_FABLE_LIMIT,\"status\":\"rejected\"}}}}"
+  echo '{"type":"result","is_error":true,"api_error":"usage_limit_reached","result":"You have reached your Fable limit","num_turns":1,"total_cost_usd":0.1,"duration_ms":1000,"permission_denials":[]}'
+  exit 1
+fi
 if [ -n "$FAKE_USAGE_LIMIT" ]; then
   echo "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":$FAKE_USAGE_LIMIT}}"
   echo '{"type":"result","is_error":true,"api_error":"usage_limit_reached","result":"You have hit your session limit","num_turns":19,"total_cost_usd":0.9,"duration_ms":100000,"permission_denials":[]}'
@@ -1501,5 +1515,145 @@ echo "$tmp/none" > "$CLAUDE_AUTO_DEV_CONFIG_DIR/my-app.refs"
 assert_eq "参照を取り出せなければ失敗で終わる" "1" "$?"
 assert_eq "参照を取り出せなければ claude を起動しない" "0" "$(claude_calls)"
 assert_eq "参照を取り出せなければ判断待ちにして、理由をコメントする" "yes" "$(grep -q '^gh issue edit .*--add-label needs-decision' "$FAKE_LOG" && grep -q '^gh issue comment arg=.*読むだけの場所（none）を取り出せません' "$FAKE_LOG" && echo yes || echo no)"
+
+# ---- ペース配分 ----
+# 使用率の読みを、ほかの回の出力として置く。使い方: usage <5時間の枠> <週の枠> [Fable の枠]（0〜1）
+# 5時間の枠の解除は1時間あと（USAGE_5H_RESET で変えられる）、週の枠の解除は土曜 21:00
+usage() {
+  mkdir -p "$CLAUDE_AUTO_DEV_STATE_DIR/logs"
+  jq -cn --argjson h "$1" --argjson w "$2" --argjson f "${3:-null}" --argjson wr "$week_reset" \
+    --argjson hr "${USAGE_5H_RESET:-$((CLAUDE_AUTO_DEV_NOW + 3600))}" \
+    '{type: "rate_limit_event", rate_limit_info: {unifiedWindows: ({five_hour: {utilization: $h, resetsAt: $hr},
+      seven_day: {utilization: $w, resetsAt: $wr}}
+      + if $f then {seven_day_overage_included: {utilization: $f, resetsAt: $wr}} else {} end)}}' \
+    > "$CLAUDE_AUTO_DEV_STATE_DIR/logs/other-20261118-110000.stream.jsonl"
+}
+pace_last() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/pace-last/my-app"; }
+run() { "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1; }
+unset CLAUDE_AUTO_DEV_DAILY_MAX
+
+# 水曜の昼の目標は約52%。目標の近くなら、1時間に1回まで
+setup
+usage 0.1 0.5
+run
+run
+assert_eq "目標の近くでは、続けて呼ばれても1時間に1回しか起動しない" "1" "$(claude_calls)"
+echo $(($(date +%s) - 3400)) > "$(pace_last)"
+run
+assert_eq "目標の近くでは、1時間たてば起動する" "2" "$(claude_calls)"
+
+# 目標より上なら、実装の回だけを2時間おきに
+setup
+enable_plan
+usage 0.1 0.7
+run
+assert_eq "目標より上では、企画の回にしない" "opus" "$(args_after --model)"
+echo $(($(date +%s) - 3400)) > "$(pace_last)"
+: > "$FAKE_LOG"
+run
+assert_eq "目標より上では、1時間では起動しない" "0" "$(claude_calls)"
+echo $(($(date +%s) - 7000)) > "$(pace_last)"
+run
+assert_eq "目標より上では、2時間たてば起動する" "1" "$(claude_calls)"
+
+# 目標を10ポイント以上下回ったら、呼ばれるたびに起動し、着手待ちの目標と探索の間隔を変える
+setup
+usage 0.1 0.3
+run
+run
+assert_eq "目標を下回っていれば、呼ばれるたびに起動する" "2" "$(claude_calls)"
+setup
+enable_plan
+export FAKE_ISSUES; FAKE_ISSUES=$(ready_issues 10)
+usage 0.1 0.5
+run
+assert_eq "目標の近くでは、着手待ちが8件あれば企画しない" "opus" "$(args_after --model)"
+setup
+enable_plan
+export FAKE_ISSUES; FAKE_ISSUES=$(ready_issues 10)
+usage 0.1 0.3
+run
+assert_eq "目標を下回っていれば、着手待ちが16件になるまで企画する" "fable" "$(args_after --model)"
+setup
+enable_explore
+mkdir -p "$(dirname "$(explore_last)")"
+echo $(($(date +%s) - 50000)) > "$(explore_last)"
+usage 0.1 0.5
+run
+assert_eq "目標の近くでは、探索は3日半おき" "opus" "$(call_args_after 1 --model)"
+setup
+enable_explore
+mkdir -p "$(dirname "$(explore_last)")"
+echo $(($(date +%s) - 50000)) > "$(explore_last)"
+usage 0.1 0.3
+run
+assert_eq "目標を下回っていれば、探索は12時間おき" "fable" "$(call_args_after 1 --model)"
+
+# リセット前の24時間は、目標より上でも呼ばれるたびに起動する
+setup
+export CLAUDE_AUTO_DEV_NOW="$sat"
+usage 0.1 0.95
+run
+run
+assert_eq "リセット前の24時間は、呼ばれるたびに起動する" "2" "$(claude_calls)"
+
+# 平日の日中は、5時間の枠が70%を超えたら対話のセッションに空ける
+setup
+usage 0.75 0.5
+run
+assert_eq "5時間の枠を空けて見送った回は成功で終わる" "0" "$?"
+assert_eq "平日の日中に5時間の枠が70%を超えていたら起動しない" "0" "$(claude_calls)"
+setup
+export CLAUDE_AUTO_DEV_NOW="$wed_night"
+usage 0.75 0.5
+run
+assert_eq "平日でも夜間は起動する" "1" "$(claude_calls)"
+setup
+export CLAUDE_AUTO_DEV_NOW="$sat"
+usage 0.75 0.6
+run
+assert_eq "土日は5時間の枠が70%を超えていても起動する" "1" "$(claude_calls)"
+setup
+USAGE_5H_RESET=$((wed - 60)) usage 0.75 0.5
+run
+assert_eq "5時間の枠が解除の時刻を過ぎていれば起動する" "1" "$(claude_calls)"
+
+# Fable の枠が80%を超えたら探索を休む。企画は Fable のまま続け、枠が尽きたら企画も休む（Opus では企画しない）
+setup
+enable_explore
+usage 0.1 0.5 0.85
+run
+assert_eq "Fable の枠が80%を超えたら探索しない" "opus" "$(call_args_after 1 --model)"
+setup
+enable_plan
+usage 0.1 0.5 0.85
+run
+assert_eq "Fable の枠が80%を超えても企画は Fable で続ける" "fable" "$(args_after --model)"
+setup
+enable_plan
+usage 0.1 0.5 1
+run
+assert_eq "Fable の枠が尽きたら企画せず、実装の回にする" "opus" "$(args_after --model)"
+
+# Fable の枠だけが尽きて止まった回は、全部の回を止めない
+setup
+enable_plan
+FAKE_FABLE_LIMIT=$week_reset run
+assert_eq "Fable の枠で止まっても、全体の解除の時刻は残さない" "no" "$([ -e "$(usage_limit_file)" ] && echo yes || echo no)"
+assert_eq "Fable の枠で止まったら、Fable の解除の時刻を残す" "$week_reset" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/fable-limit" 2>/dev/null)"
+echo 0 > "$(pace_last)"
+: > "$FAKE_LOG"
+run
+assert_eq "Fable の枠が解除されるまでも、実装の回は起動する" "opus" "$(args_after --model)"
+
+# 土日は本人がマージできないので、マージ待ちの PR を4件まで積む
+setup
+export CLAUDE_AUTO_DEV_NOW="$sat"
+FAKE_PRS='[{"number":10},{"number":11}]' run
+assert_eq "土日はマージ待ちの PR が2件でも着手する" "1" "$(claude_calls)"
+setup
+export CLAUDE_AUTO_DEV_NOW="$sat"
+FAKE_PRS='[{"number":10},{"number":11},{"number":12},{"number":13}]' run
+assert_eq "土日でもマージ待ちの PR が4件あれば着手しない" "0" "$(claude_calls)"
 
 [ "$failures" -eq 0 ] || exit 1
