@@ -72,6 +72,8 @@ running my-app '{"mode":"plan","issue":null,"started_at":'"$((now - 3900))"'}'
 assert_eq "企画の回は 🏃企画（1時間を超えたら時間も）" "🔧 app  🏃 企画 1h05m" "$(show)"
 running my-app '{"mode":"review","issue":null,"started_at":'"$now"'}'
 assert_eq "精査の回は 🏃精査" "🔧 app  🏃 精査 0m" "$(show)"
+running my-app '{"mode":"explore","issue":null,"started_at":'"$now"'}'
+assert_eq "探索の回は 🏃探索" "🔧 app  🏃 探索 0m" "$(show)"
 
 setup
 echo "[$(repo)]" > "$cache"
