@@ -129,7 +129,8 @@ case "$1 $2" in
     [ -z "$FAKE_CREATE_FAIL" ] || exit 1
     if [ -n "$FAKE_CREATE_SEQ" ]; then echo "https://github.com/me/my-app/issues/$((19 + $(grep -c '^gh issue create arg=--title$' "$FAKE_LOG")))"
     else echo https://github.com/me/my-app/issues/20; fi ;;
-  "issue view") echo "$FAKE_ISSUE_VIEW" ;;
+  "issue view")
+    case "$*" in *"--json labels"*) echo "${FAKE_VIEW_LABELS-auto-in-progress}" ;; *) echo "$FAKE_ISSUE_VIEW" ;; esac ;;
   "api user") echo me ;;
   "pr list") case "$*" in *"--state merged"*) echo "$FAKE_MERGED_PRS" ;; *) echo "$FAKE_PRS" ;; esac ;;
   "pr edit") echo "gh pr edit $*" >> "$FAKE_LOG" ;;
@@ -499,6 +500,12 @@ assert_eq "環境変数で no-auto-merge を外せる" "no" "$(has_line "$(sed -
 setup
 FAKE_STALE='[{"number":7}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "取り残された Issue を needs-decision にする" "yes" "$(issue_edits | grep -qxF 'gh issue edit issue edit 7 --remove-label auto-in-progress --add-label needs-decision' && echo yes || echo no)"
+
+# 一覧は、ラベルを外した直後だと古いことがある。続けて動かす回で、前の回が PR にした Issue が残って見える
+setup
+FAKE_STALE='[{"number":7}]' FAKE_VIEW_LABELS=auto-dev "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "一覧に残っていても、Issue に auto-in-progress がなければ判断待ちにしない" "no" "$(issue_edits | grep -q 'edit 7 ' && echo yes || echo no)"
+assert_eq "一覧に残っていても、Issue に auto-in-progress がなければ知らせない" "no" "$(grep -q '前の回が途中で止まっていました' "$FAKE_LOG" && echo yes || echo no)"
 assert_eq "取り残された Issue を通知する" "1" "$(grep -c '^osascript.*#7' "$FAKE_LOG")"
 assert_eq "取り残しを片付けたあと、次の Issue に着手する" "1" "$(claude_calls)"
 

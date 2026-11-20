@@ -108,6 +108,9 @@ stale=$(set -o pipefail; gh issue list --label auto-in-progress --state open --l
   exit 1
 }
 for n in $stale; do
+  # 一覧は、ラベルを外した直後だと古いことがある（続けて動かす回で、前の回が PR にした Issue が残って見える）。
+  # Issue を直接見て、今も付いているものだけを扱う
+  gh issue view "$n" --json labels --jq '.labels[].name' 2>/dev/null | grep -qxF auto-in-progress || continue
   {
     comment "$n" "前の回が途中で止まり、作業中のまま残っていました。" &&
       gh issue edit "$n" --remove-label auto-in-progress --add-label needs-decision
