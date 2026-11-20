@@ -110,6 +110,7 @@ make check
     - 今あるIssue（開いているものは本文つき、閉じたものはタイトルだけ）は、スクリプトがファイルで渡す
   - 探索の回: リポジトリに`.claude/auto-explore.md`と`.claude/auto-explore-judge.md`があれば、前の探索から3日半たった回に、探索の回を起動する（`CLAUDE_AUTO_DEV_EXPLORE_INTERVAL`で秒数を変えられる）。企画は今ある材料から次の作業をIssueにするので、設計の残りと手直しに寄る。新しい案を考える回を分けた。Issueは作らず、コードも変えられない
     - Claudeを2回起動する。案を出す段は、案を1件1ファイルで書く。審査の段は別の起動で、案を読んで採用するものを選ぶ（3件まで。`CLAUDE_AUTO_DEV_EXPLORE_ADOPT`）。段を分けるのは、案を書いた流れのまま自分で選ぶと甘くなるため。モデルは`CLAUDE_AUTO_DEV_EXPLORE_MODEL`と`CLAUDE_AUTO_DEV_JUDGE_MODEL`（どちらも既定は`fable`）
+    - 調査の段: リポジトリに`.claude/auto-explore-research.md`もあれば、案を出す段の前に、Webを読んで調査メモ（`memo.md`）を書く段を起動する（モデルは`CLAUDE_AUTO_DEV_RESEARCH_MODEL`、既定は`sonnet`）。Webの文章には指示が紛れていることがあるので、この段にはリポジトリも、Issueも、設定ファイルの中身も、MCP（Notion・Todoist）も渡さない。使えるのはWebの検索と取得、調査メモの置き場の読み書きだけで、Bashは使えない。手順とお題はプロンプトに入れる。あとの段は調査メモを読めるが、書き換えられない。調査の段が失敗したときや調査メモがないときは、メモなしで案を出す段に進む。結果と出力は`logs/<リポジトリ名>-1-<日時>.json`と`.stream.jsonl`に残す
     - お題のカード（`.claude/auto-explore-themes/`の`.md`）を、回ごとに1枚、名前の順に選んでプロンプトに入れる。一巡したら最初に戻る。失敗した回のお題は、次の回でもう一度使う
     - 採用された案は`~/.local/state/claude-auto-dev/ideas/<リポジトリ名>/`に残し、次の企画の回に場所を伝えて読ませる（企画の間隔は待たない）。企画がIssueを作り終えたら`ideas-done/<リポジトリ名>/`に移す。Issueにできなかった案があった回は移さず、次の企画でもう一度渡す
     - 案が1件も出なければ、審査の段は起動しない。失敗したら通知し、書いてあった案を`explore-failed/<ログと同じ名前>/`に残す。使用量の上限で止まったら、解除のあとに間隔を待たずにやり直す
