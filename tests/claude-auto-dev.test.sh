@@ -27,7 +27,7 @@ week_reset=$(at '2026-11-21 21:00')
 # 偽のリモート（main に1コミット）と、それを clone した作業用のリポジトリを作る
 setup() {
   tmp=$(mktemp -d)
-  export CLAUDE_AUTO_DEV_NOW="$wed"
+  export CLAUDE_AUTO_DEV_NOW="$wed" CLAUDE_AUTO_DEV_FAST_RUNS=1
   export CLAUDE_AUTO_DEV_CONFIG_DIR="$tmp/config"
   export CLAUDE_AUTO_DEV_STATE_DIR="$tmp/state"
   export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
@@ -1588,6 +1588,38 @@ echo $(($(date +%s) - 50000)) > "$(explore_last)"
 usage 0.1 0.3
 run
 assert_eq "目標を下回っていれば、探索は12時間おき" "fable" "$(call_args_after 1 --model)"
+
+# 目標を下回っていれば、1回の起動で続けて何回か動かす（launchd の間隔を縮めなくても速められるように）
+setup
+export CLAUDE_AUTO_DEV_FAST_RUNS=3
+usage 0.1 0.3
+run
+assert_eq "目標を下回っていれば、1回の起動で3回まで続けて動かす" "3" "$(claude_calls)"
+setup
+export CLAUDE_AUTO_DEV_FAST_RUNS=3
+usage 0.1 0.5
+run
+assert_eq "目標の近くでは、1回の起動で1回だけ動かす" "1" "$(claude_calls)"
+setup
+export CLAUDE_AUTO_DEV_FAST_RUNS=3 FAKE_ISSUES='[]'
+usage 0.1 0.3
+run
+assert_eq "着手できる Issue がなければ、続けない" "0" "$(claude_calls)"
+setup
+export CLAUDE_AUTO_DEV_FAST_RUNS=3
+usage 0.1 0.3
+FAKE_USAGE_LIMIT=$(($(date +%s) + 3600)) run
+assert_eq "上限で止まったら、続けない" "1" "$(claude_calls)"
+setup
+export CLAUDE_AUTO_DEV_FAST_RUNS=3 CLAUDE_AUTO_DEV_FAST_WINDOW=0
+usage 0.1 0.3
+run
+assert_eq "続けてよい時間を過ぎたら、続けない" "1" "$(claude_calls)"
+setup
+export CLAUDE_AUTO_DEV_FAST_RUNS=3
+usage 0.1 0.3
+FAKE_CLAUDE_EXIT=1 run
+assert_eq "失敗で終わった回のあとは、続けない" "1" "$(claude_calls)"
 
 # リセット前の24時間は、目標より上でも呼ばれるたびに起動する
 setup
