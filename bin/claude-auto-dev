@@ -28,7 +28,8 @@ fi
 # 余っている使用量を使えるようにするため。1回ぶんはこのスクリプトをもう一度呼んで動かし、ロックや後始末は
 # 1回ごとに済ませる。続けるのは、前の回が Claude を起動して成功で終わり、まだ速める段階にあるときだけ
 # （Issue がない、上限に当たった、失敗した、のあとは続けない）。次の起動と重ならないよう、始めてから
-# CLAUDE_AUTO_DEV_FAST_WINDOW 秒（既定は45分）を過ぎたら続けない
+# CLAUDE_AUTO_DEV_FAST_WINDOW 秒（既定は45分）を過ぎたら続けない。何回目かは CLAUDE_AUTO_DEV_CHAIN_INDEX で渡し、
+# 2回目からの回は、5時間の枠が残り少なければ自分で見送る（下の「続ける回」）
 launched_file="$state_dir/launched/$name"
 pace_file="$state_dir/pace/$name"
 if [ -z "${CLAUDE_AUTO_DEV_CHAINED:-}" ]; then
@@ -36,10 +37,10 @@ if [ -z "${CLAUDE_AUTO_DEV_CHAINED:-}" ]; then
   chain=0
   while :; do
     launched_before=$(cat "$launched_file" 2>/dev/null)
-    CLAUDE_AUTO_DEV_CHAINED=1 "$0" "$@"
+    CLAUDE_AUTO_DEV_CHAINED=1 CLAUDE_AUTO_DEV_CHAIN_INDEX="$chain" "$0" "$@"
     chain_status=$?
     chain=$((chain + 1))
-    { [ "$chain_status" -eq 0 ] && [ "$chain" -lt "${CLAUDE_AUTO_DEV_FAST_RUNS:-3}" ] &&
+    { [ "$chain_status" -eq 0 ] && [ "$chain" -lt "${CLAUDE_AUTO_DEV_FAST_RUNS:-6}" ] &&
       [ "$(date +%s)" -lt "$chain_until" ] && [ "$(cat "$pace_file" 2>/dev/null)" = fast ] &&
       [ "$(cat "$launched_file" 2>/dev/null)" != "$launched_before" ] &&
       [ "$(date +%s)" -ge "$(cat "$state_dir/usage-limit" 2>/dev/null || echo 0)" ]; } || exit "$chain_status"
@@ -232,7 +233,17 @@ read -r fable_used fable_reset <<< "$(usage_of seven_day_overage_included)"
 [ "${fable_reset:-0}" -gt "$now" ] || fable_used=0
 
 # 目標は、週の経過に比例した使用率。目標より上なら控え（slow）、近ければ今までどおり（normal）、
-# 大きく下回るかリセット前の24時間なら速める（fast）。読みがなければ決めない（今までどおりで、起動の間隔も見ない）
+# リセット前の24時間か、夜間に大きく下回っていれば速める（fast）。読みがなければ決めない（今までどおりで、起動の間隔も見ない）。
+# 下回っていても日中は速めない。日中は本人が対話のセッションで使うので、同じ5時間の枠を先に使わないようにする。
+# リセット前の24時間（土曜）は、残りがリセットで消えるので時間帯を問わない
+hour=$((10#$(date -r "$now" +%H)))
+fast_from="${CLAUDE_AUTO_DEV_FAST_FROM:-0}"
+fast_until="${CLAUDE_AUTO_DEV_FAST_UNTIL:-8}"
+if [ "$fast_from" -lt "$fast_until" ]; then
+  { [ "$hour" -ge "$fast_from" ] && [ "$hour" -lt "$fast_until" ] && fast_hours=yes; } || fast_hours=no
+else
+  { { [ "$hour" -ge "$fast_from" ] || [ "$hour" -lt "$fast_until" ]; } && fast_hours=yes; } || fast_hours=no
+fi
 pace=
 if [ -n "$week_used" ]; then
   while [ "$week_reset" -le "$now" ]; do
@@ -241,7 +252,8 @@ if [ -n "$week_used" ]; then
   done
   week_left=$((week_reset - now))
   week_target=$(((604800 - week_left) * 100 / 604800))
-  if [ "$week_left" -le 86400 ] || [ "$week_used" -le $((week_target - ${CLAUDE_AUTO_DEV_PACE_UNDER:-10})) ]; then
+  if [ "$week_left" -le 86400 ] ||
+    { [ "$fast_hours" = yes ] && [ "$week_used" -le $((week_target - ${CLAUDE_AUTO_DEV_PACE_UNDER:-10})) ]; }; then
     pace=fast
   elif [ "$week_used" -ge $((week_target + ${CLAUDE_AUTO_DEV_PACE_OVER:-5})) ]; then
     pace=slow
@@ -273,13 +285,11 @@ if [ -n "$pace" ] && [ "$((10#$(date -r "$now" +%H)))" -ge "${CLAUDE_AUTO_DEV_OU
   notify "の見通し" "$outlook"
 fi
 
-# 速めるときは、着手待ちの Issue の目標を増やし、探索の間隔を縮める（実装の回だけでは、Issue が先になくなるため）
+# 速めるときは、着手待ちの Issue の目標を増やす（実装の回を続けて動かすと、Issue が先になくなるため）。
+# 探索の間隔は変えない。探索の回は1回で5時間の枠の3〜5割を使い、ほかの回や対話のセッションを止めてしまう
 plan_target="${CLAUDE_AUTO_DEV_PLAN_TARGET:-8}"
 explore_interval="${CLAUDE_AUTO_DEV_EXPLORE_INTERVAL:-302400}"
-if [ "$pace" = fast ]; then
-  plan_target="${CLAUDE_AUTO_DEV_FAST_PLAN_TARGET:-16}"
-  explore_interval="${CLAUDE_AUTO_DEV_FAST_EXPLORE_INTERVAL:-43200}"
-fi
+[ "$pace" != fast ] || plan_target="${CLAUDE_AUTO_DEV_FAST_PLAN_TARGET:-16}"
 
 # Fable を使う回（精査・探索・企画）をどこまで動かすか。Fable には、全モデルの枠とは別に週の枠がある。
 # on: すべて動かす。low: 残りが少ないので、消費の大きい探索を休む。off: どれも動かさず、実装の回だけにする。
@@ -344,8 +354,14 @@ usage_limit_file="$state_dir/usage-limit"
 # 平日の日中は、5時間の枠が残り少なければ起動しない。対話のセッションと同じ枠を使うので、残りを本人に空ける。
 # 夜間と土日は本人が使わないので、見ない
 weekday=$(date -r "$now" +%u)
-if [ "$weekday" -le 5 ] && [ "$((10#$(date -r "$now" +%H)))" -ge "${CLAUDE_AUTO_DEV_TALK_FROM:-8}" ] &&
+if [ "$weekday" -le 5 ] && [ "$hour" -ge "${CLAUDE_AUTO_DEV_TALK_FROM:-8}" ] &&
   [ "${hours_used:-0}" -ge "${CLAUDE_AUTO_DEV_TALK_RESERVE:-70}" ]; then
+  exit 0
+fi
+
+# 続ける回（1回の起動の2回目から）は、5時間の枠が残り少なければ動かさない。曜日も時間帯も問わない。
+# 続けて動かすと上限まで進み、上限に当たると対話のセッションも解除まで止まるため
+if [ "${CLAUDE_AUTO_DEV_CHAIN_INDEX:-0}" -ge 1 ] && [ "${hours_used:-0}" -ge "${CLAUDE_AUTO_DEV_FAST_RESERVE:-70}" ]; then
   exit 0
 fi
 
