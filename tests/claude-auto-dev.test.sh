@@ -1568,12 +1568,33 @@ echo $(($(date +%s) - 7000)) > "$(pace_last)"
 run
 assert_eq "目標より上では、2時間たてば起動する" "1" "$(claude_calls)"
 
-# 目標を10ポイント以上下回ったら、呼ばれるたびに起動し、着手待ちの目標と探索の間隔を変える
+# 夜間（0〜8時）に目標を10ポイント以上下回っていたら、呼ばれるたびに起動し、着手待ちの目標を増やす。
+# 日中は本人が対話のセッションで使うので、目標を下回っていても速めない（土曜のリセット前の24時間は別）
+setup
+export CLAUDE_AUTO_DEV_NOW="$wed_night"
+usage 0.1 0.3
+run
+run
+assert_eq "夜間に目標を下回っていれば、呼ばれるたびに起動する" "2" "$(claude_calls)"
 setup
 usage 0.1 0.3
 run
 run
-assert_eq "目標を下回っていれば、呼ばれるたびに起動する" "2" "$(claude_calls)"
+assert_eq "日中は、目標を下回っていても1時間に1回しか起動しない" "1" "$(claude_calls)"
+setup
+export CLAUDE_AUTO_DEV_NOW="$wed" CLAUDE_AUTO_DEV_FAST_FROM=10 CLAUDE_AUTO_DEV_FAST_UNTIL=14
+usage 0.1 0.3
+run
+run
+assert_eq "速める時間帯は設定で変えられる" "2" "$(claude_calls)"
+unset CLAUDE_AUTO_DEV_FAST_FROM CLAUDE_AUTO_DEV_FAST_UNTIL
+setup
+export CLAUDE_AUTO_DEV_NOW="$(at '2026-11-18 23:30')" CLAUDE_AUTO_DEV_FAST_FROM=22 CLAUDE_AUTO_DEV_FAST_UNTIL=6
+usage 0.1 0.3
+run
+run
+assert_eq "速める時間帯は、日付をまたいで指定できる" "2" "$(claude_calls)"
+unset CLAUDE_AUTO_DEV_FAST_FROM CLAUDE_AUTO_DEV_FAST_UNTIL
 setup
 enable_plan
 export FAKE_ISSUES; FAKE_ISSUES=$(ready_issues 10)
@@ -1583,9 +1604,10 @@ assert_eq "目標の近くでは、着手待ちが8件あれば企画しない" 
 setup
 enable_plan
 export FAKE_ISSUES; FAKE_ISSUES=$(ready_issues 10)
+export CLAUDE_AUTO_DEV_NOW="$wed_night"
 usage 0.1 0.3
 run
-assert_eq "目標を下回っていれば、着手待ちが16件になるまで企画する" "fable" "$(args_after --model)"
+assert_eq "夜間に目標を下回っていれば、着手待ちが16件になるまで企画する" "fable" "$(args_after --model)"
 setup
 enable_explore
 mkdir -p "$(dirname "$(explore_last)")"
@@ -1597,16 +1619,40 @@ setup
 enable_explore
 mkdir -p "$(dirname "$(explore_last)")"
 echo $(($(date +%s) - 50000)) > "$(explore_last)"
+export CLAUDE_AUTO_DEV_NOW="$wed_night"
 usage 0.1 0.3
 run
-assert_eq "目標を下回っていれば、探索は12時間おき" "fable" "$(call_args_after 1 --model)"
+assert_eq "速めるときも、探索は3日半おきのまま" "opus" "$(call_args_after 1 --model)"
 
-# 目標を下回っていれば、1回の起動で続けて何回か動かす（launchd の間隔を縮めなくても速められるように）
+# 速めるときは、1回の起動で続けて何回か動かす（launchd の間隔を縮めなくても速められるように）
 setup
-export CLAUDE_AUTO_DEV_FAST_RUNS=3
+export CLAUDE_AUTO_DEV_FAST_RUNS=3 CLAUDE_AUTO_DEV_NOW="$wed_night"
 usage 0.1 0.3
 run
-assert_eq "目標を下回っていれば、1回の起動で3回まで続けて動かす" "3" "$(claude_calls)"
+assert_eq "速めるときは、1回の起動で決めた回数まで続けて動かす" "3" "$(claude_calls)"
+setup
+unset CLAUDE_AUTO_DEV_FAST_RUNS
+export CLAUDE_AUTO_DEV_NOW="$wed_night"
+usage 0.1 0.3
+run
+assert_eq "続けて動かす回数の既定は6回" "6" "$(claude_calls)"
+# 続ける回（2回目から）は、5時間の枠が70%を超えていたら動かさない。上限に当たると対話のセッションも止まるため
+setup
+export CLAUDE_AUTO_DEV_FAST_RUNS=3 CLAUDE_AUTO_DEV_NOW="$wed_night"
+usage 0.75 0.3
+run
+assert_eq "5時間の枠が70%を超えていたら、1回だけ動かして続けない" "1" "$(claude_calls)"
+setup
+export CLAUDE_AUTO_DEV_FAST_RUNS=3 CLAUDE_AUTO_DEV_NOW="$wed_night" CLAUDE_AUTO_DEV_FAST_RESERVE=80
+usage 0.75 0.3
+run
+assert_eq "続けるのをやめる使用率は設定で変えられる" "3" "$(claude_calls)"
+unset CLAUDE_AUTO_DEV_FAST_RESERVE
+setup
+export CLAUDE_AUTO_DEV_FAST_RUNS=3 CLAUDE_AUTO_DEV_NOW="$sat"
+usage 0.75 0.6
+run
+assert_eq "リセット前の24時間も、5時間の枠が70%を超えていたら続けない" "1" "$(claude_calls)"
 setup
 export CLAUDE_AUTO_DEV_FAST_RUNS=3
 usage 0.1 0.5
@@ -1614,21 +1660,25 @@ run
 assert_eq "目標の近くでは、1回の起動で1回だけ動かす" "1" "$(claude_calls)"
 setup
 export CLAUDE_AUTO_DEV_FAST_RUNS=3 FAKE_ISSUES='[]'
+export CLAUDE_AUTO_DEV_NOW="$wed_night"
 usage 0.1 0.3
 run
 assert_eq "着手できる Issue がなければ、続けない" "0" "$(claude_calls)"
 setup
 export CLAUDE_AUTO_DEV_FAST_RUNS=3
+export CLAUDE_AUTO_DEV_NOW="$wed_night"
 usage 0.1 0.3
 FAKE_USAGE_LIMIT=$(($(date +%s) + 3600)) run
 assert_eq "上限で止まったら、続けない" "1" "$(claude_calls)"
 setup
 export CLAUDE_AUTO_DEV_FAST_RUNS=3 CLAUDE_AUTO_DEV_FAST_WINDOW=0
+export CLAUDE_AUTO_DEV_NOW="$wed_night"
 usage 0.1 0.3
 run
 assert_eq "続けてよい時間を過ぎたら、続けない" "1" "$(claude_calls)"
 setup
 export CLAUDE_AUTO_DEV_FAST_RUNS=3
+export CLAUDE_AUTO_DEV_NOW="$wed_night"
 usage 0.1 0.3
 FAKE_CLAUDE_EXIT=1 run
 assert_eq "失敗で終わった回のあとは、続けない" "1" "$(claude_calls)"
