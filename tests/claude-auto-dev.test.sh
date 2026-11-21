@@ -27,7 +27,7 @@ week_reset=$(at '2026-11-21 21:00')
 # 偽のリモート（main に1コミット）と、それを clone した作業用のリポジトリを作る
 setup() {
   tmp=$(mktemp -d)
-  export CLAUDE_AUTO_DEV_NOW="$wed" CLAUDE_AUTO_DEV_FAST_RUNS=1
+  export CLAUDE_AUTO_DEV_NOW="$wed" CLAUDE_AUTO_DEV_BOOST_RUNS=1
   export CLAUDE_AUTO_DEV_CONFIG_DIR="$tmp/config"
   export CLAUDE_AUTO_DEV_STATE_DIR="$tmp/state"
   export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
@@ -1582,19 +1582,19 @@ run
 run
 assert_eq "日中は、目標を下回っていても1時間に1回しか起動しない" "1" "$(claude_calls)"
 setup
-export CLAUDE_AUTO_DEV_NOW="$wed" CLAUDE_AUTO_DEV_FAST_FROM=10 CLAUDE_AUTO_DEV_FAST_UNTIL=14
+export CLAUDE_AUTO_DEV_NOW="$wed" CLAUDE_AUTO_DEV_BOOST_FROM=10 CLAUDE_AUTO_DEV_BOOST_UNTIL=14
 usage 0.1 0.3
 run
 run
 assert_eq "速める時間帯は設定で変えられる" "2" "$(claude_calls)"
-unset CLAUDE_AUTO_DEV_FAST_FROM CLAUDE_AUTO_DEV_FAST_UNTIL
+unset CLAUDE_AUTO_DEV_BOOST_FROM CLAUDE_AUTO_DEV_BOOST_UNTIL
 setup
-export CLAUDE_AUTO_DEV_NOW="$(at '2026-11-18 23:30')" CLAUDE_AUTO_DEV_FAST_FROM=22 CLAUDE_AUTO_DEV_FAST_UNTIL=6
+export CLAUDE_AUTO_DEV_NOW="$(at '2026-11-18 23:30')" CLAUDE_AUTO_DEV_BOOST_FROM=22 CLAUDE_AUTO_DEV_BOOST_UNTIL=6
 usage 0.1 0.3
 run
 run
 assert_eq "速める時間帯は、日付をまたいで指定できる" "2" "$(claude_calls)"
-unset CLAUDE_AUTO_DEV_FAST_FROM CLAUDE_AUTO_DEV_FAST_UNTIL
+unset CLAUDE_AUTO_DEV_BOOST_FROM CLAUDE_AUTO_DEV_BOOST_UNTIL
 setup
 enable_plan
 export FAKE_ISSUES; FAKE_ISSUES=$(ready_issues 10)
@@ -1626,62 +1626,78 @@ assert_eq "速めるときも、探索は3日半おきのまま" "opus" "$(call_
 
 # 速めるときは、1回の起動で続けて何回か動かす（launchd の間隔を縮めなくても速められるように）
 setup
-export CLAUDE_AUTO_DEV_FAST_RUNS=3 CLAUDE_AUTO_DEV_NOW="$wed_night"
+export CLAUDE_AUTO_DEV_BOOST_RUNS=3 CLAUDE_AUTO_DEV_NOW="$wed_night"
 usage 0.1 0.3
 run
 assert_eq "速めるときは、1回の起動で決めた回数まで続けて動かす" "3" "$(claude_calls)"
 setup
-unset CLAUDE_AUTO_DEV_FAST_RUNS
+unset CLAUDE_AUTO_DEV_BOOST_RUNS
 export CLAUDE_AUTO_DEV_NOW="$wed_night"
 usage 0.1 0.3
 run
 assert_eq "続けて動かす回数の既定は6回" "6" "$(claude_calls)"
 # 続ける回（2回目から）は、5時間の枠が70%を超えていたら動かさない。上限に当たると対話のセッションも止まるため
 setup
-export CLAUDE_AUTO_DEV_FAST_RUNS=3 CLAUDE_AUTO_DEV_NOW="$wed_night"
+export CLAUDE_AUTO_DEV_BOOST_RUNS=3 CLAUDE_AUTO_DEV_NOW="$wed_night"
 usage 0.75 0.3
 run
 assert_eq "5時間の枠が70%を超えていたら、1回だけ動かして続けない" "1" "$(claude_calls)"
 setup
-export CLAUDE_AUTO_DEV_FAST_RUNS=3 CLAUDE_AUTO_DEV_NOW="$wed_night" CLAUDE_AUTO_DEV_FAST_RESERVE=80
+export CLAUDE_AUTO_DEV_BOOST_RUNS=3 CLAUDE_AUTO_DEV_NOW="$wed_night" CLAUDE_AUTO_DEV_BOOST_RESERVE=80
 usage 0.75 0.3
 run
 assert_eq "続けるのをやめる使用率は設定で変えられる" "3" "$(claude_calls)"
-unset CLAUDE_AUTO_DEV_FAST_RESERVE
+unset CLAUDE_AUTO_DEV_BOOST_RESERVE
 setup
-export CLAUDE_AUTO_DEV_FAST_RUNS=3 CLAUDE_AUTO_DEV_NOW="$sat"
+export CLAUDE_AUTO_DEV_BOOST_RUNS=3 CLAUDE_AUTO_DEV_NOW="$sat"
 usage 0.75 0.6
 run
 assert_eq "リセット前の24時間も、5時間の枠が70%を超えていたら続けない" "1" "$(claude_calls)"
 setup
-export CLAUDE_AUTO_DEV_FAST_RUNS=3
+export CLAUDE_AUTO_DEV_BOOST_RUNS=3
 usage 0.1 0.5
 run
 assert_eq "目標の近くでは、1回の起動で1回だけ動かす" "1" "$(claude_calls)"
 setup
-export CLAUDE_AUTO_DEV_FAST_RUNS=3 FAKE_ISSUES='[]'
+export CLAUDE_AUTO_DEV_BOOST_RUNS=3 FAKE_ISSUES='[]'
 export CLAUDE_AUTO_DEV_NOW="$wed_night"
 usage 0.1 0.3
 run
 assert_eq "着手できる Issue がなければ、続けない" "0" "$(claude_calls)"
 setup
-export CLAUDE_AUTO_DEV_FAST_RUNS=3
+export CLAUDE_AUTO_DEV_BOOST_RUNS=3
 export CLAUDE_AUTO_DEV_NOW="$wed_night"
 usage 0.1 0.3
 FAKE_USAGE_LIMIT=$(($(date +%s) + 3600)) run
 assert_eq "上限で止まったら、続けない" "1" "$(claude_calls)"
 setup
-export CLAUDE_AUTO_DEV_FAST_RUNS=3 CLAUDE_AUTO_DEV_FAST_WINDOW=0
+export CLAUDE_AUTO_DEV_BOOST_RUNS=3 CLAUDE_AUTO_DEV_BOOST_WINDOW=0
 export CLAUDE_AUTO_DEV_NOW="$wed_night"
 usage 0.1 0.3
 run
 assert_eq "続けてよい時間を過ぎたら、続けない" "1" "$(claude_calls)"
 setup
-export CLAUDE_AUTO_DEV_FAST_RUNS=3
+export CLAUDE_AUTO_DEV_BOOST_RUNS=3
 export CLAUDE_AUTO_DEV_NOW="$wed_night"
 usage 0.1 0.3
 FAKE_CLAUDE_EXIT=1 run
 assert_eq "失敗で終わった回のあとは、続けない" "1" "$(claude_calls)"
+
+# 段階は eco・normal・boost の名前で残す（tmux-claude-auto-dev がステータスバーに出す）
+pace_of() { cat "$CLAUDE_AUTO_DEV_STATE_DIR/pace/my-app" 2>/dev/null; }
+setup
+usage 0.1 0.7
+run
+assert_eq "目標より上の段階は eco" "eco" "$(pace_of)"
+setup
+usage 0.1 0.5
+run
+assert_eq "目標の近くの段階は normal" "normal" "$(pace_of)"
+setup
+export CLAUDE_AUTO_DEV_NOW="$wed_night"
+usage 0.1 0.3
+run
+assert_eq "夜間に目標を下回る段階は boost" "boost" "$(pace_of)"
 
 # リセット前の24時間は、目標より上でも呼ばれるたびに起動する
 setup

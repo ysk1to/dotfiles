@@ -4,7 +4,8 @@
 #   リポジトリごとに略称と件数を並べる（0件のものは出さない。何もなければ ✓）
 #   🏃 実行中の回（#Issue・企画・探索・精査と経過時間）/ 🙋 判断待ちの Issue / 🔀 開いている PR / 📥 着手できる Issue
 #   🚨 起動の見落とし・gh の失敗・直近の失敗の通知
-#   最後に、全リポジトリで ⏩ いちばん近い次の起動 / 🔁 今日の回数 / ⏳ 今日のかかった時間
+#   最後に、全リポジトリで 🍃 Eco・🚀 Boost ペース配分の段階（Normal は出さない）/ ⏩ いちばん近い次の起動 /
+#   🔁 今日の回数 / ⏳ 今日のかかった時間
 #   自動開発のリポジトリがなければ何も出さない
 # 使い方: tmux-claude-auto-dev [--popup | --running]
 #   --popup で凡例と状況の全文を出す（tmux の display-popup から呼ぶ）
@@ -23,6 +24,7 @@ if [ "$1" = --popup ]; then
   echo "🏃 実行中の回（#Issue・企画・探索・精査と経過時間）  🙋 判断待ちの Issue  🔀 開いている PR  📥 着手できる Issue"
   echo "🚨  起動の見落とし・gh の失敗・直近の失敗の通知"
   echo "⏩ 次の起動  🔁 今日の回数  ⏳ 今日のかかった時間  ※ 全リポジトリの合計"
+  echo "🍃 Eco 週の使用率が目標より上（実装だけを2時間おき）  🚀 Boost 土曜か、夜間に目標を下回る（続けて動かす）"
   echo
   "$status"
   exit 0
@@ -53,9 +55,21 @@ if [ "$(age "$cache")" -ge "$ttl" ] && [ "$(age "$stamp")" -ge "$ttl" ]; then
     > /dev/null 2>&1 & )
 fi
 
+# ペース配分の段階は、claude-auto-dev が起動のたびに pace/<名前> に残す。いちばん新しいものを出す。
+# 起動が止まっていると古い段階が残るので、3時間より古いものは出さない
+pace=
+# shellcheck disable=SC2012 # 新しい順に並べるため。ファイル名はリポジトリの名前だけ
+pace_file=$(ls -t "$state_dir"/pace/* 2>/dev/null | head -n 1)
+if [ -n "$pace_file" ] && [ "$(age "$pace_file")" -lt "${TMUX_AUTO_DEV_PACE_TTL:-10800}" ]; then
+  case "$(cat "$pace_file" 2>/dev/null)" in
+    eco) pace="🍃 Eco" ;;
+    boost) pace="🚀 Boost" ;;
+  esac
+fi
+
 [ -f "$cache" ] || { echo "🔧 …"; exit 0; }
 
-jq -r --argjson running "$running" --argjson now "$now" '
+jq -r --argjson running "$running" --argjson now "$now" --arg pace "$pace" '
   def duration: (. / 60 | round) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" else "\($m)m" end;
   def elapsed: (($now - .) / 60 | floor) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" else "\($m)m" end;
   def run: if .mode == "implement" then "#\(.issue)" elif .mode == "plan" then "企画" elif .mode == "explore" then "探索" else "精査" end + " \(.started_at | elapsed)";
@@ -72,7 +86,8 @@ jq -r --argjson running "$running" --argjson now "$now" '
     ([.[].schedule.next_at // empty] | min) as $next
     | (map(.runs.today.count) | add) as $count
     | (map(.runs.today.duration // 0) | add) as $duration
-    | [if $next then "⏩ \($next | strflocaltime("%H:%M"))" else empty end,
+    | [if $pace != "" then $pace else empty end,
+       if $next then "⏩ \($next | strflocaltime("%H:%M"))" else empty end,
        if $count > 0 then "🔁 \($count)  ⏳ \($duration | duration)" else empty end] as $total
     | "🔧 " + ([.[] | segment] + (if ($total | length) > 0 then [$total | join("  ")] else [] end) | join("  │  "))
   end' "$cache" 2>/dev/null
