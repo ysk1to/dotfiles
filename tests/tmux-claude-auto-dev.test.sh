@@ -165,6 +165,38 @@ assert_eq "凡例に費用は出さない" "no" "$(echo "$popup" | grep -q '💰
 assert_eq "ポップアップに状況の全文を出す" "yes" "$(echo "$popup" | grep -q '状況の全文' && echo yes || echo no)"
 
 # ---- 実行中の回だけ出す（claude-auto-dev-watch が使う） ----
+# ---- ペース配分の段階 ----
+# claude-auto-dev が起動のたびに残す段階（pace/<名前>）のうち、いちばん新しいものを全体の欄に出す。Normal は出さない
+pace() { mkdir -p "$CLAUDE_AUTO_DEV_STATE_DIR/pace"; echo "$2" > "$CLAUDE_AUTO_DEV_STATE_DIR/pace/$1"; }
+setup
+echo "[$(repo '.ready = 3')]" > "$cache"
+pace my-app boost
+assert_eq "Boost の段階なら 🚀 Boost を出す" "🔧 app  📥 3  │  🚀 Boost" "$(show)"
+pace my-app eco
+assert_eq "Eco の段階なら 🍃 Eco を出す" "🔧 app  📥 3  │  🍃 Eco" "$(show)"
+pace my-app normal
+assert_eq "Normal の段階では何も出さない" "🔧 app  📥 3" "$(show)"
+pace my-app ''
+assert_eq "段階が決まっていなければ何も出さない" "🔧 app  📥 3" "$(show)"
+setup
+echo "[$(repo '.schedule.next_at = '"$((now + 1800))"' | .runs.today = {count: 4, duration: 600}')]" > "$cache"
+pace my-app boost
+assert_eq "段階は、次の起動の前に出す" "🔧 app  ✓  │  🚀 Boost  ⏩ 17:00  🔁 4  ⏳ 10m" "$(show)"
+setup
+echo "[$(repo)]" > "$cache"
+pace my-app boost
+sleep 1
+pace foo eco
+assert_eq "リポジトリが複数あれば、いちばん新しい段階を出す" "🔧 app  ✓  │  🍃 Eco" "$(show)"
+setup
+echo "[$(repo)]" > "$cache"
+pace my-app boost
+touch -t 202601010000 "$CLAUDE_AUTO_DEV_STATE_DIR/pace/my-app"
+assert_eq "3時間より古い段階は出さない（起動が止まっているとき）" "🔧 app  ✓" "$(show)"
+setup
+pace my-app boost
+assert_eq "凡例に段階を出す" "yes" "$("$bin/tmux-claude-auto-dev" --popup | grep -q '🍃 Eco.*🚀 Boost' && echo yes || echo no)"
+
 setup
 running my-app '{"mode":"plan","issue":null,"started_at":1}'
 assert_eq "--running で実行中の回を名前ごとに JSON で出す" '{"my-app":{"mode":"plan","issue":null,"started_at":1}}' "$("$bin/tmux-claude-auto-dev" --running)"
