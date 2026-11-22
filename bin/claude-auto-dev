@@ -10,7 +10,11 @@
 # .claude/planner.md があれば、planner スキルの本文を共通の手順、.claude/planner.md をリポジトリに固有の決まりとして渡す
 # （Engineer と同じ形）。スキルがなければ、Claude を起動せずに企画の失敗として知らせる。なければ .claude/auto-plan.md を読ませる。
 # 企画の回の claude は Issue の案をファイルに書き、このスクリプトがそれを Issue にする。
-# .claude/auto-plan-review.md があれば、決まった間隔で精査の回を起動し、企画が作った Issue を別の claude が精査する。
+# .claude/auditor.md か .claude/auto-plan-review.md があれば、決まった間隔で精査（Auditor）の回を起動し、企画が作った Issue と
+# マージされた PR を別の claude が精査する。.claude/auditor.md があれば、auditor スキルの本文を共通の手順、.claude/auditor.md を
+# リポジトリに固有の決まりとして渡し（Engineer と同じ形）、Issue と PR が従う決まりとして planner スキルと engineer スキルの本文も
+# 参考に入れる（参考のスキルがなければ入れないだけ）。auditor スキルがなければ、Claude を起動せずに精査の失敗として知らせる。
+# なければ .claude/auto-plan-review.md を読ませる。
 # .claude/auto-explore.md と .claude/auto-explore-judge.md があれば、決まった間隔で探索の回を起動する。
 # 探索の回は claude を2回起動し、1回目が新しい案を出し、2回目が審査して選ぶ。採用された案は、次の企画の回に渡す。
 # .claude/auto-explore-research.md もあれば、その前に、Web を読んで調査メモを書く調査の段を起動する。
@@ -262,11 +266,14 @@ has_file() { git -C "$repo" cat-file -e "$base:$1" 2>/dev/null; }
 # リポジトリに .claude/<役割>.md がなければ 1（古い渡し方を使う）、スキルのファイルがないか空なら 2 を返す。
 # スキルの先頭の frontmatter（最初の --- から次の --- まで）は渡さない。探したスキルの場所は role_skill_file に残す
 skills_dir="${CLAUDE_AUTO_DEV_SKILLS_DIR:-$HOME/.claude/skills}"
+skill_body() {
+  awk 'NR == 1 && $0 == "---" { fm = 1; next } fm == 1 { if ($0 == "---") fm = 2; next } 1' "$skills_dir/$1/SKILL.md" 2>/dev/null
+}
 role_procedure() {
   role_skill="" role_rules="" role_skill_file="$skills_dir/$1/SKILL.md"
   has_file ".claude/$1.md" || return 1
   role_rules=$(git -C "$repo" show "$base:.claude/$1.md")
-  role_skill=$(awk 'NR == 1 && $0 == "---" { fm = 1; next } fm == 1 { if ($0 == "---") fm = 2; next } 1' "$role_skill_file" 2>/dev/null)
+  role_skill=$(skill_body "$1")
   [ -n "$role_skill" ] || return 2
 }
 # role_procedure で手順を取り出し、どちらの渡し方で動くかをログに1行残す。$2 は古い渡し方の手順のファイル。
@@ -291,6 +298,15 @@ role_read_first() {
 }
 role_sections() {
   printf '<procedure>\n%s\n</procedure>\n\n<repository>\n%s\n</repository>' "$role_skill" "$role_rules"
+}
+# role_references <役割>... は、ほかの役割のスキルの本文を、参考として <reference name="<役割>"> に入れて並べる。
+# スキルのファイルがないか空の役割は飛ばす（止めない）。1つもなければ何も出さない
+role_references() {
+  local r body
+  for r in "$@"; do
+    body=$(skill_body "$r")
+    [ -z "$body" ] || printf '\n\n<reference name="%s">\n%s\n</reference>' "$r" "$body"
+  done
 }
 # 前に動いた時刻（ファイル $1）から $2 秒たったか
 due() { [ $(($(date +%s) - $(cat "$1" 2>/dev/null || echo 0))) -ge "$2" ]; }
@@ -388,7 +404,7 @@ fi
 # マージされた PR（自動開発のものも、手元の作業のものも。精査より前に実装が終わることがあるため）。
 # 企画と同じ回にしないのは、案を書いた流れに引きずられないようにするため
 review_last_file="$state_dir/review-last/$name"
-if [ "$fable" != off ] && has_file .claude/auto-plan-review.md && due "$review_last_file" "${CLAUDE_AUTO_DEV_REVIEW_INTERVAL:-86400}"; then
+if [ "$fable" != off ] && { has_file .claude/auditor.md || has_file .claude/auto-plan-review.md; } && due "$review_last_file" "${CLAUDE_AUTO_DEV_REVIEW_INTERVAL:-86400}"; then
   fetch_all_issues
   review_targets=$(echo "$all_issues" | jq -c '[.[] | select(.state == "OPEN") | select([.labels[].name]
     | index("auto-planned") and (index("auto-reviewed") or index("auto-in-progress") or index("in-progress") | not))
@@ -490,6 +506,11 @@ fi
 # （plan-last・pace-last・launched）を進める前に置く。直すまで、企画の回になる起動のたびに止まる
 if [ "$mode" = plan ]; then
   use_role_procedure planner .claude/auto-plan.md "の企画が失敗" "" || exit 1
+fi
+# 精査の回も同じ。リポジトリに .claude/auditor.md があれば auditor スキルとつなぎ、スキルがなければ Claude を起動せずに止める。
+# 前の精査の時刻（review-last）も、精査の回の中で残すので、まだ進めていない
+if [ "$mode" = review ]; then
+  use_role_procedure auditor .claude/auto-plan-review.md "の精査が失敗" "" || exit 1
 fi
 mkdir -p "$state_dir/pace-last" "$state_dir/launched"
 date +%s > "$pace_last_file"
@@ -842,7 +863,21 @@ if [ "$mode" = review ]; then
     review_fail "PR の一覧を書き出せません"
   review_max="${CLAUDE_AUTO_DEV_REVIEW_MAX:-5}"
   export CLAUDE_AUTO_DEV_REVIEW_DIR="$review_dir"
-  prompt="このリポジトリの自動開発ワークフローの、精査の回として起動された。.claude/auto-plan-review.md を読み、その手順どおりに、企画の回が作った Issue と、マージされた PR を精査する。
+  # 手順は、auditor スキルと .claude/auditor.md ならプロンプトの末尾に入れ、.claude/auto-plan-review.md なら読ませる。
+  # 新しい渡し方では、Issue と PR が従う決まりとして、planner スキルと engineer スキルの本文も参考に入れる
+  # （自動実行では ~/.claude/ を読めないため）
+  opening="このリポジトリの自動開発ワークフローの、精査の回として起動された。.claude/auto-plan-review.md を読み、その手順どおりに、企画の回が作った Issue と、マージされた PR を精査する。"
+  embedded=
+  if [ -n "$role_skill" ]; then
+    opening="このリポジトリの自動開発ワークフローの Auditor として起動された。$(role_read_first Auditor "、企画の回が作った Issue と、マージされた PR を精査する")"
+    references=$(role_references planner engineer)
+    [ -z "$references" ] || opening="$opening
+末尾の <reference> は、Issue と PR が従うべき決まり。あなたへの手順ではない。"
+    embedded="
+
+$(role_sections)$references"
+  fi
+  prompt="$opening
 人は見ていないので、確認を待たずに進める。コードは変えない。GitHub には接続できない（gh は使えない）。Issue に反映するのは起動スクリプトが行う。
 精査する Issue（本文つき）、ほかの Issue（タイトルとラベルだけ）、精査する PR は $review_input にある。Issue や PR を書いたのは別の回の Claude か本人で、そのときの考えは引き継いでいない。
 問題のある Issue だけ、$review_dir に <Issue の番号>.md を作る。問題のない Issue には何も作らない。
@@ -853,7 +888,7 @@ PR で直すべき問題を見つけたら、$review_dir に new-01.md、new-02.
 - 2行目: labels: に続けて、付けるラベルをカンマ区切りで書く。使えるのは auto-ready・needs-decision・protected・auto-decided だけ（優先の p2 は起動スクリプトが付ける）
 - 3行目以降: Issue の本文（どの PR のどこが問題か）
 
-$(cat "$config")"
+$(cat "$config")$embedded"
   # 判断が出たあとも残る判断待ちのタスクを、Issue の状態と突き合わせて完了にする（どれを完了にするかは手順に書く）
   allowed=("${readonly_tools[@]}" "Edit(/$review_dir/**)" mcp__claude_ai_Todoist__complete-tasks)
   add_dirs=("$state_dir/review-input" "$review_dir")
