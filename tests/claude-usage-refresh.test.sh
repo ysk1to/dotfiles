@@ -94,7 +94,7 @@ assert_eq "61分前の確認なら更新する" "yes" "$([ -f "$marker" ] && ech
 setup
 echo '{"seven_day_fable":{"used_percentage":35,"resets_at":9999999999}}' > "$cache"
 assert_eq "Fable の使用率を表示する" \
-  '⏳ 5h -- 📆 7d -- 🪶 Fable #[fg=colour120]▰▱▱▱▱ #[bold]35%#[nobold,fg=default]' \
+  '⏳ 5h -- 📆 7d -- 🐉 Fable #[fg=colour120]▰▱▱▱▱ #[bold]35%#[nobold,fg=default]' \
   "$(CLAUDE_USAGE_REFRESH=true "$bin/tmux-claude-usage")"
 
 # Fable の枠がなければ、区画を出さない
