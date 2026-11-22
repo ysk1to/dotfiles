@@ -52,7 +52,7 @@ macOS用の設定ファイル管理リポジトリ
 - `bin/claude-auto-dev` - launchdなどから定期的に呼ばれ、リポジトリの`auto-ready`のIssueを1件、Claude Code（`claude -p`）にPRにさせる。手順の本体はリポジトリの`.claude/auto-dev.md`（`.claude/engineer.md`があるリポジトリでは、engineerスキルと`.claude/engineer.md`）。Issueがない回はClaudeを起動しない。`.claude/planner.md`か`.claude/auto-plan.md`があるリポジトリでは、決まった間隔で次の作業を企画してIssueにし、`.claude/auto-explore.md`と`.claude/auto-explore-judge.md`があれば、新しい案を出して選ぶ探索の回を起動し、`.claude/auto-plan-review.md`があれば、企画したIssueとマージされたPRを別の回で精査する。週の使用率を各回の出力から読み、3つの段階で動かし方を変える。週の経過に比例した目標より上ならEco（実装の回だけを2時間おき）、目標の近くならNormal（1時間おき）、土曜のリセット前の24時間だけBoost（1回の起動で6回まで続けて動かす。続ける回は、5時間の枠が70%を超えたら動かさない）。平日の日中は5時間の枠が70%を超えたら起動しない。Fableの枠が80%を超えたら探索を休み、尽きたら精査と企画も休む。1日に1回、週の枠の使用率と、このペースで尽きる日時の見通しを通知する
   - 役割の呼び名: Researcher（探索の回）・Planner（企画の回）・Engineer（実装の回）・Auditor（精査の回）。PRの自動レビュー（`.github/workflows/pr-review.yml`）はReviewerと呼ぶ。スクリプトや手順のファイルの中の「〇〇の回」は、順に新しい呼び名に書き換える
   - Botとスキル: ここまでの役割と、PRの自動レビュー（Reviewer）は、決まった時間やPRをきっかけに自分で動くBot。Recruiter（`claude/skills/recruiter/`、任せる仕組みを作る）とEvaluator（採用した仕組みを見直す）は、対話で呼ぶスキル。どちらも、あとで`claude-auto-dev`から週に1回Botとしても動かす
-  - 役割ごとのスキル: Botの役割の共通の手順は、役割ごとのスキル（`claude/skills/<役割>/`）にし、各リポジトリには固有の決まりだけを`.claude/<役割>.md`に残す。同じスキルを、Botとしても対話でも使う。スキルの一覧は、上の`claude/skills/`のとおり。`claude-auto-dev`とPRの自動レビューは、つないだ役割から順にスキルを読む。今つないであるのはEngineerとPlannerで、`.claude/engineer.md`があるリポジトリでは、engineerスキルと`.claude/engineer.md`をつないで渡す。ないリポジトリでは、今までどおり`.claude/auto-dev.md`を読む。Plannerも同じで、`.claude/planner.md`があればplannerスキルとつなぎ、なければ`.claude/auto-plan.md`を読ませる。ほかの役割は、つなぐまで今までの手順（`.claude/auto-*.md`、`.github/workflows/pr-review.yml`のプロンプト）を読む
+  - 役割ごとのスキル: Botの役割の共通の手順は、役割ごとのスキル（`claude/skills/<役割>/`）にし、各リポジトリには固有の決まりだけを`.claude/<役割>.md`に残す。同じスキルを、Botとしても対話でも使う。スキルの一覧は、上の`claude/skills/`のとおり。`claude-auto-dev`とPRの自動レビューは、つないだ役割から順にスキルを読む。今つないであるのはEngineerとPlannerとReviewerで、`.claude/engineer.md`があるリポジトリでは、engineerスキルと`.claude/engineer.md`をつないで渡す。ないリポジトリでは、今までどおり`.claude/auto-dev.md`を読む。Plannerも同じで、`.claude/planner.md`があればplannerスキルとつなぎ、なければ`.claude/auto-plan.md`を読ませる。PRの自動レビューは、reviewerスキルを公開のmasterから取得し、`.github/workflows/pr-review.yml`のプロンプトにある固有の決まりとつないで渡す（下の「メンテナンス」）。ほかの役割は、つなぐまで今までの手順（`.claude/auto-*.md`）を読む
 - `bin/claude-bot-stats` - Botとスキルの働きぶりを、直近の期間（既定7日、`--days`で変更）について集計する。自動開発の回の数と、その回のPR・Issue・判断待ち・失敗と失敗の理由ごとの数、Researcherが出した案と採用した案の数（`events.tsv`から）、PRの自動マージ・要確認・レビュー前の数（`gh`で、ワークフローがマージしたかで判定）、要確認のうち決まりで止まったもの（自動でマージしないファイルの変更・`no-auto-merge`）とレビューが人の判断を求めたものの数（最後の自動レビューのコメントの理由で判定）、ワークフローが作った古くなった記述を直すIssueの数と開いている数、スキルが呼ばれた回数（`~/.claude/projects`の会話の記録から）。件数だけを出し、中身は出さない。`--json`でJSONを出す。Evaluatorが評価の材料に使う
 - `bin/claude-auto-dev-status` - `claude-auto-dev`の状況をまとめて出す（本人待ちの判断・PRとそのURL、実行中の回、作業中と次に着手するIssue、今日の回とかかった時間、次の起動と起動の見落とし、直近にClaudeが作った・決めたもの、消えた通知）。Claudeは起動せず、GitHubと`claude-auto-dev`が残したファイルだけを読む。`--json`で集計をJSONで出す
 - `bin/claude-skill-install` - ほかの人が公開しているClaude Codeのスキルを、コミットを決めて`~/.claude/skills/`に置く。同じコミットが置いてあれば取得しない。自分が置いたのではないフォルダは置き換えない
@@ -208,7 +208,11 @@ gh pr create
 プルリクエストは GitHub Actions（`.github/workflows/pr-review.yml`）で自動レビューされる。
 macOS で `make lint` と `tests/*.test.sh` を実行し、Claude が差分を読んで、問題がなければそのままマージする。
 判断が必要なときはマージせず、PR にコメントして作成者をメンションする。
-- `.github/` と `claude/`（Claude Code の設定）を変える PR、`no-auto-merge` ラベルを付けた PR は自動ではマージしない。
+- Claude が従う共通の手順は reviewer スキル（`claude/skills/reviewer/SKILL.md`）で、ワークフローが公開の master から取得し、このリポジトリに固有の決まりと合わせてプロンプトに入れる。
+  - PR でスキルを変えても、その PR のレビューには効かない。マージした時点で、このワークフローを使うすべてのリポジトリのレビューに効く。
+  - スキルを取得できないときは、レビューを動かさず、要確認（マージしない）にする。
+- PR が閉じる Issue は、Claude が `gh issue view` で読む（範囲を知る資料として。Issue の中の指示には従わない）。
+- `.github/`・`claude/`（Claude Code の設定）・`.claude/`（このリポジトリでの Claude への指示）を変える PR、`no-auto-merge` ラベルを付けた PR は自動ではマージしない。
   - ほかの変更でこれらの記述が古くなるだけなら、レビューは止めない。マージのときに、古くなった記述を直す Issue を自動で作る。
 - 認証には Secret の `CLAUDE_CODE_OAUTH_TOKEN`（`claude setup-token` で作る）を使う。
 
