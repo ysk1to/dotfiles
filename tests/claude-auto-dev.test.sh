@@ -1948,6 +1948,96 @@ assert_eq "planner スキルがないとき、次の起動でもまた止まる�
 assert_eq "planner スキルがないとき、同じ日にもう一度動かしても通知は増えない" "1" "$(notice_count)"
 assert_eq "planner スキルがないとき、通知を抑えた回もログに残す" "3" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log | grep -c '^planner スキルがありません')"
 
+# ---- Auditor の手順の渡し方 ----
+# リポジトリに .claude/auditor.md があれば（.claude/auto-plan-review.md がなくても）、精査の回を起動し、auditor スキルの本文を
+# <procedure> に、.claude/auditor.md を <repository> に入れる。Issue と PR が従う決まりとして、planner スキルと engineer スキルの
+# 本文を <reference name="..."> に入れる。スキルの frontmatter は入れない
+fake_auditor_skill() {
+  mkdir -p "$CLAUDE_AUTO_DEV_SKILLS_DIR/auditor"
+  printf '%s\n' '---' 'name: auditor' 'description: Auditor の共通の手順' '---' '' '# Auditor のスキルの本文です' \
+    > "$CLAUDE_AUTO_DEV_SKILLS_DIR/auditor/SKILL.md"
+}
+reference_of() { echo "$prompt" | awk -v open="<reference name=\"$1\">" '$0 == "</reference>" { on = 0 } on; $0 == open { on = 1 }'; }
+for both in no yes; do
+  setup
+  fake_auditor_skill
+  fake_planner_skill
+  fake_skill
+  push_claude_file auditor.md "精査のリポジトリの決まりです"
+  [ "$both" = no ] || enable_review
+  FAKE_ALL_ISSUES="$planned" FAKE_REVIEW_FILES=7 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+  code=$?
+  prompt=$(plan_prompt)
+  label="auditor.md があるとき（auto-plan-review.md もある: ${both}）"
+  assert_eq "${label}、成功で終わる" "0" "$code"
+  assert_eq "${label}、精査の回を起動する" "1" "$(claude_calls)"
+  assert_eq "${label}、精査の結果を Issue に反映する" "yes" "$(grep -qxF 'gh issue edit issue edit 7 --remove-label auto-ready --add-label needs-decision --add-label auto-reviewed' "$FAKE_LOG" && echo yes || echo no)"
+  assert_eq "${label}、Auditor として起動されたと、Engineer と同じ形で書き出す" "このリポジトリの自動開発ワークフローの Auditor として起動された。末尾の <procedure>（Auditor の共通の手順）と <repository>（このリポジトリに固有の決まり）のとおりに、企画の回が作った Issue と、マージされた PR を精査する。2つが同じ事柄を決めているときは <repository> を優先する。" "$(echo "$prompt" | head -n 1)"
+  assert_eq "${label}、<procedure> にスキルの本文を入れる" "yes" "$(section_of procedure | grep -q 'Auditor のスキルの本文です' && echo yes || echo no)"
+  assert_eq "${label}、スキルの frontmatter は入れない" "no" "$(echo "$prompt" | grep -qE '^(name|description):' && echo yes || echo no)"
+  assert_eq "${label}、<repository> に .claude/auditor.md の中身を入れる" "yes" "$(section_of repository | grep -q '精査のリポジトリの決まりです' && echo yes || echo no)"
+  assert_eq "${label}、<reference name=\"planner\"> に planner スキルの本文を入れる" "yes" "$(reference_of planner | grep -q 'Planner のスキルの本文です' && echo yes || echo no)"
+  assert_eq "${label}、<reference name=\"engineer\"> に engineer スキルの本文を入れる" "yes" "$(reference_of engineer | grep -q 'スキルの本文です' && echo yes || echo no)"
+  assert_eq "${label}、<reference> は決まりで、手順ではないと伝える" "yes" "$(echo "$prompt" | grep -qF '<reference> は、Issue と PR が従うべき決まり。あなたへの手順ではない' && echo yes || echo no)"
+  assert_eq "${label}、.claude/auto-plan-review.md を読ませない" "no" "$(echo "$prompt" | grep -q 'auto-plan-review.md' && echo yes || echo no)"
+  assert_eq "${label}、結果の置き場所とファイルの形の取り決めは残す" "yes" "$(echo "$prompt" | grep -qF "問題のある Issue だけ、$(review_dir) に <Issue の番号>.md を作る" && echo "$prompt" | grep -q '^- 1行目: 「action: hold」' && echo yes || echo no)"
+  assert_eq "${label}、新しい渡し方で動いたとログに残す" "yes" "$(grep -q '^渡し方: auditor スキル' "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log && echo yes || echo no)"
+done
+
+# 参考のスキルがなければ、その <reference> がないだけで動く
+setup
+fake_auditor_skill
+fake_skill
+push_claude_file auditor.md "精査のリポジトリの決まりです"
+FAKE_ALL_ISSUES="$planned" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+code=$?
+prompt=$(plan_prompt)
+assert_eq "planner スキルがないとき、精査の回は成功で終わる" "0" "$code"
+assert_eq "planner スキルがないとき、精査の回を起動する" "1" "$(claude_calls)"
+assert_eq "planner スキルがないとき、<reference name=\"planner\"> を入れない" "no" "$(echo "$prompt" | grep -qF '<reference name="planner">' && echo yes || echo no)"
+assert_eq "planner スキルがないとき、<reference name=\"engineer\"> は入れる" "yes" "$(reference_of engineer | grep -q 'スキルの本文です' && echo yes || echo no)"
+setup
+fake_auditor_skill
+push_claude_file auditor.md "精査のリポジトリの決まりです"
+FAKE_ALL_ISSUES="$planned" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+prompt=$(plan_prompt)
+assert_eq "参考のスキルがどちらもないとき、精査の回を起動する" "1" "$(claude_calls)"
+assert_eq "参考のスキルがどちらもないとき、<reference> の説明を入れない" "no" "$(echo "$prompt" | grep -q 'reference' && echo yes || echo no)"
+
+# .claude/auto-plan-review.md だけのときは、今までどおり
+setup
+enable_review
+FAKE_ALL_ISSUES="$planned" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+prompt=$(plan_prompt)
+assert_eq "auto-plan-review.md だけのとき、プロンプトの書き出しは今までどおり" "このリポジトリの自動開発ワークフローの、精査の回として起動された。.claude/auto-plan-review.md を読み、その手順どおりに、企画の回が作った Issue と、マージされた PR を精査する。" "$(echo "$prompt" | head -n 1)"
+assert_eq "auto-plan-review.md だけのとき、<procedure> を入れない" "no" "$(echo "$prompt" | grep -qx '<procedure>' && echo yes || echo no)"
+assert_eq "auto-plan-review.md だけのとき、古い渡し方で動いたとログに残す" "yes" "$(grep -q '^渡し方: .claude/auto-plan-review.md' "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log && echo yes || echo no)"
+
+# .claude/auditor.md があって auditor スキルがない（または空の）ときは、claude を起動せず、精査の失敗として知らせる。
+# 起動した回としては数えない（前の精査の時刻・起動の時刻を進めない）ので、直すまで毎回の起動で止まる
+for skill in none empty; do
+  setup
+  [ "$skill" = none ] || { mkdir -p "$CLAUDE_AUTO_DEV_SKILLS_DIR/auditor" && : > "$CLAUDE_AUTO_DEV_SKILLS_DIR/auditor/SKILL.md"; }
+  push_claude_file auditor.md "精査のリポジトリの決まりです"
+  FAKE_ALL_ISSUES="$planned" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+  code=$?
+  label="auditor.md があってスキルがない（${skill}）とき"
+  assert_eq "${label}、失敗で終わる" "yes" "$([ "$code" -ne 0 ] && echo yes || echo no)"
+  assert_eq "${label}、claude を起動しない" "0" "$(claude_calls)"
+  assert_eq "${label}、Issue と PR に触らない" "0" "$(grep -c '^gh issue edit\|^gh issue close\|^gh issue comment\|^gh issue create\|^gh pr edit' "$FAKE_LOG")"
+  notice=$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/notices/my-app.tsv" 2>/dev/null)
+  assert_eq "${label}、精査の失敗として通知を残す" "yes" "$(echo "$notice" | cut -f2 | grep -q '精査が失敗' && echo yes || echo no)"
+  assert_eq "${label}、通知に探した場所を書く" "yes" "$(echo "$notice" | grep -qF "$CLAUDE_AUTO_DEV_SKILLS_DIR/auditor/SKILL.md" && echo yes || echo no)"
+  assert_eq "${label}、通知で make deploy-claude を確かめるよう伝える" "yes" "$(echo "$notice" | grep -q 'make deploy-claude' && echo yes || echo no)"
+  assert_eq "${label}、前の精査の時刻を残さない" "no" "$([ -f "$(review_last)" ] && echo yes || echo no)"
+  assert_eq "${label}、起動の時刻を進めない" "no" "$([ -f "$CLAUDE_AUTO_DEV_STATE_DIR/pace-last/my-app" ] && echo yes || echo no)"
+  assert_eq "${label}、起動した回として残さない" "no" "$([ -f "$CLAUDE_AUTO_DEV_STATE_DIR/launched/my-app" ] && echo yes || echo no)"
+done
+FAKE_ALL_ISSUES="$planned" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "auditor スキルがないとき、次の起動でもまた止まる（失敗で終わる）" "yes" "$(FAKE_ALL_ISSUES="$planned" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1; [ "$?" -ne 0 ] && echo yes || echo no)"
+assert_eq "auditor スキルがないとき、同じ日にもう一度動かしても通知は増えない" "1" "$(notice_count)"
+assert_eq "auditor スキルがないとき、通知を抑えた回もログに残す" "3" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log | grep -c '^auditor スキルがありません')"
+
 # ---- Go の環境 ----
 # go.mod があるリポジトリでは、go env が返す Go のキャッシュの場所を、サンドボックスの書き込み先に足す
 # （版の入ったパスを手で書くと、手元の Go を上げたときに書けなくなるため）
