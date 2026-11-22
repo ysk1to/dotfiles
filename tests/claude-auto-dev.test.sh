@@ -651,6 +651,8 @@ assert_eq "企画の回は Issue の案のファイルを書ける" "yes" "$(has
 assert_eq "企画の回は worktree を編集できない" "no" "$(has_line "$allowed" "Edit(/$CLAUDE_AUTO_DEV_STATE_DIR/worktrees/my-app/**)")"
 assert_eq "企画の回はコミットできない" "no" "$(has_line "$allowed" 'Bash(git commit:*)')"
 assert_eq "企画の回も gh を禁止する" "yes" "$(has_line "$(args_after --disallowedTools)" 'Bash(gh:*)')"
+assert_eq "企画の回は Notion にページを足せる" "yes" "$(has_line "$allowed" 'mcp__claude_ai_Notion__notion-create-pages')"
+assert_eq "企画の回は Todoist に登録できる" "yes" "$(has_line "$allowed" 'mcp__claude_ai_Todoist__add-tasks')"
 assert_eq "企画の回も --restricted で起動する" "1" "$(grep -c '^claude arg=--restricted$' "$FAKE_LOG")"
 assert_eq "企画の回もサンドボックスを有効にする" "true" "$(args_after --settings | jq -r '.sandbox.enabled')"
 
@@ -933,6 +935,8 @@ assert_eq "精査の回は結果のファイルを書ける" "yes" "$(has_line "
 assert_eq "精査の回は worktree を編集できない" "no" "$(has_line "$allowed" "Edit(/$CLAUDE_AUTO_DEV_STATE_DIR/worktrees/my-app/**)")"
 assert_eq "精査の回はコミットできない" "no" "$(has_line "$allowed" 'Bash(git commit:*)')"
 assert_eq "精査の回も gh を禁止する" "yes" "$(has_line "$(args_after --disallowedTools)" 'Bash(gh:*)')"
+assert_eq "精査の回は Notion にページを足せる" "yes" "$(has_line "$allowed" 'mcp__claude_ai_Notion__notion-create-pages')"
+assert_eq "精査の回は Todoist に登録できる" "yes" "$(has_line "$allowed" 'mcp__claude_ai_Todoist__add-tasks')"
 # 判断が出たあとも残る判断待ちのタスクを、精査の回が Issue の状態と突き合わせて片付ける
 assert_eq "精査の回は Todoist のタスクを完了にできる" "yes" "$(has_line "$allowed" mcp__claude_ai_Todoist__complete-tasks)"
 assert_eq "ほかの Issue はラベルも渡す（判断が出たかを見るため）" "yes" "$(grep -qF -- '- #10 人が書いた（開いている。ラベル: auto-ready）' "$input" && grep -qF -- '- #11 閉じた（閉じた。ラベル: auto-planned）' "$input" && echo yes || echo no)"
@@ -1371,6 +1375,22 @@ enable_explore() {
 call_log() { awk -v n="$1" '/^claude pwd=/ { i++ } i == n' "$FAKE_LOG"; }
 call_args_after() { call_log "$1" | awk -v flag="claude arg=$2" '$0 == flag { on = 1; next } on && /^claude arg=--/ { on = 0 } on { sub(/^claude arg=/, ""); print }'; }
 ideas_dir() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/ideas/my-app"; }
+# 案を出す段は書く道具（Notion のページの作成・Todoist の登録）を使えず、審査の段は開発ログの Notion のページだけを足せる。
+# 読む道具は、どちらの段にも今までどおり渡す。使い方: assert_researcher_tools <ラベル> <案を出す段の回> <審査の段の回>
+assert_researcher_tools() {
+  local label=$1 ideas_tools judge_tools tool
+  ideas_tools=$(call_args_after "$2" --allowedTools)
+  judge_tools=$(call_args_after "$3" --allowedTools)
+  assert_eq "${label}、案を出す段は Notion にページを足せない" "no" "$(has_line "$ideas_tools" 'mcp__claude_ai_Notion__notion-create-pages')"
+  assert_eq "${label}、案を出す段は Todoist に登録できない" "no" "$(has_line "$ideas_tools" 'mcp__claude_ai_Todoist__add-tasks')"
+  assert_eq "${label}、審査の段は Notion にページを足せる（開発ログ）" "yes" "$(has_line "$judge_tools" 'mcp__claude_ai_Notion__notion-create-pages')"
+  assert_eq "${label}、審査の段は Todoist に登録できない" "no" "$(has_line "$judge_tools" 'mcp__claude_ai_Todoist__add-tasks')"
+  for tool in Read Glob Grep 'Bash(git log:*)' mcp__claude_ai_Notion__notion-fetch mcp__claude_ai_Notion__notion-search \
+    mcp__claude_ai_Notion__notion-query-data-sources mcp__claude_ai_Todoist__find-tasks; do
+    assert_eq "${label}、案を出す段は ${tool} を使える" "yes" "$(has_line "$ideas_tools" "$tool")"
+    assert_eq "${label}、審査の段は ${tool} を使える" "yes" "$(has_line "$judge_tools" "$tool")"
+  done
+}
 explore_last() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/explore-last/my-app"; }
 
 setup
@@ -1390,6 +1410,7 @@ assert_eq "審査の段は採用の置き場に書ける" "yes" "$(has_line "$(c
 assert_eq "審査の段は案のファイルを書き換えられない" "no" "$(has_line "$(call_args_after 2 --allowedTools)" "Edit(/$ideas/**)")"
 assert_eq "審査の段は案のファイルを読める" "yes" "$(has_line "$(call_args_after 2 --add-dir)" "$ideas")"
 assert_eq "探索の回は worktree を編集できない" "no" "$(has_line "$(call_args_after 1 --allowedTools)" "Edit(/$CLAUDE_AUTO_DEV_STATE_DIR/worktrees/my-app/**)")"
+assert_researcher_tools "古い渡し方" 1 2
 assert_eq "探索の回も --restricted で起動する" "2" "$(grep -c '^claude arg=--restricted$' "$FAKE_LOG")"
 assert_eq "探索の回は Issue を作らない" "0" "$(grep -c '^gh issue create' "$FAKE_LOG")"
 assert_eq "採用された案を、次の企画の回のために残す" "2" "$(find "$(ideas_dir)" -name '*.md' | wc -l | tr -d ' ')"
@@ -2091,6 +2112,9 @@ for both in no yes; do
   assert_eq "${label}、審査の段に、落とした案の書き方の取り決めは残す" "yes" "$(echo "$prompt" | grep -qF "$CLAUDE_AUTO_DEV_STATE_DIR/explore/my-app/adopted/rejected.md" && echo yes || echo no)"
   assert_eq "${label}、審査の段に、この回のお題の名前を伝える" "yes" "$(echo "$prompt" | grep -q 'この回のお題は「お題: 新しいデータ」' && echo yes || echo no)"
   assert_eq "${label}、審査の段に、設定ファイルの中身を入れる" "yes" "$(echo "$prompt" | grep -q 'example.com/notion' && echo yes || echo no)"
+  assert_researcher_tools "$label" 1 2
+  assert_eq "${label}、案を出す段は案のファイルを書ける" "yes" "$(has_line "$(call_args_after 1 --allowedTools)" "Edit(/$CLAUDE_AUTO_DEV_STATE_DIR/explore/my-app/ideas/**)")"
+  assert_eq "${label}、審査の段は採用の置き場に書ける" "yes" "$(has_line "$(call_args_after 2 --allowedTools)" "Edit(/$CLAUDE_AUTO_DEV_STATE_DIR/explore/my-app/adopted/**)")"
   assert_eq "${label}、SKILL.md はどの段にも入れない" "no" "$(grep -q 'SKILL.md の本文です' "$FAKE_LOG" && echo yes || echo no)"
   assert_eq "${label}、スキルの frontmatter はどの段にも入れない" "no" "$(grep -qE '^(name|description):' "$FAKE_LOG" && echo yes || echo no)"
   assert_eq "${label}、新しい渡し方で動いたとログに1行残す" "1" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log | grep -c '^渡し方: researcher スキル')"

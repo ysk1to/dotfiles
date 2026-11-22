@@ -153,7 +153,7 @@ make check
     - 「同じ文の通知は1日に1回まで」は共通の関数（`notify_once_a_day`）で、前に知らせた日と文を`~/.local/state/claude-auto-dev/notice-once/<リポジトリ名>/<種類>`に残す。文が変わったら、その日でももう一度知らせる
     - どちらの渡し方で動いたかを、ログに1行（`渡し方: …`）残す
   - プロンプトキャッシュの保持は5分にする（`FORCE_PROMPT_CACHING_5M=1`を、起動する`claude`にだけ渡す）。回は数分で終わるので、定額プランの既定の1時間より書き込みが安い。対話のセッションには影響しない
-  - NotionとTodoistは足す操作だけを許す（Notionの既存ページの書き換えは許さない）
+  - NotionとTodoistは足す操作だけを許す（Notionの既存ページの書き換えは許さない）。探索の回は、使わない書く道具も外す（案を出す段はNotionのページの作成もTodoistへの登録もできず、審査の段は開発ログのためのNotionのページの作成だけができる）
   - 設定（Git管理外）: `~/.config/claude-auto-dev/<リポジトリ名>.md`（プロンプトに足す内容。NotionのURL、Todoistの登録先など）、`<リポジトリ名>.tools`（追加で許すツール。1行1つ。例: `Bash(go test:*)`）、`<リポジトリ名>.refs`（実装の回に読むだけの場所として渡すリポジトリのパス。1行1つ。リモートの既定のブランチの中身を取り出して渡し、回が終わったら消す。本人の作業ツリーは渡さない）、`labels`（tmuxなどで並べる略称。「リポジトリ名 略称」を1行1つ。なければ名前の先頭3文字）
   - 環境変数: `CLAUDE_AUTO_DEV_MODEL`（既定 `opus`）、`CLAUDE_AUTO_DEV_MAX_TURNS`（既定 150）、`CLAUDE_AUTO_DEV_TIMEOUT`（1回の時間の上限の秒数。既定 3600）、`CLAUDE_AUTO_DEV_DAILY_MAX`（実装の回の1日の上限。既定はなし）、精査の回の`CLAUDE_AUTO_DEV_REVIEW_MODEL`（既定 `fable`）・`CLAUDE_AUTO_DEV_REVIEW_INTERVAL`（精査の間隔の秒数。既定 86400）・`CLAUDE_AUTO_DEV_REVIEW_PRS`（1回に巡回するPRの件数。既定 10）・`CLAUDE_AUTO_DEV_REVIEW_MAX`（1回に作るIssueの上限。既定 5）、企画の回の`CLAUDE_AUTO_DEV_PLAN_MODEL`（既定 `fable`）・`CLAUDE_AUTO_DEV_PLAN_INTERVAL`（企画の間隔の秒数。既定 21600）・`CLAUDE_AUTO_DEV_PLAN_TARGET`（着手できるIssueの目標の件数。既定 8）・`CLAUDE_AUTO_DEV_PLAN_MAX`（1回に作る件数の上限。既定 8）・`CLAUDE_AUTO_DEV_PLAN_ALWAYS`（指定すると、前の企画から main も Issue も変わっていなくても、間隔ごとに企画する。企画の材料がリポジトリの外で増える場合に使う。既定はなし）
   - ログは`~/.local/state/claude-auto-dev/logs/`（最後の応答、ターン数・費用・拒否されたツール。`.json`に結果の全体、`.stream.jsonl`に claude の出力の全体（stream-json））
