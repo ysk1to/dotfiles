@@ -1,0 +1,107 @@
+#!/bin/bash
+# Bot とスキルの働きぶりを、直近の期間について集計する。Evaluator（evaluator スキル）が評価の材料に使う。
+# 使い方: claude-bot-stats [--days N] [--json]
+#   --days: 何日分を数えるか（既定 7）。--json: JSON で出す（既定はテキスト）
+# 数えるもの（件数だけを出し、会話や Issue の中身は出さない）:
+#   bots:     自動開発の回。events.tsv の着手（start）の内容から役割を決め、次の着手までの PR・Issue・判断待ち・失敗をその回のものとして数える
+#             （#N に着手 → Engineer、企画 → Planner、精査 → Auditor、探索 → Researcher）
+#   reviewer: 期間内に作られた PR を、ワークフローがマージしたか・自動レビューのコメントがあるかで、自動マージ・要確認・レビュー前に分ける。gh が失敗したリポジトリは null
+#   skills:   会話の記録（~/.claude/projects の jsonl）で、期間内に Skill ツールで呼ばれた回数
+# 記録の場所は CLAUDE_AUTO_DEV_STATE_DIR（既定 ~/.local/state/claude-auto-dev）と CLAUDE_PROJECTS_DIR（既定 ~/.claude/projects）で変更できる
+
+state_dir="${CLAUDE_AUTO_DEV_STATE_DIR:-$HOME/.local/state/claude-auto-dev}"
+projects_dir="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
+now="${CLAUDE_AUTO_DEV_NOW:-$(date +%s)}"
+days=7
+json=
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --days) days="$2"; shift 2 ;;
+    --json) json=1; shift ;;
+    *) echo "使い方: claude-bot-stats [--days N] [--json]" >&2; exit 2 ;;
+  esac
+done
+case "$days" in ''|*[!0-9]*) echo "--days には日数を指定してください" >&2; exit 2 ;; esac
+since=$((now - days * 86400))
+
+# 自動開発の回。リポジトリごとに、直前の着手の役割に数える
+bots_json() {
+  [ -f "$state_dir/events.tsv" ] || { echo '{}'; return; }
+  awk -F'\t' -v since="$since" '
+    $1 < since { next }
+    $3 == "start" {
+      role = ($4 ~ /^#[0-9]+ に着手/) ? "Engineer" : ($4 ~ /^企画/) ? "Planner" : ($4 ~ /^精査/) ? "Auditor" : ($4 ~ /^探索/) ? "Researcher" : ""
+      current[$2] = role
+      if (role != "") runs[$2 SUBSEP role]++
+      next
+    }
+    ($3 == "pr" || $3 == "issue" || $3 == "decision" || $3 == "fail") && current[$2] != "" { count[$2 SUBSEP current[$2] SUBSEP $3]++ }
+    END {
+      for (k in runs) {
+        split(k, p, SUBSEP)
+        printf "%s\t%s\t%d\t%d\t%d\t%d\t%d\n", p[1], p[2], runs[k], count[k SUBSEP "pr"], count[k SUBSEP "issue"], count[k SUBSEP "decision"], count[k SUBSEP "fail"]
+      }
+    }' "$state_dir/events.tsv" |
+    jq -Rn '[inputs | split("\t") | {repo: .[0], role: .[1],
+      stats: {runs: (.[2] | tonumber), pr: (.[3] | tonumber), issue: (.[4] | tonumber), decision: (.[5] | tonumber), fail: (.[6] | tonumber)}}]
+      | reduce .[] as $r ({}; .[$r.repo][$r.role] = $r.stats)'
+}
+
+# PR の自動レビュー。リポジトリの場所で gh を呼ぶ
+reviewer_json() {
+  local since_iso result="{}" f name dir prs counts
+  since_iso=$(date -u -r "$since" +%Y-%m-%dT%H:%M:%SZ)
+  for f in "$state_dir"/repos/*; do
+    [ -f "$f" ] || continue
+    name=$(basename "$f")
+    dir=$(cat "$f")
+    if prs=$(cd "$dir" 2>/dev/null && gh pr list --state all --limit 200 --search "created:>=${since_iso%%T*}" --json number,createdAt,state,mergedBy,comments 2>/dev/null); then
+      # 見出しの書き方はリポジトリで違うので、判定はワークフロー（github-actions）がマージしたかで行う
+      counts=$(jq -c --arg since "$since_iso" '
+        [.[] | select(.createdAt >= $since)
+          | if ((.mergedBy.login // "") | test("github-actions")) then "auto_merged"
+            elif any(.comments[].body; startswith("## 自動レビュー")) then "needs_check" else "not_reviewed" end]
+        | {prs: length, auto_merged: map(select(. == "auto_merged")) | length,
+           needs_check: map(select(. == "needs_check")) | length, not_reviewed: map(select(. == "not_reviewed")) | length}' <<< "$prs")
+    else
+      counts=null
+    fi
+    result=$(jq -c --arg n "$name" --argjson c "$counts" '.[$n] = $c' <<< "$result")
+  done
+  echo "$result"
+}
+
+# スキルの呼び出し。期間内に更新された会話の記録だけを読む
+skills_json() {
+  local since_iso
+  since_iso=$(date -u -r "$since" +%Y-%m-%dT%H:%M:%SZ)
+  [ -d "$projects_dir" ] || { echo '{}'; return; }
+  # macOS の find の -newermt は「@秒数」を受け付けないので、日時の文字列で渡す
+  find "$projects_dir" -name '*.jsonl' -newermt "$(date -r "$since" '+%Y-%m-%d %H:%M:%S')" -print0 2>/dev/null |
+    xargs -0 grep -h '"name":"Skill"' 2>/dev/null |
+    jq -rR --arg since "$since_iso" 'fromjson? | select((.timestamp // "") >= $since)
+      | .message.content[]? | select(.type? == "tool_use" and .name == "Skill") | .input.skill // empty' |
+    jq -Rn '[inputs] | group_by(.) | map({key: .[0], value: length}) | from_entries'
+}
+
+result=$(jq -n --argjson days "$days" --argjson bots "$(bots_json)" --argjson reviewer "$(reviewer_json)" --argjson skills "$(skills_json)" \
+  '{days: $days, bots: $bots, reviewer: $reviewer, skills: $skills}')
+
+if [ -n "$json" ]; then
+  echo "$result"
+  exit 0
+fi
+
+jq -r '
+  "直近 \(.days) 日",
+  "",
+  "# 自動開発の Bot",
+  (.bots | to_entries[] | .key, (.value | to_entries[] | "  \(.key)  回 \(.value.runs)  PR \(.value.pr)  Issue \(.value.issue)  判断待ち \(.value.decision)  失敗 \(.value.fail)")),
+  "",
+  "# Reviewer（PR の自動レビュー）",
+  (.reviewer | to_entries[] | if .value == null then "  \(.key)  取得できませんでした"
+    else "  \(.key)  PR \(.value.prs)  自動マージ \(.value.auto_merged)  要確認 \(.value.needs_check)  レビュー前 \(.value.not_reviewed)" end),
+  "",
+  "# スキル（呼ばれた回数）",
+  (.skills | to_entries[] | "  \(.key)  \(.value)")' <<< "$result"
