@@ -94,6 +94,17 @@ notify() {
   esac
   osascript -e "display notification \"$2\" with title \"claude-auto-dev: $name $1\""
 }
+# 同じ文の通知は、1日に1回まで。直るまで毎回の起動で同じことを知らせる通知（スキルがない、Go の環境が合わない、など）が
+# 積み上がらないようにする。文が変わったら、その日でももう一度知らせる。前に知らせた日と文は notice-once/<名前>/<種類> に残す。
+# 使い方: notify_once_a_day <種類> <題> <文> [<添える文>]。添える文（ログの場所など、回ごとに変わるもの）は比べない
+notify_once_a_day() {
+  local dir="$state_dir/notice-once/$name" day
+  day=$(date -r "${now:-$(date +%s)}" +%Y-%m-%d)
+  [ "$(cat "$dir/$1" 2>/dev/null)" != "$day"$'\t'"$3" ] || return 0
+  mkdir -p "$dir"
+  printf '%s\t%s\n' "$day" "$3" > "$dir/$1"
+  notify "$2" "$3${4:-}"
+}
 # ワークフローは本人の GitHub アカウントで動くので、人のコメントと見分けられるよう目印を付ける
 comment() {
   gh issue comment "$1" --body "🤖 自動開発ワークフロー: $2"
@@ -193,6 +204,42 @@ issue=$(echo "$ready" | jq '.[0] // empty')
 git -C "$repo" fetch -q origin || exit 1
 base=$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
 mkdir -p "$state_dir/worktrees"
+# 基準のブランチで go.mod があるディレクトリ（worktree の中の相対パス。ルートは .）を1行1つで持つ
+go_dirs=$(git -C "$repo" ls-tree -r --name-only "$base" 2>/dev/null | grep -E '(^|/)go\.mod$' | sed -e 's|/*go\.mod$||' -e 's|^$|.|')
+# 基準のブランチから worktree を作る。前の回が途中で止まって残ったものは消してから作る。作ってあれば何もしない
+# （実装の回は、Go の環境を確かめるために、起動の時刻を残すより前に作ることがある）
+prepare_worktree() {
+  [ "$work_created" = no ] || return 0
+  cleanup
+  work_created=yes
+  git -C "$repo" worktree add -q --detach "$work" "$base"
+}
+# go.mod のあるディレクトリごとに go list -m を動かし、失敗したところがあれば「<ディレクトリ>: <エラーの1行目>」を出して 0 を返す。
+# go.mod があるのに go コマンドがないときも同じ。どこも通れば 1 を返す
+go_env_problem() {
+  local d err
+  while IFS= read -r d; do
+    if ! command -v go > /dev/null; then
+      echo "${d}: go コマンドがありません"
+      return 0
+    fi
+    err=$(cd "$work/$d" && go list -m 2>&1 > /dev/null) || {
+      echo "${d}: $(head -n 1 <<< "$err")"
+      return 0
+    }
+  done <<< "$go_dirs"
+  return 1
+}
+# worktree と、claude が作った手元のブランチを消す。push 済みのブランチはリモートに残る。
+# 本人のブランチを消さないよう、消すのは auto- で始まるものだけ
+cleanup() {
+  local b
+  cd "$repo" || return
+  b=$(git -C "$work" branch --show-current 2>/dev/null)
+  git worktree remove --force "$work" 2>/dev/null
+  git worktree prune
+  case "$b" in auto-*) git branch -q -D "$b" ;; esac
+}
 
 # 企画の回にするか決める。企画の手順があるリポジトリで、前の企画から決まった間隔がたっていたら企画する。
 # Issue が少なくなるのを待たないのは、設計の残りを足すだけでなく、改善や新機能を定期的に考えさせるため。
@@ -390,6 +437,18 @@ if [ "$mode" = implement ]; then
   pr_max=2
   [ "$weekday" -le 5 ] || pr_max="${CLAUDE_AUTO_DEV_WEEKEND_PRS:-4}"
   [ "$open_prs" -lt "$pr_max" ] || exit 0
+  # go.mod が求める Go の版が手元の Go より新しい（GOTOOLCHAIN=local なので自分では取得しない）と、Engineer はテストを
+  # 動かせずに判断待ちで止まる。原因はリポジトリ全体のものなので、Claude を起動する前に見つけて、直るまで見送る。
+  # 起動した回として数えないよう、1日の回数・起動の時刻（daily・pace-last・launched）を進める前に、
+  # Issue に触らないよう、ラベルとコメントを変える前に置く。直れば、次の回から何もしなくても動く
+  if [ -n "$go_dirs" ]; then
+    prepare_worktree || exit 1
+    if go_problem=$(go_env_problem); then
+      echo "Go の環境が合わないので Engineer を見送ります: $go_problem" >> "$log"
+      notify_once_a_day go-env "が Engineer を見送り" "${go_problem}。直るまで Engineer を見送ります"
+      exit 0
+    fi
+  fi
   if [ -n "$CLAUDE_AUTO_DEV_DAILY_MAX" ]; then
     daily_file="$state_dir/daily/$name"
     today=$(date +%Y-%m-%d)
@@ -404,19 +463,7 @@ mkdir -p "$state_dir/pace-last" "$state_dir/launched"
 date +%s > "$pace_last_file"
 echo $$ > "$launched_file"
 
-# worktree と、claude が作った手元のブランチを消す。push 済みのブランチはリモートに残る。
-# 本人のブランチを消さないよう、消すのは auto- で始まるものだけ
-cleanup() {
-  local b
-  cd "$repo" || return
-  b=$(git -C "$work" branch --show-current 2>/dev/null)
-  git worktree remove --force "$work" 2>/dev/null
-  git worktree prune
-  case "$b" in auto-*) git branch -q -D "$b" ;; esac
-}
-cleanup  # 前の回が途中で止まって残ったものを消す
-work_created=yes
-git -C "$repo" worktree add -q --detach "$work" "$base" || exit 1
+prepare_worktree || exit 1
 
 # 人が確認できないので、使ってよいツールを列挙して絞る（allowed）。
 # --restricted でユーザーの設定を読まず、ファイルの読み書きを作業ディレクトリ（と add_dirs）に限る。
@@ -527,16 +574,30 @@ hit_usage_limit() {
 # Bash のコマンドはサンドボックスで囲み、worktree の外に書けないようにする。git diff --output やテストのコマンドは、
 # 許可のルールだけでは書き込み先を限れないため。コミットのために元のリポジトリの .git には書けるようにする。
 # リポジトリごとの設定（Docker を外で動かす、キャッシュの場所、通信先など）は <リポジトリ名>.sandbox.json で足す
+# go.mod のあるリポジトリでは、Go のモジュールキャッシュ・ビルドキャッシュ・チェックサムの DB（go env で worktree の中で
+# 読んだ GOMODCACHE・GOCACHE・$GOPATH/pkg/sumdb）にも書けるようにする。版の入ったパスを設定に手で書くと、
+# 手元の Go を上げたときにパスが変わって書けなくなるため
+go_write_paths() {
+  local d modcache gocache gopath
+  [ -n "$go_dirs" ] && command -v go > /dev/null || return 0
+  while IFS= read -r d; do
+    { read -r modcache; read -r gocache; read -r gopath; } < <(cd "$work/$d" && go env GOMODCACHE GOCACHE GOPATH 2>> "$log")
+    [ -z "$modcache" ] || echo "$modcache"
+    [ -z "$gocache" ] || echo "$gocache"
+    [ -z "$gopath" ] || echo "${gopath%%:*}/pkg/sumdb"
+  done <<< "$go_dirs"
+}
 sandbox_settings() {
-  local extra='{}'
+  local extra='{}' go_paths
   [ ! -f "$config_dir/$name.sandbox.json" ] || extra=$(cat "$config_dir/$name.sandbox.json")
-  jq -cn --arg git_dir "$(git -C "$repo" rev-parse --absolute-git-dir)" --argjson extra "$extra" '
+  go_paths=$(go_write_paths | jq -R . | jq -cs 'unique')
+  jq -cn --arg git_dir "$(git -C "$repo" rev-parse --absolute-git-dir)" --argjson extra "$extra" --argjson go "$go_paths" '
     def merge($a; $b):
       if ($a | type) == "object" and ($b | type) == "object" then
         reduce ($b | keys[]) as $k ($a; .[$k] = (if has($k) then merge($a[$k]; $b[$k]) else $b[$k] end))
       elif ($a | type) == "array" and ($b | type) == "array" then $a + $b
       else $b end;
-    {sandbox: (merge({filesystem: {allowWrite: [$git_dir]}}; $extra)
+    {sandbox: (merge({filesystem: {allowWrite: ([$git_dir] + $go)}}; $extra)
       + {enabled: true, allowUnsandboxedCommands: false})}' 2>> "$log"
 }
 
@@ -1100,7 +1161,8 @@ case $? in
   1) echo "渡し方: .claude/auto-dev.md" >> "$log" ;;
   *)
     echo "engineer スキルがありません: $role_skill_file" >> "$log"
-    notify "が失敗" "#${issue}: engineer スキルがありません（${role_skill_file}）。make deploy-claude を確かめてください。ログ: ${log}"
+    # Issue は auto-ready のまま残り、直すまで毎回の起動で同じことを知らせるので、通知は同じ文なら1日に1回まで
+    notify_once_a_day skill-engineer "が失敗" "#${issue}: engineer スキルがありません（${role_skill_file}）。make deploy-claude を確かめてください" "。ログ: ${log}"
     exit 1
     ;;
 esac

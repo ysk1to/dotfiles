@@ -136,9 +136,12 @@ make check
   - 使用量の上限で止まったときは、時間がたてば解けるので、失敗として扱わない。解除の時刻を`~/.local/state/claude-auto-dev/usage-limit`に残し、上限は全リポジトリで共有なので、その時刻まではどのリポジトリの回もClaudeを起動しない。実装の回は、Issueを`auto-ready`に戻して、解除の時刻をコメントする。企画の回と精査の回は、Issueに何も反映せず、解除のあとに間隔を待たずにやり直す
   - `--restricted`と`--permission-mode dontAsk`で起動する。ユーザーの設定（グローバルの`CLAUDE.md`・許可・フック）は読まず、ファイルの読み書きは作業ディレクトリと受け渡し用のファイルに限り、WebFetchは使えない。決まりは各リポジトリの`.claude/auto-dev.md`に書く
   - Bashのコマンドはサンドボックスで囲み、worktreeの外に書けないようにする（コミット用に元のリポジトリの`.git`だけ許す）。リポジトリごとの追加は`<リポジトリ名>.sandbox.json`（`sandbox`設定の中身。例: `{"filesystem":{"allowWrite":["~/.npm"]},"network":{"allowedDomains":["registry.npmjs.org"]}}`）。サンドボックス自体は切れない
+    - 基準のブランチに`go.mod`があるリポジトリ（ルートか、その下のディレクトリ）では、`go.mod`のあるディレクトリごとに`go env`をworktreeの中で動かし、`GOMODCACHE`・`GOCACHE`・`$GOPATH/pkg/sumdb`を書き込み先に自動で足す。版の入ったパス（`~/go/<版>/pkg/mod`など）を`<リポジトリ名>.sandbox.json`に書かなくてよい（書いてあっても、重なるだけで動く）。手で書くと、手元のGoを上げたときにパスが変わって書けなくなるため。`go.mod`がないリポジトリと、`go`コマンドがないときは何も足さない
   - 実装の回には、手順（`.claude/auto-dev.md`）とIssueの本文・コメントを、プロンプトに入れて渡す（読むためのターンを使わせない）
     - リポジトリに`.claude/engineer.md`があれば（`.claude/auto-dev.md`もあっても）、新しい渡し方にする。engineerスキル（`$CLAUDE_AUTO_DEV_SKILLS_DIR/engineer/SKILL.md`、既定は`~/.claude/skills`）の本文を`<procedure>`（Engineerの共通の手順）に、`.claude/engineer.md`の全文を`<repository>`（リポジトリに固有の決まり）に入れ、2つが同じ事柄を決めているときは`<repository>`を優先させる。スキルの先頭のfrontmatterは入れない。`--restricted`では`~/.claude/`を読まないので、スキルの中身もプロンプトに入れる
-    - スキルのファイルがないか空なら、Claudeを起動せず、Issueのラベルやコメントにも触らずに、失敗として通知する（探した場所と、`make deploy-claude`を確かめることを書く）
+    - スキルのファイルがないか空なら、Claudeを起動せず、Issueのラベルやコメントにも触らずに、失敗として通知する（探した場所と、`make deploy-claude`を確かめることを書く）。Issueは`auto-ready`のまま残り、直すまで毎回の起動で同じことになるので、通知は同じ文なら1日に1回まで（ログには毎回残す）
+    - Goの環境の確かめ: `go.mod`があるリポジトリでは、着手するIssueがあるとき、Claudeを起動する前に、`go.mod`のあるディレクトリごとに`go list -m`を動かす。失敗したら（`go.mod`が求めるGoの版が手元より新しいなど。`GOTOOLCHAIN=local`なので自分では取得しない）、または`go`コマンドがなければ、Claudeを起動せず、Issueのラベルやコメントにも触らずに、その回のEngineerを見送る（終了コード0）。起動した回としては数えない（1日の回数や起動の間隔を進めない）。通知は「<ディレクトリ>: <goのエラーの1行目>。直るまで Engineer を見送ります」で、同じ文なら1日に1回まで。直れば次の回から動く。企画・精査・探索の回はテストを動かさないので見送らない
+    - 「同じ文の通知は1日に1回まで」は共通の関数（`notify_once_a_day`）で、前に知らせた日と文を`~/.local/state/claude-auto-dev/notice-once/<リポジトリ名>/<種類>`に残す。文が変わったら、その日でももう一度知らせる
     - どちらの渡し方で動いたかを、ログに1行（`渡し方: …`）残す
   - プロンプトキャッシュの保持は5分にする（`FORCE_PROMPT_CACHING_5M=1`を、起動する`claude`にだけ渡す）。回は数分で終わるので、定額プランの既定の1時間より書き込みが安い。対話のセッションには影響しない
   - NotionとTodoistは足す操作だけを許す（Notionの既存ページの書き換えは許さない）

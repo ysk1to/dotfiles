@@ -153,6 +153,19 @@ EOF
 #!/bin/bash
 echo "osascript $*" >> "$FAKE_LOG"
 EOF
+  # 偽の go。呼ばれた場所と引数を残す。go env は FAKE_GO_ENV（GOMODCACHE・GOCACHE・GOPATH の3行）を返し、
+  # go list -m は、FAKE_GO_LIST_ERR があれば、それを標準エラーに出して失敗する
+  export FAKE_GO_ENV="$tmp/gopath/pkg/mod"$'\n'"$tmp/gocache"$'\n'"$tmp/gopath" FAKE_GO_LIST_ERR=
+  cat > "$tmp/bin/go" <<'EOF'
+#!/bin/bash
+echo "go pwd=$PWD args=$*" >> "$FAKE_LOG"
+case "$1" in
+  env) printf '%s\n' "$FAKE_GO_ENV" ;;
+  list)
+    if [ -n "$FAKE_GO_LIST_ERR" ]; then printf '%s\n' "$FAKE_GO_LIST_ERR" >&2; exit 1; fi
+    echo example.com/app ;;
+esac
+EOF
   chmod +x "$tmp/bin/"*
 }
 
@@ -1845,5 +1858,79 @@ setup
 export CLAUDE_AUTO_DEV_NOW="$sat"
 FAKE_PRS='[{"number":10},{"number":11},{"number":12},{"number":13}]' run
 assert_eq "土日でもマージ待ちの PR が4件あれば着手しない" "0" "$(claude_calls)"
+
+# スキルがないときの通知は、同じ文なら1日に1回まで（Issue は auto-ready のまま残り、毎回の起動で同じ通知が出るため）。
+# 日が変わったら、もう一度通知する
+notice_count() { cat "$CLAUDE_AUTO_DEV_STATE_DIR/notices/my-app.tsv" 2>/dev/null | grep -c .; }
+setup
+push_claude_file engineer.md "リポジトリの決まりです"
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "スキルがないとき、同じ日にもう一度動かしても通知は増えない" "1" "$(notice_count)"
+assert_eq "スキルがないとき、通知を抑えた回も失敗で終わる" "yes" "$("$bin/claude-auto-dev" "$repo" >/dev/null 2>&1; [ "$?" -ne 0 ] && echo yes || echo no)"
+assert_eq "スキルがないとき、通知を抑えた回もログに残す" "3" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log | grep -c '^engineer スキルがありません')"
+export CLAUDE_AUTO_DEV_NOW=$((wed + 86400))
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "スキルがないとき、日が変わると、もう一度通知する" "2" "$(notice_count)"
+
+# ---- Go の環境 ----
+# go.mod があるリポジトリでは、go env が返す Go のキャッシュの場所を、サンドボックスの書き込み先に足す
+# （版の入ったパスを手で書くと、手元の Go を上げたときに書けなくなるため）
+push_file() {
+  (cd "$tmp/seed" && mkdir -p "$(dirname "$1")" && echo "$2" > "$1" && git add "$1" && git commit -qm "$1" && git push -q origin main)
+}
+go_write_paths() {
+  echo "$1" | jq --arg a "$tmp/gopath/pkg/mod" --arg b "$tmp/gocache" --arg c "$tmp/gopath/pkg/sumdb" \
+    '.sandbox.filesystem.allowWrite | (index($a) != null) and (index($b) != null) and (index($c) != null)'
+}
+for where in . sub; do
+  setup
+  push_file "$where/go.mod" $'module example.com/app\n\ngo 1.26'
+  "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+  label="go.mod があるとき（場所: ${where}）"
+  dir="$CLAUDE_AUTO_DEV_STATE_DIR/worktrees/my-app"
+  [ "$where" = . ] || dir="$dir/$where"
+  assert_eq "${label}、claude を起動する" "1" "$(claude_calls)"
+  assert_eq "${label}、Go のキャッシュの場所を書き込み先に足す" "true" "$(go_write_paths "$(args_after --settings)")"
+  assert_eq "${label}、go env を go.mod のあるディレクトリで動かす" "yes" "$(grep -qxF "go pwd=$dir args=env GOMODCACHE GOCACHE GOPATH" "$FAKE_LOG" && echo yes || echo no)"
+done
+setup
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "go.mod がないとき、書き込み先は今と同じ" "[\"$(git -C "$repo" rev-parse --absolute-git-dir)\"]" "$(args_after --settings | jq -c '.sandbox.filesystem.allowWrite')"
+assert_eq "go.mod がないとき、go を動かさない" "no" "$(grep -q '^go ' "$FAKE_LOG" && echo yes || echo no)"
+
+# go.mod と手元の Go が合わない（go list -m が失敗する）ときは、Claude を起動せず、Issue に触らずに Engineer を見送る。
+# 起動した回として数えず、同じ文の通知は1日に1回まで
+setup
+push_file sub/go.mod $'module example.com/app\n\ngo 1.99'
+export CLAUDE_AUTO_DEV_DAILY_MAX=5 FAKE_GO_LIST_ERR=$'go: go.mod requires go >= 1.99 (running go 1.26; GOTOOLCHAIN=local)\n2行目'
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "Go が合わないとき、成功で終わる" "0" "$?"
+assert_eq "Go が合わないとき、claude を起動しない" "0" "$(claude_calls)"
+assert_eq "Go が合わないとき、Issue のラベルを変えない" "no" "$(grep -q '^gh issue edit' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "Go が合わないとき、Issue にコメントしない" "no" "$(grep -q '^gh issue comment' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "Go が合わないとき、go list -m を go.mod のあるディレクトリで動かす" "yes" "$(grep -q '^go pwd=.*/sub args=list -m$' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "Go が合わないとき、通知を1件残す" "1" "$(notice_count)"
+assert_eq "Go が合わないとき、通知にディレクトリとエラーの1行目を書く" \
+  "sub: go: go.mod requires go >= 1.99 (running go 1.26; GOTOOLCHAIN=local)。直るまで Engineer を見送ります" \
+  "$(cut -f3 "$CLAUDE_AUTO_DEV_STATE_DIR/notices/my-app.tsv")"
+for f in launched pace-last daily; do
+  assert_eq "Go が合わないとき、${f} を進めない" "no" "$([ -f "$CLAUDE_AUTO_DEV_STATE_DIR/$f/my-app" ] && echo yes || echo no)"
+done
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "Go が合わないとき、同じ日にもう一度動かしても通知は増えない" "1" "$(notice_count)"
+FAKE_GO_LIST_ERR='go: go.mod requires go >= 1.100 (running go 1.26; GOTOOLCHAIN=local)' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "Go が合わないとき、文が変わったら同じ日でも通知する" "2" "$(notice_count)"
+FAKE_GO_LIST_ERR= "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "go list -m が通るようになると、Engineer が動く" "1" "$(claude_calls)"
+unset CLAUDE_AUTO_DEV_DAILY_MAX
+
+# Go が合わなくても、企画の回はテストを動かさないので見送らない
+setup
+enable_plan
+push_file go.mod $'module example.com/app\n\ngo 1.99'
+FAKE_GO_LIST_ERR='go: go.mod requires go >= 1.99' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "Go が合わなくても、企画の回は動く" "1" "$(claude_calls)"
+assert_eq "企画の回は go list -m を動かさない" "no" "$(grep -q '^go .*args=list' "$FAKE_LOG" && echo yes || echo no)"
 
 [ "$failures" -eq 0 ] || exit 1
