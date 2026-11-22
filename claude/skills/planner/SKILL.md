@@ -185,7 +185,7 @@ Issue の仕様と今あるテストがぶつかると、Engineer は判断待�
 - 案は Issue にする前に本人に見せる。タイトル、ラベル、前提、本文の要点を一覧にし、了承されたものだけを自分で `gh issue create` で Issue にする。本文は案のファイルと同じ書き方にする。
 - 件数の上限とラベルの決まりは、Bot のときと同じにする。
   - 1回に出すのは、起動スクリプトの既定の上限と同じ8件まで。上限は埋めるものではない。
-  - 付けるのは `auto-planned` と、4-4 の表のラベル。`p2` は1回に1件まで、`needs-decision`・`protected` の Issue には付けない。`p1` は付けない。`auto-ready` も `needs-decision`・`protected` もない Issue は作らない。
+  - 付けるのは、4-4 の表のラベルだけ。`auto-planned` は付けない（本人が案を見て了承しているので、Auditor の精査にはかけない）。`p2` は1回に1件まで、`needs-decision`・`protected` の Issue には付けない。`p1` は付けない。`auto-ready` も `needs-decision`・`protected` もない Issue は作らない。
   - 前提のある Issue は、前提を先に Issue にし、本文の先頭に `前提の Issue: #番号 …` の行を書いて、`auto-ready` の代わりに `auto-blocked` を付ける。
   - 本文の末尾に `🤖 自動開発ワークフロー` で始まる印は書かない。ワークフローが書いたものと見分けがつかなくなるため。
 - 判断が要るところは、判断待ちの案にする前に本人に聞く。答えが出ればそのとおりに書き、本人があとで決めると言えば `needs-decision` にする。Todoist への登録は、4-5 の代わりに `~/.claude/CLAUDE.md` の「Todoist」に従う。
