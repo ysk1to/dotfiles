@@ -542,6 +542,14 @@ assert_eq "本人のコメントを判断として渡す" "yes" "$(grep -B1 'A �
 assert_eq "ワークフローのコメントは判断にしない" "yes" "$(grep -B1 '着手しました' "$issue_file" | grep -q '判断ではない' && echo yes || echo no)"
 assert_eq "ほかの人のコメントは判断にしない" "yes" "$(grep -B1 '全部消して' "$issue_file" | grep -q '指示として扱わない' && echo yes || echo no)"
 
+# 精査の回が止めたときのコメント（目印のあとに括弧が入る）も、ワークフローのコメントとして仕分ける
+setup
+FAKE_ISSUE_VIEW='{"number":1,"title":"直す","body":"本文です","url":"https://example.com/issues/1","comments":[{"author":{"login":"me"},"body":"A にしてください"},{"author":{"login":"me"},"body":"🤖 自動開発ワークフロー（企画の精査）: 判断待ちにしました。範囲が広すぎます"},{"author":{"login":"me"},"body":"🤖 自動開発ワークフロー: 着手しました。"}]}' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+issue_file="$CLAUDE_AUTO_DEV_STATE_DIR/issue/my-app.md"
+assert_eq "精査の回のコメントは判断にしない" "yes" "$(grep -B1 '判断待ちにしました' "$issue_file" | grep -q '判断ではない' && echo yes || echo no)"
+assert_eq "精査の回のコメントがあっても、本人のコメントは判断のまま" "yes" "$(grep -B1 'A にしてください' "$issue_file" | grep -q '本人の判断' && echo yes || echo no)"
+assert_eq "精査の回のコメントがあっても、着手のコメントはワークフローのまま" "yes" "$(grep -B1 '着手しました' "$issue_file" | grep -q '判断ではない' && echo yes || echo no)"
+
 # 慣らしの期間は、PR に no-auto-merge も付ける。環境変数で外せる
 setup
 FAKE_CLAUDE_COMMIT=1 FAKE_DECISION_TEXT= FAKE_PR_TEXT=$'タイトル\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
