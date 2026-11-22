@@ -5,7 +5,12 @@
 # 数えるもの（件数だけを出し、会話や Issue の中身は出さない）:
 #   bots:     自動開発の回。events.tsv の着手（start）の内容から役割を決め、次の着手までの PR・Issue・判断待ち・失敗をその回のものとして数える
 #             （#N に着手 → Engineer、企画 → Planner、精査 → Auditor、探索 → Researcher）
+#             fail_reasons: 失敗の理由ごとの数（本文から先頭の「#N: 」を除き、最初の「。」より前を取る）
+#             Researcher の ideas・adopted: お知らせ「探索（…）: 案 N 件、採用 M 件」の N と M の合計
 #   reviewer: 期間内に作られた PR を、ワークフローがマージしたか・自動レビューのコメントがあるかで、自動マージ・要確認・レビュー前に分ける。gh が失敗したリポジトリは null
+#             要確認は、最後の自動レビューのコメントの理由（「確認をお願いします」より前の「- 」の行）がすべて決まり
+#             （「ファイルを変更しています」か「no-auto-merge」を含む）なら needs_check_by_rule、それ以外は needs_check_by_review に分ける
+#             followup_issues: 期間内にワークフロー（github-actions）が作った Issue（PR のマージで古くなった記述を直すもの）の数と、開いている数
 #   skills:   会話の記録（~/.claude/projects の jsonl）で、期間内に Skill ツールで呼ばれた回数
 # 記録の場所は CLAUDE_AUTO_DEV_STATE_DIR（既定 ~/.local/state/claude-auto-dev）と CLAUDE_PROJECTS_DIR（既定 ~/.claude/projects）で変更できる
 
@@ -37,20 +42,43 @@ bots_json() {
       next
     }
     ($3 == "pr" || $3 == "issue" || $3 == "decision" || $3 == "fail") && current[$2] != "" { count[$2 SUBSEP current[$2] SUBSEP $3]++ }
+    $3 == "fail" && current[$2] != "" {
+      reason = $4
+      sub(/^#[0-9]+: /, "", reason)
+      i = index(reason, "。")
+      if (i > 0) reason = substr(reason, 1, i - 1)
+      reasons[$2 SUBSEP current[$2] SUBSEP reason]++
+    }
+    $3 == "notice" && current[$2] == "Researcher" && $4 ~ /^探索（.*）: 案 [0-9]+ 件、採用 [0-9]+ 件$/ {
+      n = $4
+      sub(/.*: 案 /, "", n)
+      m = n
+      sub(/^[0-9]+ 件、採用 /, "", m)
+      ideas[$2] += n + 0
+      adopted[$2] += m + 0
+    }
     END {
       for (k in runs) {
         split(k, p, SUBSEP)
-        printf "%s\t%s\t%d\t%d\t%d\t%d\t%d\n", p[1], p[2], runs[k], count[k SUBSEP "pr"], count[k SUBSEP "issue"], count[k SUBSEP "decision"], count[k SUBSEP "fail"]
+        printf "R\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", p[1], p[2], runs[k], count[k SUBSEP "pr"], count[k SUBSEP "issue"], count[k SUBSEP "decision"], count[k SUBSEP "fail"], ideas[p[1]], adopted[p[1]]
+      }
+      for (k in reasons) {
+        split(k, p, SUBSEP)
+        printf "F\t%s\t%s\t%d\t%s\n", p[1], p[2], reasons[k], p[3]
       }
     }' "$state_dir/events.tsv" |
-    jq -Rn '[inputs | split("\t") | {repo: .[0], role: .[1],
-      stats: {runs: (.[2] | tonumber), pr: (.[3] | tonumber), issue: (.[4] | tonumber), decision: (.[5] | tonumber), fail: (.[6] | tonumber)}}]
-      | reduce .[] as $r ({}; .[$r.repo][$r.role] = $r.stats)'
+    jq -Rn '[inputs | split("\t")] as $rows
+      | reduce ($rows[] | select(.[0] == "R")) as $r ({};
+          .[$r[1]][$r[2]] = ({runs: ($r[3] | tonumber), pr: ($r[4] | tonumber), issue: ($r[5] | tonumber),
+              decision: ($r[6] | tonumber), fail: ($r[7] | tonumber), fail_reasons: {}}
+            + if $r[2] == "Researcher" then {ideas: ($r[8] | tonumber), adopted: ($r[9] | tonumber)} else {} end))
+      | reduce ($rows[] | select(.[0] == "F")) as $f (.; .[$f[1]][$f[2]].fail_reasons[$f[4]] = ($f[3] | tonumber))
+      | map_values(map_values(.fail_reasons |= (to_entries | sort_by(-.value, .key) | from_entries)))'
 }
 
 # PR の自動レビュー。リポジトリの場所で gh を呼ぶ
 reviewer_json() {
-  local since_iso result="{}" f name dir prs counts
+  local since_iso result="{}" f name dir prs issues counts followups
   since_iso=$(date -u -r "$since" +%Y-%m-%dT%H:%M:%SZ)
   for f in "$state_dir"/repos/*; do
     [ -f "$f" ] || continue
@@ -58,12 +86,26 @@ reviewer_json() {
     dir=$(cat "$f")
     if prs=$(cd "$dir" 2>/dev/null && gh pr list --state all --limit 200 --search "created:>=${since_iso%%T*}" --json number,createdAt,state,mergedBy,comments 2>/dev/null); then
       # 見出しの書き方はリポジトリで違うので、判定はワークフロー（github-actions）がマージしたかで行う
+      # 要確認の理由の文はリポジトリのワークフローで少しずつ違うので、決まりで止まったものは共通の言い回しで見分ける
       counts=$(jq -c --arg since "$since_iso" '
+        def reasons: split("\n") | .[0:(map(test("確認をお願いします")) | index(true) // length)] | map(select(startswith("- ")));
+        def by_rule: reasons | length > 0 and all(test("ファイルを変更しています|no-auto-merge"));
         [.[] | select(.createdAt >= $since)
+          | [.comments[].body | select(startswith("## 自動レビュー"))] as $reviews
           | if ((.mergedBy.login // "") | test("github-actions")) then "auto_merged"
-            elif any(.comments[].body; startswith("## 自動レビュー")) then "needs_check" else "not_reviewed" end]
+            elif ($reviews | length) == 0 then "not_reviewed"
+            elif ($reviews | last | by_rule) then "by_rule" else "by_review" end]
         | {prs: length, auto_merged: map(select(. == "auto_merged")) | length,
-           needs_check: map(select(. == "needs_check")) | length, not_reviewed: map(select(. == "not_reviewed")) | length}' <<< "$prs")
+           needs_check: map(select(. == "by_rule" or . == "by_review")) | length, not_reviewed: map(select(. == "not_reviewed")) | length,
+           needs_check_by_rule: map(select(. == "by_rule")) | length, needs_check_by_review: map(select(. == "by_review")) | length}' <<< "$prs")
+      if issues=$(cd "$dir" 2>/dev/null && gh issue list --state all --limit 200 --search "created:>=${since_iso%%T*}" --json number,createdAt,state,author 2>/dev/null); then
+        followups=$(jq -c --arg since "$since_iso" '
+          [.[] | select(.createdAt >= $since and ((.author.login // "") | test("github-actions")))]
+          | {created: length, open: map(select(.state == "OPEN")) | length}' <<< "$issues")
+      else
+        followups=null
+      fi
+      counts=$(jq -c --argjson f "$followups" '.followup_issues = $f' <<< "$counts")
     else
       counts=null
     fi
@@ -97,11 +139,17 @@ jq -r '
   "直近 \(.days) 日",
   "",
   "# 自動開発の Bot",
-  (.bots | to_entries[] | .key, (.value | to_entries[] | "  \(.key)  回 \(.value.runs)  PR \(.value.pr)  Issue \(.value.issue)  判断待ち \(.value.decision)  失敗 \(.value.fail)")),
+  (.bots | to_entries[] | .key, (.value | to_entries[]
+    | "  \(.key)  回 \(.value.runs)  PR \(.value.pr)  Issue \(.value.issue)  判断待ち \(.value.decision)  失敗 \(.value.fail)"
+      + (if .value.ideas then "  案 \(.value.ideas)  採用 \(.value.adopted)" else "" end),
+      (.value.fail_reasons | to_entries[] | "    \(.key)  \(.value)"))),
   "",
   "# Reviewer（PR の自動レビュー）",
   (.reviewer | to_entries[] | if .value == null then "  \(.key)  取得できませんでした"
-    else "  \(.key)  PR \(.value.prs)  自動マージ \(.value.auto_merged)  要確認 \(.value.needs_check)  レビュー前 \(.value.not_reviewed)" end),
+    else "  \(.key)  PR \(.value.prs)  自動マージ \(.value.auto_merged)  要確認 \(.value.needs_check)  レビュー前 \(.value.not_reviewed)"
+      + "  決まりで要確認 \(.value.needs_check_by_rule)  判断で要確認 \(.value.needs_check_by_review)"
+      + (if .value.followup_issues == null then "  古くなった記述の Issue 取得できませんでした"
+         else "  古くなった記述の Issue \(.value.followup_issues.created)（開 \(.value.followup_issues.open)）" end) end),
   "",
   "# スキル（呼ばれた回数）",
   (.skills | to_entries[] | "  \(.key)  \(.value)")' <<< "$result"

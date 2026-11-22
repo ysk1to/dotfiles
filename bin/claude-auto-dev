@@ -1,6 +1,9 @@
 #!/bin/bash
 # launchd などから定期的に呼ばれ、リポジトリの auto-ready の Issue を1件、Claude Code（claude -p）に PR にさせる。
 # 手順の本体はリポジトリの .claude/auto-dev.md。個人の情報（Notion の URL など）は設定ファイルに置く。
+# リポジトリに .claude/engineer.md があれば、代わりに engineer スキル（$CLAUDE_AUTO_DEV_SKILLS_DIR、既定 ~/.claude/skills）の
+# 本文を共通の手順、.claude/engineer.md をリポジトリに固有の決まりとして渡す。自動実行では ~/.claude/ を読まないので、
+# スキルの中身もプロンプトに入れる。スキルがなければ、Issue に触らずに失敗として知らせる。
 # claude には GitHub を触らせない。Issue の取得も、書き込み（push・PR・ラベル・コメント）も、このスクリプトが行う。
 # claude は Issue のファイルを読んで作業し、結果を PR のファイルか判断待ちのファイルに書いて終わる。
 # リポジトリに .claude/auto-plan.md があれば、決まった間隔で、実装の代わりに企画の回を起動する。
@@ -205,6 +208,18 @@ plan_key_of() {
   } | shasum | cut -d' ' -f1
 }
 has_file() { git -C "$repo" cat-file -e "$base:$1" 2>/dev/null; }
+
+# 役割（$1。engineer など）の手順を、スキルの本文（role_skill）とリポジトリの決まり（role_rules）に取り出す。
+# リポジトリに .claude/<役割>.md がなければ 1（古い渡し方を使う）、スキルのファイルがないか空なら 2 を返す。
+# スキルの先頭の frontmatter（最初の --- から次の --- まで）は渡さない。探したスキルの場所は role_skill_file に残す
+skills_dir="${CLAUDE_AUTO_DEV_SKILLS_DIR:-$HOME/.claude/skills}"
+role_procedure() {
+  role_skill="" role_rules="" role_skill_file="$skills_dir/$1/SKILL.md"
+  has_file ".claude/$1.md" || return 1
+  role_rules=$(git -C "$repo" show "$base:.claude/$1.md")
+  role_skill=$(awk 'NR == 1 && $0 == "---" { fm = 1; next } fm == 1 { if ($0 == "---") fm = 2; next } 1' "$role_skill_file" 2>/dev/null)
+  [ -n "$role_skill" ] || return 2
+}
 # 前に動いた時刻（ファイル $1）から $2 秒たったか
 due() { [ $(($(date +%s) - $(cat "$1" 2>/dev/null || echo 0))) -ge "$2" ]; }
 
@@ -1077,6 +1092,19 @@ fail() {
   exit "${2:-1}"
 }
 
+# 手順の渡し方を決める。リポジトリに .claude/engineer.md があれば engineer スキルとつなぐ（新しい渡し方）。
+# スキルがなければ、Issue のラベルやコメントに触る前に止める（Issue は auto-ready のまま残る）
+role_procedure engineer
+case $? in
+  0) echo "渡し方: engineer スキル（$role_skill_file）と .claude/engineer.md" >> "$log" ;;
+  1) echo "渡し方: .claude/auto-dev.md" >> "$log" ;;
+  *)
+    echo "engineer スキルがありません: $role_skill_file" >> "$log"
+    notify "が失敗" "#${issue}: engineer スキルがありません（${role_skill_file}）。make deploy-claude を確かめてください。ログ: ${log}"
+    exit 1
+    ;;
+esac
+
 {
   gh issue edit "$issue" --remove-label auto-ready --add-label auto-in-progress &&
     comment "$issue" "着手しました。"
@@ -1101,10 +1129,29 @@ rm -f "$issue_file" "$pr_file" "$decision_file"
 } 2>> "$log" || fail "Issue の内容を取得できません"
 export CLAUDE_AUTO_DEV_PR_FILE="$pr_file" CLAUDE_AUTO_DEV_DECISION_FILE="$decision_file"
 
-# 手順（.claude/auto-dev.md）と Issue の中身は、プロンプトに入れて渡す。
+# 手順（engineer スキルと .claude/engineer.md、または .claude/auto-dev.md）と Issue の中身は、プロンプトに入れて渡す。
 # ファイルの場所だけを渡すと、毎回、最初の数ターンがこの2つを読むのに使われる
-procedure=$(git -C "$repo" show "$base:.claude/auto-dev.md" 2>/dev/null)
-if [ -n "$procedure" ]; then
+opening="このリポジトリの自動開発ワークフローとして起動された。"
+procedure=
+[ -n "$role_skill" ] || procedure=$(git -C "$repo" show "$base:.claude/auto-dev.md" 2>/dev/null)
+if [ -n "$role_skill" ]; then
+  opening="このリポジトリの自動開発ワークフローの Engineer として起動された。"
+  read_first="末尾の <procedure>（Engineer の共通の手順）と <repository>（このリポジトリに固有の決まり）のとおりに Issue #$issue を進める。2つが同じ事柄を決めているときは <repository> を優先する。"
+  issue_where="Issue の本文とコメントは、末尾の <issue> に入れてある（$issue_file と同じ内容）。どれも読み直さなくてよい。"
+  embedded="
+
+<procedure>
+$role_skill
+</procedure>
+
+<repository>
+$role_rules
+</repository>
+
+<issue>
+$(cat "$issue_file")
+</issue>"
+elif [ -n "$procedure" ]; then
   read_first="このプロンプトの末尾の <procedure> に入れた手順（.claude/auto-dev.md の全文）のとおりに Issue #$issue を進める。"
   issue_where="Issue の本文とコメントは、末尾の <issue> に入れてある（$issue_file と同じ内容）。どちらも読み直さなくてよい。"
   embedded="
@@ -1147,7 +1194,7 @@ if [ -f "$config_dir/$name.refs" ]; then
 ## 読むだけの場所
 次の場所は読めるが、書き換えられない。ほかのリポジトリのコードは、ここにある実物を読む。$refs_note"
 fi
-prompt="このリポジトリの自動開発ワークフローとして起動された。$read_first
+prompt="$opening$read_first
 人は見ていないので、確認を待たずに進め、判断が要るところでは手順どおりに止める。
 $issue_where GitHub には接続できない（gh は使えない）。
 GitHub への書き込み（push、PR の作成、ラベルの変更、コメント）は起動スクリプトが行う。結果は次のどちらかのファイルに書いて終わる。

@@ -30,6 +30,7 @@ setup() {
   export CLAUDE_AUTO_DEV_NOW="$wed" CLAUDE_AUTO_DEV_BOOST_RUNS=1
   export CLAUDE_AUTO_DEV_CONFIG_DIR="$tmp/config"
   export CLAUDE_AUTO_DEV_STATE_DIR="$tmp/state"
+  export CLAUDE_AUTO_DEV_SKILLS_DIR="$tmp/skills"
   export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
   export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
   git init -q --bare -b main "$tmp/origin.git"
@@ -195,6 +196,56 @@ assert_eq "Issue の本文をプロンプトに入れる" "yes" "$(echo "$prompt
 assert_eq "Issue のコメントを、仕分けの見出しと一緒にプロンプトに入れる" "yes" "$(echo "$prompt" | grep -B1 'A にしてください' | grep -q '本人の判断' && echo yes || echo no)"
 assert_eq "中身を入れたときは、読み直さなくてよいと伝える" "yes" "$(echo "$prompt" | grep -q '読み直さなくてよい' && echo yes || echo no)"
 assert_eq "手元の clone にない手順も、origin/main から入れる" "no" "$([ -f "$repo/.claude/auto-dev.md" ] && echo yes || echo no)"
+assert_eq ".claude/engineer.md がなければ、古い渡し方で動いたとログに残す" "yes" "$(grep -q '^渡し方: .claude/auto-dev.md' "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log && echo yes || echo no)"
+
+# リポジトリに .claude/engineer.md があれば、engineer スキルの本文を <procedure> に、.claude/engineer.md を <repository> に入れる。
+# スキルの frontmatter は入れない。.claude/auto-dev.md もあるときも、こちらの渡し方にする
+fake_skill() {
+  mkdir -p "$CLAUDE_AUTO_DEV_SKILLS_DIR/engineer"
+  printf '%s\n' '---' 'name: engineer' 'description: Engineer の共通の手順' '---' '' '# スキルの本文です' '' '---' '区切りのあとの本文です' \
+    > "$CLAUDE_AUTO_DEV_SKILLS_DIR/engineer/SKILL.md"
+}
+push_claude_file() {
+  (cd "$tmp/seed" && mkdir -p .claude && echo "$2" > ".claude/$1" && git add .claude && git commit -qm "$1" && git push -q origin main)
+}
+section_of() { echo "$prompt" | awk -v tag="$1" '$0 == "</" tag ">" { on = 0 } on; $0 == "<" tag ">" { on = 1 }'; }
+for both in no yes; do
+  setup
+  fake_skill
+  push_claude_file engineer.md "リポジトリの決まりです"
+  [ "$both" = no ] || push_claude_file auto-dev.md "古い手順の中身です"
+  "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+  prompt=$(awk '/^claude arg=-p$/ { on = 1; next } on && /^claude arg=--/ { on = 0 } on' "$FAKE_LOG" | sed 's/^claude arg=//')
+  label="engineer.md があるとき（auto-dev.md もある: ${both}）"
+  assert_eq "${label}、claude を起動する" "1" "$(claude_calls)"
+  assert_eq "${label}、<procedure> にスキルの本文を入れる" "yes" "$(section_of procedure | grep -q 'スキルの本文です' && echo yes || echo no)"
+  assert_eq "${label}、本文の中の区切り（---）のあとも入れる" "yes" "$(section_of procedure | grep -q '区切りのあとの本文です' && echo yes || echo no)"
+  assert_eq "${label}、スキルの frontmatter は入れない" "no" "$(echo "$prompt" | grep -qE '^(name|description):' && echo yes || echo no)"
+  assert_eq "${label}、<repository> に .claude/engineer.md の中身を入れる" "yes" "$(section_of repository | grep -q 'リポジトリの決まりです' && echo yes || echo no)"
+  assert_eq "${label}、Issue は <issue> に入れる" "yes" "$(section_of issue | grep -q '本文です' && echo yes || echo no)"
+  assert_eq "${label}、Engineer として起動されたと書き出す" "yes" "$(echo "$prompt" | head -n 1 | grep -q '^このリポジトリの自動開発ワークフローの Engineer として起動された。' && echo yes || echo no)"
+  assert_eq "${label}、2つが同じ事柄を決めていれば <repository> を優先させる" "yes" "$(echo "$prompt" | grep -q '<repository> を優先する' && echo yes || echo no)"
+  assert_eq "${label}、.claude/auto-dev.md は入れない" "no" "$(echo "$prompt" | grep -q '古い手順の中身です' && echo yes || echo no)"
+  assert_eq "${label}、新しい渡し方で動いたとログに残す" "yes" "$(grep -q '^渡し方: engineer スキル' "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log && echo yes || echo no)"
+done
+
+# .claude/engineer.md があってスキルがない（または空の）ときは、Issue に触らずに失敗として知らせ、claude を起動しない
+for skill in none empty; do
+  setup
+  [ "$skill" = none ] || { mkdir -p "$CLAUDE_AUTO_DEV_SKILLS_DIR/engineer" && : > "$CLAUDE_AUTO_DEV_SKILLS_DIR/engineer/SKILL.md"; }
+  push_claude_file engineer.md "リポジトリの決まりです"
+  "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+  code=$?
+  label="スキルがない（${skill}）とき"
+  assert_eq "${label}、失敗で終わる" "yes" "$([ "$code" -ne 0 ] && echo yes || echo no)"
+  assert_eq "${label}、claude を起動しない" "0" "$(claude_calls)"
+  assert_eq "${label}、Issue のラベルを変えない" "no" "$(grep -q '^gh issue edit' "$FAKE_LOG" && echo yes || echo no)"
+  assert_eq "${label}、Issue にコメントしない" "no" "$(grep -q '^gh issue comment' "$FAKE_LOG" && echo yes || echo no)"
+  notice=$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/notices/my-app.tsv" 2>/dev/null)
+  assert_eq "${label}、失敗として通知を残す" "yes" "$(echo "$notice" | cut -f2 | grep -q '失敗' && echo yes || echo no)"
+  assert_eq "${label}、通知に探した場所を書く" "yes" "$(echo "$notice" | grep -qF "$CLAUDE_AUTO_DEV_SKILLS_DIR/engineer/SKILL.md" && echo yes || echo no)"
+  assert_eq "${label}、通知で make deploy-claude を確かめるよう伝える" "yes" "$(echo "$notice" | grep -q 'make deploy-claude' && echo yes || echo no)"
+done
 
 # gh の一覧は、件数を指定しないと30件で切れる（新しい順）。着手できる Issue が30件を超えても、
 # 古い Issue（番号の小さいもの、p1 のもの）を取りこぼさないよう、件数を指定して取得する
