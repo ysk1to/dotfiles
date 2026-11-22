@@ -34,6 +34,22 @@ assert_eq "API の結果をキャッシュ形式で書き込む" \
   '{"five_hour":{"used_percentage":5,"resets_at":1794804600},"seven_day":{"used_percentage":45,"resets_at":1795262400}}' \
   "$(cat "$cache" 2>/dev/null)"
 
+# モデルごとの週の枠（limits の weekly_scoped）のうち、Fable の枠を seven_day_fable として書き込む
+api_response_fable='{
+  "five_hour": {"utilization": 5.0, "resets_at": "2026-11-16T04:50:00.368943+00:00"},
+  "seven_day": {"utilization": 45.0, "resets_at": "2026-11-21T12:00:00.368963+00:00"},
+  "limits": [
+    {"kind": "weekly_all", "percent": 45, "resets_at": "2026-11-21T12:00:00.368963+00:00", "scope": null},
+    {"kind": "weekly_scoped", "percent": 35, "resets_at": "2026-11-21T12:00:00.687188+00:00",
+     "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}}
+  ]
+}'
+setup
+CLAUDE_USAGE_FETCH="echo '$api_response_fable'" "$bin/claude-usage-refresh"
+assert_eq "Fable の週の枠もキャッシュに書き込む" \
+  '{"five_hour":{"used_percentage":5,"resets_at":1794804600},"seven_day":{"used_percentage":45,"resets_at":1795262400},"seven_day_fable":{"used_percentage":35,"resets_at":1795262400}}' \
+  "$(cat "$cache" 2>/dev/null)"
+
 # 取得に失敗したときは既存のキャッシュを残す
 setup
 echo '{"five_hour":{"used_percentage":1,"resets_at":1}}' > "$cache"
@@ -73,6 +89,25 @@ touch -t "$(date -v-61M +%Y%m%d%H%M.%S)" "$cache.checked"
 CLAUDE_USAGE_REFRESH="touch $marker" "$bin/tmux-claude-usage" > /dev/null
 sleep 0.5
 assert_eq "61分前の確認なら更新する" "yes" "$([ -f "$marker" ] && echo yes || echo no)"
+
+# キャッシュに Fable の枠があれば、7d の後ろに表示する
+setup
+echo '{"seven_day_fable":{"used_percentage":35,"resets_at":9999999999}}' > "$cache"
+assert_eq "Fable の使用率を表示する" \
+  '⏳ 5h -- 📆 7d -- 🐉 Fable #[fg=colour120]▰▱▱▱▱ #[bold]35%#[nobold,fg=default]' \
+  "$(CLAUDE_USAGE_REFRESH=true "$bin/tmux-claude-usage")"
+
+# Fable の枠がなければ、区画を出さない
+setup
+echo '{}' > "$cache"
+assert_eq "Fable の枠がなければ表示しない" '⏳ 5h -- 📆 7d --' \
+  "$(CLAUDE_USAGE_REFRESH=true "$bin/tmux-claude-usage")"
+
+# リセットの時刻を過ぎた Fable の枠は表示しない
+setup
+echo '{"seven_day_fable":{"used_percentage":35,"resets_at":1}}' > "$cache"
+assert_eq "期限の過ぎた Fable の枠は表示しない" '⏳ 5h -- 📆 7d --' \
+  "$(CLAUDE_USAGE_REFRESH=true "$bin/tmux-claude-usage")"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures failed"
