@@ -1873,6 +1873,81 @@ export CLAUDE_AUTO_DEV_NOW=$((wed + 86400))
 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "スキルがないとき、日が変わると、もう一度通知する" "2" "$(notice_count)"
 
+# ---- Planner の手順の渡し方 ----
+# リポジトリに .claude/planner.md があれば（.claude/auto-plan.md がなくても）、企画の回を起動し、planner スキルの本文を
+# <procedure> に、.claude/planner.md を <repository> に入れる。スキルの frontmatter は入れない
+fake_planner_skill() {
+  mkdir -p "$CLAUDE_AUTO_DEV_SKILLS_DIR/planner"
+  printf '%s\n' '---' 'name: planner' 'description: Planner の共通の手順' '---' '' '# Planner のスキルの本文です' \
+    > "$CLAUDE_AUTO_DEV_SKILLS_DIR/planner/SKILL.md"
+}
+plan_prompt() { awk '/^claude arg=-p$/ { on = 1; next } on && /^claude arg=--/ { on = 0 } on' "$FAKE_LOG" | sed 's/^claude arg=//'; }
+for both in no yes; do
+  setup
+  fake_planner_skill
+  push_claude_file planner.md "企画のリポジトリの決まりです"
+  [ "$both" = no ] || enable_plan
+  FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+  code=$?
+  prompt=$(plan_prompt)
+  label="planner.md があるとき（auto-plan.md もある: ${both}）"
+  assert_eq "${label}、成功で終わる" "0" "$code"
+  assert_eq "${label}、企画の回を起動する" "1" "$(claude_calls)"
+  assert_eq "${label}、案を Issue にする" "yes" "$(has_line "$(issue_creates)" 'auto-planned')"
+  assert_eq "${label}、Planner として起動されたと、Engineer と同じ形で書き出す" "このリポジトリの自動開発ワークフローの Planner として起動された。末尾の <procedure>（Planner の共通の手順）と <repository>（このリポジトリに固有の決まり）のとおりに、次の作業を Issue の案にする。2つが同じ事柄を決めているときは <repository> を優先する。" "$(echo "$prompt" | head -n 1)"
+  assert_eq "${label}、<procedure> にスキルの本文を入れる" "yes" "$(section_of procedure | grep -q 'Planner のスキルの本文です' && echo yes || echo no)"
+  assert_eq "${label}、スキルの frontmatter は入れない" "no" "$(echo "$prompt" | grep -qE '^(name|description):' && echo yes || echo no)"
+  assert_eq "${label}、<repository> に .claude/planner.md の中身を入れる" "yes" "$(section_of repository | grep -q '企画のリポジトリの決まりです' && echo yes || echo no)"
+  assert_eq "${label}、.claude/auto-plan.md を読ませない" "no" "$(echo "$prompt" | grep -q 'auto-plan.md' && echo yes || echo no)"
+  assert_eq "${label}、案の置き場所と件数の取り決めは残す" "yes" "$(echo "$prompt" | grep -qF "Issue の案は、1件につき1ファイルで $(plan_dir) に作る" && echo yes || echo no)"
+  assert_eq "${label}、案のファイルの形の取り決めは残す" "yes" "$(echo "$prompt" | grep -q '^- 2行目: labels:' && echo yes || echo no)"
+  assert_eq "${label}、新しい渡し方で動いたとログに残す" "yes" "$(grep -q '^渡し方: planner スキル' "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log && echo yes || echo no)"
+done
+
+# 探索の回が採用した案を渡す文も、手順のファイルの名前によらない
+setup
+fake_planner_skill
+push_claude_file planner.md "企画のリポジトリの決まりです"
+mkdir -p "$(ideas_dir)" && printf '%s\n' "$FAKE_IDEA_TEXT" > "$(ideas_dir)/01.md"
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+prompt=$(plan_prompt)
+assert_eq "planner.md があるとき、採用された案の場所を伝える" "yes" "$(echo "$prompt" | grep -qF "$(ideas_dir)" && echo yes || echo no)"
+assert_eq "planner.md があるとき、採用された案を渡す文に auto-plan.md の名前を書かない" "no" "$(echo "$prompt" | grep -q 'auto-plan.md' && echo yes || echo no)"
+
+# .claude/auto-plan.md だけのときは、今までどおり。プロンプトの書き出しも変えない
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+prompt=$(plan_prompt)
+assert_eq "auto-plan.md だけのとき、プロンプトの書き出しは今までどおり" "このリポジトリの自動開発ワークフローの、企画の回として起動された。.claude/auto-plan.md を読み、その手順どおりに次の作業を Issue の案にする。" "$(echo "$prompt" | head -n 1)"
+assert_eq "auto-plan.md だけのとき、<procedure> を入れない" "no" "$(echo "$prompt" | grep -qx '<procedure>' && echo yes || echo no)"
+assert_eq "auto-plan.md だけのとき、古い渡し方で動いたとログに残す" "yes" "$(grep -q '^渡し方: .claude/auto-plan.md' "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log && echo yes || echo no)"
+
+# .claude/planner.md があってスキルがない（または空の）ときは、claude を起動せず、企画の失敗として知らせる。
+# 起動した回としては数えない（前の企画の時刻・起動の時刻を進めない）ので、直すまで毎回の起動で止まる
+for skill in none empty; do
+  setup
+  [ "$skill" = none ] || { mkdir -p "$CLAUDE_AUTO_DEV_SKILLS_DIR/planner" && : > "$CLAUDE_AUTO_DEV_SKILLS_DIR/planner/SKILL.md"; }
+  push_claude_file planner.md "企画のリポジトリの決まりです"
+  FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+  code=$?
+  label="planner.md があってスキルがない（${skill}）とき"
+  assert_eq "${label}、失敗で終わる" "yes" "$([ "$code" -ne 0 ] && echo yes || echo no)"
+  assert_eq "${label}、claude を起動しない" "0" "$(claude_calls)"
+  assert_eq "${label}、Issue を作らない" "" "$(issue_creates)"
+  notice=$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/notices/my-app.tsv" 2>/dev/null)
+  assert_eq "${label}、企画の失敗として通知を残す" "yes" "$(echo "$notice" | cut -f2 | grep -q '企画が失敗' && echo yes || echo no)"
+  assert_eq "${label}、通知に探した場所を書く" "yes" "$(echo "$notice" | grep -qF "$CLAUDE_AUTO_DEV_SKILLS_DIR/planner/SKILL.md" && echo yes || echo no)"
+  assert_eq "${label}、通知で make deploy-claude を確かめるよう伝える" "yes" "$(echo "$notice" | grep -q 'make deploy-claude' && echo yes || echo no)"
+  assert_eq "${label}、前の企画の時刻を残さない" "no" "$([ -f "$(plan_last)" ] && echo yes || echo no)"
+  assert_eq "${label}、起動の時刻を進めない" "no" "$([ -f "$CLAUDE_AUTO_DEV_STATE_DIR/pace-last/my-app" ] && echo yes || echo no)"
+  assert_eq "${label}、起動した回として残さない" "no" "$([ -f "$CLAUDE_AUTO_DEV_STATE_DIR/launched/my-app" ] && echo yes || echo no)"
+done
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "planner スキルがないとき、次の起動でもまた止まる（失敗で終わる）" "yes" "$(FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1; [ "$?" -ne 0 ] && echo yes || echo no)"
+assert_eq "planner スキルがないとき、同じ日にもう一度動かしても通知は増えない" "1" "$(notice_count)"
+assert_eq "planner スキルがないとき、通知を抑えた回もログに残す" "3" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log | grep -c '^planner スキルがありません')"
+
 # ---- Go の環境 ----
 # go.mod があるリポジトリでは、go env が返す Go のキャッシュの場所を、サンドボックスの書き込み先に足す
 # （版の入ったパスを手で書くと、手元の Go を上げたときに書けなくなるため）
