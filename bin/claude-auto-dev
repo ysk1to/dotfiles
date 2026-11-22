@@ -6,7 +6,9 @@
 # スキルの中身もプロンプトに入れる。スキルがなければ、Issue に触らずに失敗として知らせる。
 # claude には GitHub を触らせない。Issue の取得も、書き込み（push・PR・ラベル・コメント）も、このスクリプトが行う。
 # claude は Issue のファイルを読んで作業し、結果を PR のファイルか判断待ちのファイルに書いて終わる。
-# リポジトリに .claude/auto-plan.md があれば、決まった間隔で、実装の代わりに企画の回を起動する。
+# リポジトリに .claude/planner.md か .claude/auto-plan.md があれば、決まった間隔で、実装の代わりに企画（Planner）の回を起動する。
+# .claude/planner.md があれば、planner スキルの本文を共通の手順、.claude/planner.md をリポジトリに固有の決まりとして渡す
+# （Engineer と同じ形）。スキルがなければ、Claude を起動せずに企画の失敗として知らせる。なければ .claude/auto-plan.md を読ませる。
 # 企画の回の claude は Issue の案をファイルに書き、このスクリプトがそれを Issue にする。
 # .claude/auto-plan-review.md があれば、決まった間隔で精査の回を起動し、企画が作った Issue を別の claude が精査する。
 # .claude/auto-explore.md と .claude/auto-explore-judge.md があれば、決まった間隔で探索の回を起動する。
@@ -267,6 +269,29 @@ role_procedure() {
   role_skill=$(awk 'NR == 1 && $0 == "---" { fm = 1; next } fm == 1 { if ($0 == "---") fm = 2; next } 1' "$role_skill_file" 2>/dev/null)
   [ -n "$role_skill" ] || return 2
 }
+# role_procedure で手順を取り出し、どちらの渡し方で動くかをログに1行残す。$2 は古い渡し方の手順のファイル。
+# スキルがなければログに残し、通知（題は $3、文の頭は $4）を同じ文なら1日に1回まで出して 2 を返す。
+# 直すまで毎回の起動で同じことを知らせるので、通知が積み上がらないようにする
+use_role_procedure() {
+  role_procedure "$1"
+  case $? in
+    0) echo "渡し方: $1 スキル（$role_skill_file）と .claude/$1.md" >> "$log" ;;
+    1) echo "渡し方: $2" >> "$log" ;;
+    *)
+      echo "$1 スキルがありません: $role_skill_file" >> "$log"
+      notify_once_a_day "skill-$1" "$3" "${4}$1 スキルがありません（${role_skill_file}）。make deploy-claude を確かめてください" "。ログ: ${log}"
+      return 2
+      ;;
+  esac
+}
+# 新しい渡し方のプロンプトの部品。role_read_first <役割の呼び名> <すること> は、末尾の2つのとおりに進めるよう伝える文、
+# role_sections は、スキルの本文と決まりを入れた <procedure> と <repository>
+role_read_first() {
+  echo "末尾の <procedure>（$1 の共通の手順）と <repository>（このリポジトリに固有の決まり）のとおりに$2。2つが同じ事柄を決めているときは <repository> を優先する。"
+}
+role_sections() {
+  printf '<procedure>\n%s\n</procedure>\n\n<repository>\n%s\n</repository>' "$role_skill" "$role_rules"
+}
 # 前に動いた時刻（ファイル $1）から $2 秒たったか
 due() { [ $(($(date +%s) - $(cat "$1" 2>/dev/null || echo 0))) -ge "$2" ]; }
 
@@ -394,7 +419,8 @@ has_ideas() { compgen -G "$ideas_dir/*.md" > /dev/null; }
 plan_key_file="$state_dir/plan-key/$name"
 plan_last_file="$state_dir/plan-last/$name"
 plan_room=$((plan_target - $(echo "$ready" | jq length)))
-if [ "$mode" = implement ] && [ "$fable" != off ] && has_file .claude/auto-plan.md && [ "$plan_room" -gt 0 ] &&
+if [ "$mode" = implement ] && [ "$fable" != off ] && { has_file .claude/planner.md || has_file .claude/auto-plan.md; } &&
+  [ "$plan_room" -gt 0 ] &&
   due "$plan_last_file" "${CLAUDE_AUTO_DEV_PLAN_INTERVAL:-21600}"; then
   fetch_all_issues
   { ! has_ideas && [ -z "${CLAUDE_AUTO_DEV_PLAN_ALWAYS:-}" ] &&
@@ -458,6 +484,12 @@ if [ "$mode" = implement ]; then
     mkdir -p "$state_dir/daily"
     echo "$today $((daily_count + 1))" > "$daily_file"
   fi
+fi
+# 企画の回の手順の渡し方を決める。リポジトリに .claude/planner.md があれば planner スキルとつなぐ（新しい渡し方）。
+# スキルがなければ Claude を起動せずに止める。起動した回として数えないよう、前の企画の時刻・起動の時刻
+# （plan-last・pace-last・launched）を進める前に置く。直すまで、企画の回になる起動のたびに止まる
+if [ "$mode" = plan ]; then
+  use_role_procedure planner .claude/auto-plan.md "の企画が失敗" "" || exit 1
 fi
 mkdir -p "$state_dir/pace-last" "$state_dir/launched"
 date +%s > "$pace_last_file"
@@ -1083,15 +1115,26 @@ if [ "$mode" = plan ]; then
   plan_max="${CLAUDE_AUTO_DEV_PLAN_MAX:-8}"
   [ "$plan_max" -le "$plan_room" ] || plan_max="$plan_room"
   # 探索の回が採用した案があれば、場所を伝えて読ませる（読むだけ）。渡した案は、Issue を作り終えたら片付ける
+  # 手順は、planner スキルと .claude/planner.md ならプロンプトの末尾に入れ、.claude/auto-plan.md なら読ませる
   given_ideas=()
   ideas_note=
+  plan_procedure=".claude/auto-plan.md の手順どおり"
+  opening="このリポジトリの自動開発ワークフローの、企画の回として起動された。.claude/auto-plan.md を読み、その手順どおりに次の作業を Issue の案にする。"
+  embedded=
+  if [ -n "$role_skill" ]; then
+    plan_procedure="手順どおり"
+    opening="このリポジトリの自動開発ワークフローの Planner として起動された。$(role_read_first Planner "、次の作業を Issue の案にする")"
+    embedded="
+
+$(role_sections)"
+  fi
   if has_ideas; then
     given_ideas=("$ideas_dir"/*.md)
     ideas_note="
-探索の回が採用した案（${#given_ideas[@]} 件）が $ideas_dir にある。.claude/auto-plan.md の手順どおり、この回で調査・前準備・実装の Issue に分ける。渡すのはこの回だけ。
+探索の回が採用した案（${#given_ideas[@]} 件）が $ideas_dir にある。${plan_procedure}、この回で調査・前準備・実装の Issue に分ける。渡すのはこの回だけ。
 "
   fi
-  prompt="このリポジトリの自動開発ワークフローの、企画の回として起動された。.claude/auto-plan.md を読み、その手順どおりに次の作業を Issue の案にする。
+  prompt="$opening
 人は見ていないので、確認を待たずに進める。コードは変えない。GitHub には接続できない（gh は使えない）。Issue にするのは起動スクリプトが行う。
 今ある Issue（開いているものは本文つき、閉じたものはタイトルだけ）は $plan_input にある。判断待ちの Issue と、「やらない」と決めて閉じた Issue には、本人の判断とワークフローのコメントを付けてある。そこで退けられた案は、新しい理由なしに出し直さない。
 Issue の案は、1件につき1ファイルで $plan_dir に作る（ファイル名は 01.md、02.md … で、着手してほしい順）。${plan_max} 件まで。これは上限で、埋める必要はない。出す価値のある案がなければ、1つも作らずに終わる。
@@ -1100,7 +1143,7 @@ Issue の案は、1件につき1ファイルで $plan_dir に作る（ファイ�
 - 3行目（前提の Issue がある案だけ）: depends: に続けて、前提をカンマ区切りで書く。同じ回の案はファイル名の番号（01）、今ある開いている Issue は #番号（#52）。前提にできる同じ回の案は、自分より番号の小さいファイルだけ。この行がある案は、前提がすべて完了で閉じるまで着手されない（起動スクリプトが auto-ready の代わりに auto-blocked を付け、閉じたら付け替える）
 - そのあと: Issue の本文
 $ideas_note
-$(cat "$config")"
+$(cat "$config")$embedded"
   allowed=("${readonly_tools[@]}" "Edit(/$plan_dir/**)")
   add_dirs=("$state_dir/plan-input" "$plan_dir")
   [ "${#given_ideas[@]}" -eq 0 ] || add_dirs+=("$ideas_dir")
@@ -1155,17 +1198,8 @@ fail() {
 
 # 手順の渡し方を決める。リポジトリに .claude/engineer.md があれば engineer スキルとつなぐ（新しい渡し方）。
 # スキルがなければ、Issue のラベルやコメントに触る前に止める（Issue は auto-ready のまま残る）
-role_procedure engineer
-case $? in
-  0) echo "渡し方: engineer スキル（$role_skill_file）と .claude/engineer.md" >> "$log" ;;
-  1) echo "渡し方: .claude/auto-dev.md" >> "$log" ;;
-  *)
-    echo "engineer スキルがありません: $role_skill_file" >> "$log"
-    # Issue は auto-ready のまま残り、直すまで毎回の起動で同じことを知らせるので、通知は同じ文なら1日に1回まで
-    notify_once_a_day skill-engineer "が失敗" "#${issue}: engineer スキルがありません（${role_skill_file}）。make deploy-claude を確かめてください" "。ログ: ${log}"
-    exit 1
-    ;;
-esac
+# Issue は auto-ready のまま残り、直すまで毎回の起動で同じことを知らせるので、通知は同じ文なら1日に1回まで
+use_role_procedure engineer .claude/auto-dev.md "が失敗" "#${issue}: " || exit 1
 
 {
   gh issue edit "$issue" --remove-label auto-ready --add-label auto-in-progress &&
@@ -1198,17 +1232,11 @@ procedure=
 [ -n "$role_skill" ] || procedure=$(git -C "$repo" show "$base:.claude/auto-dev.md" 2>/dev/null)
 if [ -n "$role_skill" ]; then
   opening="このリポジトリの自動開発ワークフローの Engineer として起動された。"
-  read_first="末尾の <procedure>（Engineer の共通の手順）と <repository>（このリポジトリに固有の決まり）のとおりに Issue #$issue を進める。2つが同じ事柄を決めているときは <repository> を優先する。"
+  read_first=$(role_read_first Engineer " Issue #$issue を進める")
   issue_where="Issue の本文とコメントは、末尾の <issue> に入れてある（$issue_file と同じ内容）。どれも読み直さなくてよい。"
   embedded="
 
-<procedure>
-$role_skill
-</procedure>
-
-<repository>
-$role_rules
-</repository>
+$(role_sections)
 
 <issue>
 $(cat "$issue_file")
