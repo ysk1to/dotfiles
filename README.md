@@ -51,7 +51,7 @@ macOS用の設定ファイル管理リポジトリ
 - `bin/claude-auto-dev-status` - `claude-auto-dev`の状況をまとめて出す（本人待ちの判断・PRとそのURL、実行中の回、作業中と次に着手するIssue、今日の回とかかった時間、次の起動と起動の見落とし、直近にClaudeが作った・決めたもの、消えた通知）。Claudeは起動せず、GitHubと`claude-auto-dev`が残したファイルだけを読む。`--json`で集計をJSONで出す
 - `bin/claude-skill-install` - ほかの人が公開しているClaude Codeのスキルを、コミットを決めて`~/.claude/skills/`に置く。同じコミットが置いてあれば取得しない。自分が置いたのではないフォルダは置き換えない
 - `bin/claude-usage-refresh` - usage APIからプラン使用率を取得してキャッシュ（Claude Codeを起動していない間の利用もtmuxに反映する）
-- `bin/tmux-claude-auto-dev` - `claude-auto-dev-status`の結果を、tmuxのステータスバーの2行目にリポジトリごとの絵文字と件数で表示（例: `🔧 kbi  🏃 #14 12m  🙋 1  🔀 2  │  foo  ✓  │  ⏩ 20:00  🔁 4  ⏳ 1h52m`）。結果は5分キャッシュし、古くなったら裏で取り直す。実行中の回は毎回ロックから読む。ペース配分の段階がEcoかBoostのときは、次の起動の前に`🍃 Eco`・`🚀 Boost`を出す（Normalは出さない）。`--popup`で凡例と状況の全文を出す（`C-q + A`）
+- `bin/tmux-claude-auto-dev` - `claude-auto-dev-status`の結果を、tmuxのステータスバーの2行目にリポジトリごとの絵文字と件数で表示（例: `🔧 kbi  🏃 #14 12m  🙋 1  🔀 2  │  foo  ✓  │  ⏩ 20:00  🔁 4  ⏳ 1h52m`）。結果は5分キャッシュし、古くなったら裏で取り直す。実行中の回は毎回ロックから読む。ペース配分の段階がEcoかBoostのときは、次の起動の前に`🍃 Eco`・`🚀 Boost`を出す（Normalは出さない）。PRのレビューを動かすセルフホストランナー（composeのプロジェクトが`<リポジトリ名>-runner`のコンテナ）が止まっていれば、その前に`⚠ runner: <リポジトリ名>`を、Docker Desktopに届かなければ`⚠ Docker`を出す。ランナーの状況は60秒キャッシュする。`--popup`で凡例と状況の全文を出す（`C-q + A`）
 - `bin/claude-auto-dev-watch` - 自動開発の監視用のペイン。リポジトリごとの状況（実行中の回、判断待ちとPRの番号とタイトル、次の起動、今日の回とかかった時間、見落とし・失敗）、実行中の回の手順（最後の5回のツールの呼び出し）と、全リポジトリのできごとを新しい順に流し続ける。判断待ちや失敗があればペインの枠を赤くする。`claude-team`が右下のペインで起動する。`C-q + M`で右下のペインを左右に割って開け閉めする（右の列のペインが1つだけなら上下に割るので、`claude-team`のウィンドウでは閉じる前の右下に戻る。今のペインのリポジトリの分だけを出す。`--repo`で指定もできる）
 - `bin/tmux-claude-notify` - Claude Codeのフック。ペインの状態（許可待ち・完了・作業中）をtmuxに記録し、効果音を鳴らす
 - `bin/tmux-claude-panes` - 現在のセッションのClaude Codeペイン数と、許可待ち・完了の数をtmuxに表示

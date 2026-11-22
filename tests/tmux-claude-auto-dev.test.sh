@@ -30,6 +30,19 @@ if [ "$1" = --json ]; then echo "$FAKE_STATUS"; else echo "状況の全文"; fi
 EOF
   chmod +x "$tmp/status"
   export TMUX_AUTO_DEV_STATUS="$tmp/status"
+  # 偽の docker。info は FAKE_DOCKER_INFO（既定 0）で終わり、ps は FAKE_DOCKER_PS（「compose のプロジェクト<TAB>状態」の行）を出す
+  export FAKE_DOCKER_INFO=0 FAKE_DOCKER_PS=''
+  cat > "$tmp/docker" <<'EOF'
+#!/bin/bash
+echo "docker $1" >> "$FAKE_LOG"
+case "$1" in
+  info) exit "$FAKE_DOCKER_INFO" ;;
+  ps) [ -n "$FAKE_DOCKER_PS" ] && printf '%b\n' "$FAKE_DOCKER_PS" ;;
+esac
+exit 0
+EOF
+  chmod +x "$tmp/docker"
+  export TMUX_AUTO_DEV_DOCKER="$tmp/docker"
 }
 calls() { if [ -f "$FAKE_LOG" ]; then grep -c '^status --json' "$FAKE_LOG"; else echo 0; fi; }
 # 裏で取り直すので、キャッシュができるまで少し待つ（最長5秒）
@@ -164,7 +177,6 @@ assert_eq "凡例に次の起動と今日の回数・かかった時間も出す
 assert_eq "凡例に費用は出さない" "no" "$(echo "$popup" | grep -q '💰' && echo yes || echo no)"
 assert_eq "ポップアップに状況の全文を出す" "yes" "$(echo "$popup" | grep -q '状況の全文' && echo yes || echo no)"
 
-# ---- 実行中の回だけ出す（claude-auto-dev-watch が使う） ----
 # ---- ペース配分の段階 ----
 # claude-auto-dev が起動のたびに残す段階（pace/<名前>）のうち、いちばん新しいものを全体の欄に出す。Normal は出さない
 pace() { mkdir -p "$CLAUDE_AUTO_DEV_STATE_DIR/pace"; echo "$2" > "$CLAUDE_AUTO_DEV_STATE_DIR/pace/$1"; }
@@ -197,6 +209,45 @@ setup
 pace my-app boost
 assert_eq "凡例に段階を出す" "yes" "$("$bin/tmux-claude-auto-dev" --popup | grep -q '🍃 Eco.*🚀 Boost' && echo yes || echo no)"
 
+# ---- セルフホストランナー ----
+# compose のプロジェクトが「<リポジトリ名>-runner」のコンテナを、動いていないときだけ出す。docker は裏で呼び、結果を使い回す
+runners() { "$bin/tmux-claude-auto-dev" --runners; }
+setup
+FAKE_DOCKER_PS='keibai-archive-runner\trunning\nakiya-archive-runner\trunning'
+assert_eq "ランナーがすべて動いていれば何も出さない" "" "$(runners)"
+FAKE_DOCKER_PS='keibai-archive-runner\trunning\nakiya-archive-runner\texited'
+assert_eq "止まっているランナーは、リポジトリ名を出す" "⚠ runner: akiya-archive" "$(runners)"
+FAKE_DOCKER_PS='keibai-archive-runner\trestarting\nakiya-archive-runner\texited'
+assert_eq "再起動を繰り返しているものも出し、複数なら並べる" "⚠ runner: keibai-archive akiya-archive" "$(runners)"
+FAKE_DOCKER_PS='keibai-archive\texited\n\texited'
+assert_eq "ランナーでないコンテナは見ない" "" "$(runners)"
+setup
+FAKE_DOCKER_PS='keibai-archive-runner\trunning'
+runners > /dev/null
+FAKE_DOCKER_INFO=1
+assert_eq "Docker に届かず、前にランナーがあったなら ⚠ Docker を出す" "⚠ Docker" "$(runners)"
+setup
+FAKE_DOCKER_INFO=1
+assert_eq "ランナーを一度も見ていなければ、Docker に届かなくても出さない" "" "$(runners)"
+
+setup
+echo "[$(repo '.schedule.next_at = '"$((now + 1800))"'')]" > "$cache"
+pace my-app eco
+echo "⚠ runner: akiya-archive" > "$tmp/claude-auto-dev-runners"
+assert_eq "ランナーの警告は、全体の欄の先頭に出す" "🔧 app  ✓  │  ⚠ runner: akiya-archive  🍃 Eco  ⏩ 17:00" "$(show)"
+setup
+echo "[$(repo)]" > "$cache"
+echo "⚠ Docker" > "$tmp/claude-auto-dev-runners"
+assert_eq "全体の欄にほかに何もなくても出す" "🔧 app  ✓  │  ⚠ Docker" "$(show)"
+setup
+echo "[$(repo)]" > "$cache"
+show > /dev/null
+for _ in $(seq 25); do [ -f "$tmp/claude-auto-dev-runners" ] && break; sleep 0.2; done
+assert_eq "ランナーの状況は、裏で取り直してキャッシュする" "yes" "$([ -f "$tmp/claude-auto-dev-runners" ] && echo yes || echo no)"
+setup
+assert_eq "凡例にランナーの警告を出す" "yes" "$("$bin/tmux-claude-auto-dev" --popup | grep -q '⚠ runner' && echo yes || echo no)"
+
+# ---- 実行中の回だけ出す（claude-auto-dev-watch が使う） ----
 setup
 running my-app '{"mode":"plan","issue":null,"started_at":1}'
 assert_eq "--running で実行中の回を名前ごとに JSON で出す" '{"my-app":{"mode":"plan","issue":null,"started_at":1}}' "$("$bin/tmux-claude-auto-dev" --running)"
