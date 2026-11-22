@@ -21,12 +21,17 @@ else
   response=$(fetch) || exit 1
 fi
 
-# "2026-11-16T04:50:00.368943+00:00" のような UTC の時刻を UNIX 時刻に直す
+# "2026-11-16T04:50:00.368943+00:00" のような UTC の時刻を UNIX 時刻に直す。
+# Fable だけの週の枠は limits の weekly_scoped にあり、あれば seven_day_fable として足す
 limits=$(echo "$response" | jq -ce '
   def epoch: sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601;
   def window(w): w | select(.utilization != null and .resets_at != null)
     | {used_percentage: (.utilization | floor), resets_at: (.resets_at | epoch)};
+  def fable: first(.limits[]? | select(.kind == "weekly_scoped" and .scope.model.display_name == "Fable")
+    | select(.percent != null and .resets_at != null)
+    | {used_percentage: (.percent | floor), resets_at: (.resets_at | epoch)});
   {five_hour: window(.five_hour), seven_day: window(.seven_day)}
+  + ([fable] | if length > 0 then {seven_day_fable: .[0]} else {} end)
 ' 2>/dev/null) || exit 1
 
 mkdir -p "$(dirname "$cache")"

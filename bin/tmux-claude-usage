@@ -1,6 +1,7 @@
 #!/bin/bash
 # claude-statusline と claude-usage-refresh がキャッシュしたプランの使用率を tmux のステータスバー向けに出力する。
-# 例: ⏳ 5h ▰▰▱▱▱ 42% ↻16:00 📆 7d ▰▱▱▱▱ 18%
+# 例: ⏳ 5h ▰▰▱▱▱ 42% ↻16:00 📆 7d ▰▱▱▱▱ 18% 🪶 Fable ▰▱▱▱▱ 35%
+# Fable の週の枠（seven_day_fable）は、キャッシュにあるときだけ出す
 # 使用率は 50% 未満を緑、80% 未満を黄、それ以上を赤で表示する
 
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-rate-limits.json"
@@ -26,5 +27,6 @@ jq -r --argjson now "$(date +%s)" '
       | "\(name) #[fg=\(color($p))]\(bar($p)) #[bold]\($p)%#[nobold,fg=default]"
     else "\(name) --" end;
   def reset(w): if active(w) then " #[fg=colour248]↻\(w.resets_at | strflocaltime("%H:%M"))#[fg=default]" else "" end;
-  "\(seg("⏳ 5h"; .five_hour))\(reset(.five_hour)) \(seg("📆 7d"; .seven_day))"
+  def fable: if active(.seven_day_fable) then " \(seg("🪶 Fable"; .seven_day_fable))" else "" end;
+  "\(seg("⏳ 5h"; .five_hour))\(reset(.five_hour)) \(seg("📆 7d"; .seven_day))\(fable)"
 ' "$cache"

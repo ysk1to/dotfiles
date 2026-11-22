@@ -7,7 +7,9 @@
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-rate-limits.json"
 input=$(cat)
 
-limits=$(echo "$input" | jq -c '.rate_limits // empty')
+# rate_limits に Fable の週の枠はないので、claude-usage-refresh が書いた seven_day_fable は残す
+fable=$(jq -c '{seven_day_fable} | select(.seven_day_fable)' "$cache" 2>/dev/null)
+limits=$(echo "$input" | jq -c --argjson fable "${fable:-null}" '.rate_limits // empty | ($fable // {}) + .')
 if [ -n "$limits" ]; then
   mkdir -p "$(dirname "$cache")"
   echo "$limits" > "$cache.tmp" && mv "$cache.tmp" "$cache"
