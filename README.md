@@ -24,6 +24,7 @@ macOS用の設定ファイル管理リポジトリ
     - `kindle-capture/` - Kindleの本を1ページずつ撮影してPDFにする（撮影スクリプト本体も含む）
     - `book-summary/` - 書籍PDFを章ごとに要約する
     - `recruiter/` - 本人の仕事を聞き取り、Claudeに任せる仕組み（スキル・サブエージェント・定期実行・スクリプト・Lintやhook）を設計して作る。採用したあとの見直しはEvaluatorに任せる
+    - `evaluator/` - Bot（自動開発の回・PRの自動レビュー）とスキルの働きぶりを、`claude-bot-stats`の集計とNotionの開発ログなどから評価し、直す案・消してよいものを出す。作った側の見方が入らないよう、その仕組みを作った会話では新しい文脈のサブエージェントに評価させる
   - ほかの人が公開しているスキルは中身をリポジトリに入れず、`Makefile`の`EXTERNAL_SKILLS`にコミットを書いて`make deploy-claude`で取得する
     - [yomiyasu](https://github.com/nanaism/yomiyasu) - AIが書いた日本語を推敲する
     - 更新するときは、新しい版の中身を確かめてから`EXTERNAL_SKILLS`のコミットを書き換え、`make deploy-claude`を実行する
