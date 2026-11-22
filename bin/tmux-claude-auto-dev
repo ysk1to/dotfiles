@@ -4,12 +4,13 @@
 #   リポジトリごとに略称と件数を並べる（0件のものは出さない。何もなければ ✓）
 #   🏃 実行中の回（#Issue・企画・探索・精査と経過時間）/ 🙋 判断待ちの Issue / 🔀 開いている PR / 📥 着手できる Issue
 #   🚨 起動の見落とし・gh の失敗・直近の失敗の通知
-#   最後に、全リポジトリで 🍃 Eco・🚀 Boost ペース配分の段階（Normal は出さない）/ ⏩ いちばん近い次の起動 /
-#   🔁 今日の回数 / ⏳ 今日のかかった時間
+#   最後に、全リポジトリで ⚠ 止まっているセルフホストランナー / 🍃 Eco・🚀 Boost ペース配分の段階（Normal は出さない）/
+#   ⏩ いちばん近い次の起動 / 🔁 今日の回数 / ⏳ 今日のかかった時間
 #   自動開発のリポジトリがなければ何も出さない
-# 使い方: tmux-claude-auto-dev [--popup | --running]
+# 使い方: tmux-claude-auto-dev [--popup | --running | --runners]
 #   --popup で凡例と状況の全文を出す（tmux の display-popup から呼ぶ）
 #   --running で実行中の回だけを、{ リポジトリ名: ロックの run } の JSON で出す（claude-auto-dev-watch が使う）
+#   --runners でセルフホストランナーの警告だけを出す（止まっていなければ何も出さない）
 # status-interval ごとに gh を呼ばないよう、結果をキャッシュし、古くなったら裏で取り直す（待たせない）。
 # キャッシュの有効期間は TMUX_AUTO_DEV_TTL（秒、既定 300）で変更できる。
 # 実行中の回はすぐ変わるので、キャッシュでなく claude-auto-dev のロックを毎回読む
@@ -19,14 +20,38 @@ cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-auto-dev-status.json"
 ttl="${TMUX_AUTO_DEV_TTL:-300}"
 state_dir="${CLAUDE_AUTO_DEV_STATE_DIR:-$HOME/.local/state/claude-auto-dev}"
 now="${CLAUDE_AUTO_DEV_NOW:-$(date +%s)}"
+docker="${TMUX_AUTO_DEV_DOCKER:-docker}"
+runners_cache="$(dirname "$cache")/claude-auto-dev-runners"
 
 if [ "$1" = --popup ]; then
   echo "🏃 実行中の回（#Issue・企画・探索・精査と経過時間）  🙋 判断待ちの Issue  🔀 開いている PR  📥 着手できる Issue"
   echo "🚨  起動の見落とし・gh の失敗・直近の失敗の通知"
   echo "⏩ 次の起動  🔁 今日の回数  ⏳ 今日のかかった時間  ※ 全リポジトリの合計"
   echo "🍃 Eco 週の使用率が目標より上（実装だけを2時間おき）  🚀 Boost 土曜のリセット前の24時間（続けて動かす）"
+  echo "⚠ runner: <リポジトリ> PR のレビューを動かすコンテナが止まっている  ⚠ Docker Docker Desktop に届かない"
   echo
   "$status"
+  exit 0
+fi
+
+# セルフホストランナーは、compose のプロジェクトが「<リポジトリ名>-runner」のコンテナ（各リポジトリの ops/runner）。
+# 動いていないものがあれば、そのリポジトリ名を出す。Docker に届かないときは、前にランナーを見つけていたときだけ出す
+# （Docker を使わない Mac で警告を出さないため）。見つけたランナーは $runners_cache.known に残す
+check_runners() {
+  local known="$runners_cache.known" list stopped
+  if ! "$docker" info > /dev/null 2>&1; then
+    if [ -s "$known" ]; then echo "⚠ Docker"; fi
+    return 0
+  fi
+  list=$("$docker" ps -a --format '{{.Label "com.docker.compose.project"}}	{{.State}}' 2>/dev/null |
+    awk -F '\t' '$1 ~ /.-runner$/')
+  mkdir -p "$(dirname "$known")"
+  echo "$list" | cut -f 1 | sed '/^$/d' > "$known"
+  stopped=$(echo "$list" | awk -F '\t' '$1 != "" && $2 != "running" { sub(/-runner$/, "", $1); printf "%s%s", sep, $1; sep = " " }')
+  if [ -n "$stopped" ]; then echo "⚠ runner: $stopped"; fi
+}
+if [ "$1" = --runners ]; then
+  check_runners
   exit 0
 fi
 
@@ -55,6 +80,15 @@ if [ "$(age "$cache")" -ge "$ttl" ] && [ "$(age "$stamp")" -ge "$ttl" ]; then
     > /dev/null 2>&1 & )
 fi
 
+# ランナーの状況も同じように裏で取り直す。コンテナはすぐ止まりうるので、有効期間は短くする（既定 60秒）
+runner_ttl="${TMUX_AUTO_DEV_RUNNER_TTL:-60}"
+if [ "$(age "$runners_cache")" -ge "$runner_ttl" ] && [ "$(age "$runners_cache.checked")" -ge "$runner_ttl" ]; then
+  mkdir -p "$(dirname "$runners_cache")"
+  touch "$runners_cache.checked"
+  ( { check_runners > "$runners_cache.tmp" && mv "$runners_cache.tmp" "$runners_cache"; } > /dev/null 2>&1 & )
+fi
+runners=$(cat "$runners_cache" 2>/dev/null)
+
 # ペース配分の段階は、claude-auto-dev が起動のたびに pace/<名前> に残す。いちばん新しいものを出す。
 # 起動が止まっていると古い段階が残るので、3時間より古いものは出さない
 pace=
@@ -69,7 +103,7 @@ fi
 
 [ -f "$cache" ] || { echo "🔧 …"; exit 0; }
 
-jq -r --argjson running "$running" --argjson now "$now" --arg pace "$pace" '
+jq -r --argjson running "$running" --argjson now "$now" --arg pace "$pace" --arg runners "$runners" '
   def duration: (. / 60 | round) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" else "\($m)m" end;
   def elapsed: (($now - .) / 60 | floor) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" else "\($m)m" end;
   def run: if .mode == "implement" then "#\(.issue)" elif .mode == "plan" then "企画" elif .mode == "explore" then "探索" else "精査" end + " \(.started_at | elapsed)";
@@ -86,7 +120,8 @@ jq -r --argjson running "$running" --argjson now "$now" --arg pace "$pace" '
     ([.[].schedule.next_at // empty] | min) as $next
     | (map(.runs.today.count) | add) as $count
     | (map(.runs.today.duration // 0) | add) as $duration
-    | [if $pace != "" then $pace else empty end,
+    | [if $runners != "" then $runners else empty end,
+       if $pace != "" then $pace else empty end,
        if $next then "⏩ \($next | strflocaltime("%H:%M"))" else empty end,
        if $count > 0 then "🔁 \($count)  ⏳ \($duration | duration)" else empty end] as $total
     | "🔧 " + ([.[] | segment] + (if ($total | length) > 0 then [$total | join("  ")] else [] end) | join("  │  "))
