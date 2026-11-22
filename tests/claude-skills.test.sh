@@ -74,6 +74,12 @@ for dir in claude/skills/*/; do
   assert_eq "$dir の形" "" "$(check_skill "$dir")"
 done
 
+# 案のファイルを書く役割の手順に、1回の応答で書く本数の決まりがあること。
+# まとめて書くと応答が5分を超え、プロンプトキャッシュが切れて、文脈の全部を作り直すため
+for file in claude/skills/planner/SKILL.md claude/skills/researcher/ideas.md; do
+  assert_eq "$file に、1回の応答で書く案の本数の決まりがある" "1" "$(grep -c '^- Claude: 案のファイルは、1回の応答で 2〜3本までにする' "$file")"
+done
+
 if [ "$failures" -ne 0 ]; then
   echo "$failures failed"
   exit 1
