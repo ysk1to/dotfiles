@@ -691,7 +691,8 @@ sandbox_settings() {
       + {enabled: true, allowUnsandboxedCommands: false})}' 2>> "$log"
 }
 
-# Notion と Todoist は足す操作だけを許し、既存のページの書き換えは許さない
+# Notion と Todoist は足す操作だけを許し、既存のページの書き換えは許さない。
+# 足す操作を使わない段では、allowed_without で外す（手順を守ることだけを止め手にしないため）
 readonly_tools=(
   Read Glob Grep ToolSearch
   'Bash(git status:*)' 'Bash(git diff:*)' 'Bash(git log:*)' 'Bash(git show:*)' 'Bash(git rev-parse:*)'
@@ -701,6 +702,15 @@ readonly_tools=(
   mcp__claude_ai_Todoist__find-projects mcp__claude_ai_Todoist__find-sections mcp__claude_ai_Todoist__find-tasks
   mcp__claude_ai_Todoist__add-tasks
 )
+# readonly_tools から、引数の道具を除いたものを $allowed にする
+allowed_without() {
+  local tool skip
+  allowed=()
+  for tool in "${readonly_tools[@]}"; do
+    for skip in "$@"; do [ "$tool" != "$skip" ] || continue 2; done
+    allowed+=("$tool")
+  done
+}
 
 # claude が書いた案のファイル（1行目がタイトル、2行目が「labels: ラベル, …」、3行目以降が本文）を Issue にする。
 # 件数の上限と付けてよいラベルをここで守る。使い方: create_issues <必ず付けるラベル> <上限> <作った回の名前> <ファイル>…
@@ -1140,7 +1150,9 @@ $theme_text
 </theme>
 
 $(cat "$config")$embedded"
-  allowed=("${readonly_tools[@]}" "Edit(/$ideas_out/**)")
+  # 案を出す段は記録を書かない（審査の段がまとめて書く）ので、Notion のページの作成と Todoist への登録を外す
+  allowed_without mcp__claude_ai_Notion__notion-create-pages mcp__claude_ai_Todoist__add-tasks
+  allowed+=("Edit(/$ideas_out/**)")
   add_dirs=("$state_dir/plan-input" "$ideas_out")
   [ -z "$research_note" ] || add_dirs+=("$research_dir")
   run_claude "${CLAUDE_AUTO_DEV_EXPLORE_MODEL:-fable}"
@@ -1178,7 +1190,9 @@ $(role_sections)"
 落とした案は、$adopted_out/rejected.md に、名前と理由を1行ずつ書く。
 $research_note
 $(cat "$config")$embedded"
-  allowed=("${readonly_tools[@]}" "Edit(/$adopted_out/**)")
+  # 審査の段が足すのは開発ログの Notion のページだけで、判断待ちは作らないので、Todoist への登録を外す
+  allowed_without mcp__claude_ai_Todoist__add-tasks
+  allowed+=("Edit(/$adopted_out/**)")
   add_dirs=("$state_dir/plan-input" "$ideas_out" "$adopted_out")
   [ -z "$research_note" ] || add_dirs+=("$research_dir")
   run_claude "${CLAUDE_AUTO_DEV_JUDGE_MODEL:-fable}"
