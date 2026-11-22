@@ -234,17 +234,10 @@ read -r fable_used fable_reset <<< "$(usage_of seven_day_overage_included)"
 
 # 段階の呼び名は Eco・Normal・Boost（値は eco・normal・boost。tmux-claude-auto-dev がステータスバーに出す）。
 # 目標は、週の経過に比例した使用率。目標より上なら控え（eco）、近ければ今までどおり（normal）、
-# リセット前の24時間か、夜間に大きく下回っていれば速める（boost）。読みがなければ決めない（今までどおりで、起動の間隔も見ない）。
-# 下回っていても日中は速めない。日中は本人が対話のセッションで使うので、同じ5時間の枠を先に使わないようにする。
-# リセット前の24時間（土曜）は、残りがリセットで消えるので時間帯を問わない
+# リセット前の24時間（土曜）だけ速める（boost）。残りがリセットで消えるので、時間帯を問わない。
+# 目標を下回っていても、ほかの日は速めない。週の初めから速めると使いすぎ、週の後半に対話のセッションの分が残らないため。
+# 読みがなければ決めない（今までどおりで、起動の間隔も見ない）
 hour=$((10#$(date -r "$now" +%H)))
-boost_from="${CLAUDE_AUTO_DEV_BOOST_FROM:-0}"
-boost_until="${CLAUDE_AUTO_DEV_BOOST_UNTIL:-8}"
-if [ "$boost_from" -lt "$boost_until" ]; then
-  { [ "$hour" -ge "$boost_from" ] && [ "$hour" -lt "$boost_until" ] && boost_hours=yes; } || boost_hours=no
-else
-  { { [ "$hour" -ge "$boost_from" ] || [ "$hour" -lt "$boost_until" ]; } && boost_hours=yes; } || boost_hours=no
-fi
 pace=
 if [ -n "$week_used" ]; then
   while [ "$week_reset" -le "$now" ]; do
@@ -253,8 +246,7 @@ if [ -n "$week_used" ]; then
   done
   week_left=$((week_reset - now))
   week_target=$(((604800 - week_left) * 100 / 604800))
-  if [ "$week_left" -le 86400 ] ||
-    { [ "$boost_hours" = yes ] && [ "$week_used" -le $((week_target - ${CLAUDE_AUTO_DEV_PACE_UNDER:-10})) ]; }; then
+  if [ "$week_left" -le 86400 ]; then
     pace=boost
   elif [ "$week_used" -ge $((week_target + ${CLAUDE_AUTO_DEV_PACE_OVER:-5})) ]; then
     pace=eco
