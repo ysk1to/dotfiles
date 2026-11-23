@@ -3,6 +3,9 @@
 # Claude Code の statusLine から呼ばれる。
 # プランの使用率（rate_limits）を tmux 用にキャッシュし、ステータス行を出力する。
 # 例: 🤖 Opus 5.5 ⚡medium │ 📂 ~/dotfiles │ 🌿 master │ 🧠 94.5K ▰▱▱▱▱▱▱▱▱▱ 9% │ 🔖 dotfiles差分の統合提案 │ 📦 v2.1.311
+# 文脈の作り直しになる場面では、🧠 の後ろに印を出す（線は claude-context-guard と同じ CLAUDE_CONTEXT_WARN_TOKENS）。
+# - プロンプトキャッシュが切れた: ❄️ キャッシュ切れ（作り直し 180K）
+# - 文脈が線以上: 🔀 モデル切替で作り直し
 
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-rate-limits.json"
 input=$(cat)
@@ -19,7 +22,7 @@ cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // empty')
 branch=$([ -n "$cwd" ] && git -C "$cwd" --no-optional-locks branch --show-current 2>/dev/null)
 
 # コンテキスト使用率は 50% 未満を緑、80% 未満を黄、それ以上を赤で表示する
-echo "$input" | jq -r --arg home "$HOME" --arg branch "$branch" '
+echo "$input" | jq -r --arg home "$HOME" --arg branch "$branch" --argjson line "${CLAUDE_CONTEXT_WARN_TOKENS:-150000}" '
   def esc(c): "\u001b[\(c)m";
   def paint(c): "\(esc(c))\(.)\(esc("0"))";
   def human: if . >= 1000 then "\(. / 100 | floor / 10)K" else "\(.)" end;
@@ -30,11 +33,15 @@ echo "$input" | jq -r --arg home "$HOME" --arg branch "$branch" '
   | (.context_window.used_percentage // 0 | floor) as $pct
   | (if $pct >= 80 then "1;31" elif $pct >= 50 then "1;33" else "1;32" end) as $color
   | ((.workspace.current_dir // .cwd // "") | if startswith($home) then "~" + .[($home | length):] else . end) as $dir
+  | (.prompt_cache // {}) as $cache
   | [
       "🤖 \(.model.display_name | paint("1;38;5;209"))\(if .effort.level then " \(.effort.level | effort_icon)\(.effort.level | paint("38;5;180"))" else "" end)",
       "📂 \($dir | paint("1;36"))",
       (if $branch != "" then "🌿 \($branch | paint("1;35"))" else empty end),
       "🧠 \($tokens | human) \(bar($pct) | paint($color)) \("\($pct)%" | paint($color))",
+      (if $cache.caching_observed and $cache.warm == false then "❄️ \("キャッシュ切れ（作り直し \($cache.recache_tokens_if_cold // $tokens | human)）" | paint("1;31"))"
+       elif $tokens >= $line then "🔀 \("モデル切替で作り直し" | paint("33"))"
+       else empty end),
       (if .session_name then "🔖 \(.session_name | paint("3;38;5;153"))" else empty end),
       "📦 \("v\(.version)" | paint("2"))"
     ]

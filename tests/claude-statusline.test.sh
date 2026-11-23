@@ -46,6 +46,38 @@ echo '{"model":{"display_name":"Fable 5"},"version":"2.1.311"}' | "$bin/claude-s
 assert_eq "rate_limits がなければキャッシュを変えない" \
   '{"five_hour":{"used_percentage":1,"resets_at":1}}' "$(cat "$cache")"
 
+# コンテキストが tokens で、prompt_cache が $2（省けばなし）の入力を作る
+context_input() {
+  jq -cn --argjson tokens "$1" --argjson cache "${2:-null}" '
+    {model: {display_name: "Fable 5"}, version: "2.1.311",
+     context_window: {used_percentage: 50, current_usage: {input_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: ($tokens - 1)}}}
+    + (if $cache then {prompt_cache: $cache} else {} end)'
+}
+has() { grep -q "$1" && echo yes || echo no; }
+warm='{"warm":true,"caching_observed":true,"recache_tokens_if_cold":180000}'
+cold='{"warm":false,"caching_observed":true,"recache_tokens_if_cold":180000}'
+
+# キャッシュが切れたら、作り直す量と一緒に知らせる（文脈の大きさによらない）
+setup
+unset CLAUDE_CONTEXT_WARN_TOKENS
+out=$(context_input 100000 "$cold" | "$bin/claude-statusline")
+assert_eq "キャッシュが切れたら知らせる" "yes" "$(echo "$out" | has 'キャッシュ切れ')"
+assert_eq "作り直す量を出す" "yes" "$(echo "$out" | has '作り直し 180K')"
+assert_eq "キャッシュがあれば知らせない" "no" "$(context_input 100000 "$warm" | "$bin/claude-statusline" | has 'キャッシュ切れ')"
+assert_eq "キャッシュを使っていなければ知らせない" "no" \
+  "$(context_input 100000 '{"warm":false,"caching_observed":false}' | "$bin/claude-statusline" | has 'キャッシュ切れ')"
+assert_eq "作り直す量がわからなければ今の文脈の量を出す" "yes" \
+  "$(context_input 100000 '{"warm":false,"caching_observed":true,"recache_tokens_if_cold":null}' | "$bin/claude-statusline" | has '作り直し 100K')"
+
+# 文脈が線（既定 15万）以上のあいだ、モデルを切り替えると作り直しになる印を出す
+assert_eq "線以上ならモデルの切り替えの印を出す" "yes" "$(context_input 150000 "$warm" | "$bin/claude-statusline" | has 'モデル切替で作り直し')"
+assert_eq "線未満なら印を出さない" "no" "$(context_input 149999 "$warm" | "$bin/claude-statusline" | has 'モデル切替で作り直し')"
+assert_eq "prompt_cache がなくても線以上なら印を出す" "yes" "$(context_input 150000 | "$bin/claude-statusline" | has 'モデル切替で作り直し')"
+assert_eq "キャッシュが切れていれば切り替えの印は出さない" "no" "$(context_input 150000 "$cold" | "$bin/claude-statusline" | has 'モデル切替で作り直し')"
+export CLAUDE_CONTEXT_WARN_TOKENS=100000
+assert_eq "線は CLAUDE_CONTEXT_WARN_TOKENS で変えられる" "yes" "$(context_input 100000 "$warm" | "$bin/claude-statusline" | has 'モデル切替で作り直し')"
+unset CLAUDE_CONTEXT_WARN_TOKENS
+
 if [ "$failures" -ne 0 ]; then
   echo "$failures failed"
   exit 1
