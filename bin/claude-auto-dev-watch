@@ -116,7 +116,7 @@ frame() {
       | rule("── 実行中 \($label) \($r | run)"),
         (($steps[.name] // [])[] | "\(.name)\(" " * ([6 - (.name | length), 0] | max)) \(.target)");
     (map({key: .name, value: .label}) | from_entries) as $labels
-    | (["auto-dev  \($now | strflocaltime("%H:%M"))", (.[] | repo), (.[] | live)] | map(trunc($cols))) as $head
+    | ([(.[] | repo), (.[] | live)] | map(trunc($cols))) as $head
     | {start: "🏃", end: "🏁", pr: "🔀", issue: "📝", decision: "🙋", fail: "🚨", notice: "💬"} as $icons
     | [$events | split("\n")[] | select(. != "") | split("\t") | select(length >= 4) | .[0] |= tonumber]
     | [sort_by(.[0])[] | "\(.[0] | when) \($labels[.[1]] // .[1][0:3]) \($icons[.[2]] // "・") \(.[3:] | join(" "))" | trunc($cols)]
