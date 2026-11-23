@@ -3,6 +3,9 @@
 # Anthropic の usage API からプランの使用率を取得し、claude-statusline と同じ形式でキャッシュする。
 # Claude Code を起動していない間も、デスクトップアプリなど他端末での利用を tmux に反映するために使う。
 # トークンは Claude Code がキーチェーンに保存したものを使う（非公式 API のため、仕様が変わると取得できなくなる）
+# --print: キャッシュに書くのに加えて、記録用の要約を1行の JSON で出す（claude-auto-dev が回を始めるときに使う）。
+#   キャッシュの中身に、取得した時刻（at）、週の枠の使った場所ごとの内訳（breakdown。枠に対する%）、
+#   Fable が週の枠の何%を使ったか（fable_share_of_week）を足したもの
 
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-rate-limits.json"
 
@@ -36,3 +39,13 @@ limits=$(echo "$response" | jq -ce '
 
 mkdir -p "$(dirname "$cache")"
 echo "$limits" > "$cache.tmp" && mv "$cache.tmp" "$cache"
+
+[ "$1" = --print ] || exit 0
+# weekly_scoped_shares の limit_index は limits の位置。Fable の枠を指すものの割合を取る
+echo "$response" | jq -c --argjson limits "$limits" '
+  .limits as $all
+  | {at: (now | floor)} + $limits
+  + {breakdown: ([.seven_day_breakdown.rows[]? | {(.key): .percent_of_limit}] | add // {})}
+  + ([.weekly_scoped_shares[]? | select($all[.limit_index].scope.model.display_name == "Fable") | .used_percent_of_weekly]
+    | if length > 0 then {fable_share_of_week: .[0]} else {} end)
+'

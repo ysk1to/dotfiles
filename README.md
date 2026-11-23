@@ -56,7 +56,7 @@ macOS用の設定ファイル管理リポジトリ
 - `bin/claude-bot-stats` - Botとスキルの働きぶりを、直近の期間（既定7日、`--days`で変更）について集計する。自動開発の回の数と、その回のPR・Issue・判断待ち・失敗と失敗の理由ごとの数、Researcherが出した案と採用した案の数（`events.tsv`から）、PRの自動マージ・要確認・レビュー前の数（`gh`で、ワークフローがマージしたかで判定）、要確認のうち決まりで止まったもの（自動でマージしないファイルの変更・`no-auto-merge`）とレビューが人の判断を求めたものの数（最後の自動レビューのコメントの理由で判定）、ワークフローが作った古くなった記述を直すIssueの数と開いている数、スキルが呼ばれた回数（`~/.claude/projects`の会話の記録から）。件数だけを出し、中身は出さない。`--json`でJSONを出す。Evaluatorが評価の材料に使う
 - `bin/claude-auto-dev-status` - `claude-auto-dev`の状況をまとめて出す（本人待ちの判断・PRとそのURL、実行中の回、作業中と次に着手するIssue、今日の回とかかった時間、次の起動と起動の見落とし、直近にClaudeが作った・決めたもの、消えた通知）。Claudeは起動せず、GitHubと`claude-auto-dev`が残したファイルだけを読む。`--json`で集計をJSONで出す
 - `bin/claude-skill-install` - ほかの人が公開しているClaude Codeのスキルを、コミットを決めて`~/.claude/skills/`に置く。同じコミットが置いてあれば取得しない。自分が置いたのではないフォルダは置き換えない
-- `bin/claude-usage-refresh` - usage APIからプラン使用率を取得してキャッシュ（Claude Codeを起動していない間の利用もtmuxに反映する）
+- `bin/claude-usage-refresh` - usage APIからプラン使用率を取得してキャッシュ（Claude Codeを起動していない間の利用もtmuxに反映する）。`--print`で、取得した時刻・週の枠の使った場所ごとの内訳・Fableが週の枠の何%を使ったかを足した要約を、1行のJSONで出す
 - `bin/tmux-claude-auto-dev` - `claude-auto-dev-status`の結果を、tmuxのステータスバーの2行目にリポジトリごとの絵文字と件数で表示（例: `🔧 kbi  🏃 #14 12m  🙋 1  🔀 2  │  foo  ✓  │  ⏩ 20:00  🔁 4  ⏳ 1h52m`）。結果は5分キャッシュし、古くなったら裏で取り直す。実行中の回は毎回ロックから読む。ペース配分の段階がEcoかBoostのときは、次の起動の前に`🍃 Eco`・`🚀 Boost`を出す（Normalは出さない）。PRのレビューを動かすセルフホストランナー（composeのプロジェクトが`<リポジトリ名>-runner`のコンテナ）が止まっていれば、その前に`⚠ runner: <リポジトリ名>`を、Docker Desktopに届かなければ`⚠ Docker`を出す。ランナーの状況は60秒キャッシュする。`--popup`で凡例と状況の全文を出す（`C-q + A`）
 - `bin/claude-auto-dev-watch` - 自動開発の監視用のペイン。リポジトリごとの状況（実行中の回、判断待ちとPRの番号とタイトル、次の起動、今日の回とかかった時間、見落とし・失敗）、実行中の回の手順（最後の5回のツールの呼び出し）と、全リポジトリのできごとを新しい順に流し続ける。判断待ちや失敗があればペインの枠を赤くする。`claude-team`が右下のペインで起動する。`C-q + M`で右下のペインを左右に割って開け閉めする（右の列のペインが1つだけなら上下に割るので、`claude-team`のウィンドウでは閉じる前の右下に戻る。今のペインのリポジトリの分だけを出す。`--repo`で指定もできる）
 - `bin/tmux-claude-notify` - Claude Codeのフック。ペインの状態（許可待ち・完了・作業中）をtmuxに記録し、効果音を鳴らす
@@ -141,6 +141,7 @@ make check
   - 企画の回と精査の回が付けるラベル（`auto-planned`・`auto-finding`・`auto-reviewed`・`auto-decided`・`protected`・`p2`など）がリポジトリになければ、スクリプトが作る。すでにあるラベルには触らない。`p1`は本人が使うラベルなので、必要なら手で作る
   - Issueの一覧は1000件まで取得する（`gh`の既定の30件で切ると、古いIssueが着手の候補や重複の確認から外れるため）。`CLAUDE_AUTO_DEV_ISSUE_LIMIT`で変えられる
   - `CLAUDE_AUTO_DEV_DAILY_MAX`を指定すると、実装の回を1日にその回数までにする（企画の回は数えない）。起動の回数を増やしても、使用量とレビュー待ちが増えすぎないようにするため
+  - 使用率: 週の枠と5時間の枠は、各回の出力（`rate_limit_event`）から読む。Fableの枠は、回を始めるときに`claude-usage-refresh --print`でusage APIから取る（Fableの回の出力にしか出ないので、Opusの回だけが続くと古い読みのまま止まるため）。取れなければ各回の出力から読む。取れた値は、リポジトリの名前を付けて`~/.local/state/claude-auto-dev/usage.jsonl`に1行ずつ残す（自動開発と対話のセッションの使用量を分けて数えるため）。テストなどでは`CLAUDE_AUTO_DEV_USAGE_REFRESH`で取り方を変えられる
   - 失敗したとき・何も残さずに終わったとき・時間の上限を超えたとき・前の回が途中で止まって`auto-in-progress`が残っていたときは、Issueを`needs-decision`にしてmacOSの通知で知らせる
   - 使用量の上限で止まったときは、時間がたてば解けるので、失敗として扱わない。解除の時刻を`~/.local/state/claude-auto-dev/usage-limit`に残し、上限は全リポジトリで共有なので、その時刻まではどのリポジトリの回もClaudeを起動しない。実装の回は、Issueを`auto-ready`に戻して、解除の時刻をコメントする。企画の回と精査の回は、Issueに何も反映せず、解除のあとに間隔を待たずにやり直す
   - `--restricted`と`--permission-mode dontAsk`で起動する。ユーザーの設定（グローバルの`CLAUDE.md`・許可・フック）は読まず、ファイルの読み書きは作業ディレクトリと受け渡し用のファイルに限り、WebFetchは使えない。決まりは各リポジトリの`.claude/auto-dev.md`に書く
