@@ -359,7 +359,17 @@ usage_of() {
 }
 read -r week_used week_reset <<< "$(usage_of seven_day)"
 read -r hours_used hours_reset <<< "$(usage_of five_hour)"
-read -r fable_used fable_reset <<< "$(usage_of seven_day_overage_included)"
+# Fable の枠は、Fable の回のログにしか出ない。Opus の回だけが続くと古い読みのまま止まるので、usage API から取る。
+# 取れたら、あとで自動開発と対話のセッションの使用量を分けて数えられるよう、リポジトリの名前を付けて記録に1行足す。
+# 取れなければ（非公式の API のため、仕様が変わることがある）、ログの読みを使う
+usage_api=$(eval "${CLAUDE_AUTO_DEV_USAGE_REFRESH:-$(dirname "$0")/claude-usage-refresh --print}" 2>/dev/null |
+  jq -c --arg repo "$name" 'select(.seven_day_fable) | {repo: $repo} + .' 2>/dev/null)
+if [ -n "$usage_api" ]; then
+  echo "$usage_api" >> "$state_dir/usage.jsonl"
+  read -r fable_used fable_reset <<< "$(jq -r '.seven_day_fable | "\(.used_percentage) \(.resets_at)"' <<< "$usage_api")"
+else
+  read -r fable_used fable_reset <<< "$(usage_of seven_day_overage_included)"
+fi
 # 解除の時刻を過ぎた読みは、もう使った量ではない
 [ "${hours_reset:-0}" -gt "$now" ] || hours_used=0
 [ "${fable_reset:-0}" -gt "$now" ] || fable_used=0

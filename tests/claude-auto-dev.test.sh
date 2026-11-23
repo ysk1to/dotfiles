@@ -31,6 +31,8 @@ setup() {
   export CLAUDE_AUTO_DEV_CONFIG_DIR="$tmp/config"
   export CLAUDE_AUTO_DEV_STATE_DIR="$tmp/state"
   export CLAUDE_AUTO_DEV_SKILLS_DIR="$tmp/skills"
+  # 使用率の API は呼ばない（取れなかったときと同じ）。api_usage で値を返すようにする
+  export CLAUDE_AUTO_DEV_USAGE_REFRESH=false
   export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
   export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
   git init -q --bare -b main "$tmp/origin.git"
@@ -1846,6 +1848,42 @@ assert_eq "追加の利用を求めるエラーで止まった回は、失敗で
 assert_eq "追加の利用を求めるエラーでも、全体の解除の時刻は残さない" "no" "$([ -e "$(usage_limit_file)" ] && echo yes || echo no)"
 assert_eq "追加の利用を求めるエラーなら、週のリセットまで Fable の回を休む" "$week_reset" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/fable-limit" 2>/dev/null)"
 assert_eq "追加の利用を求めるエラーは、失敗としてではなく知らせる" "notice" "$(cut -f3 "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" | tail -n 1)"
+
+# Fable の枠は、回を始めるときに usage API（claude-usage-refresh --print）から取る。Fable の枠は Fable の回のログにしか
+# 出ないので、Opus の回だけが続くと古い読みのまま止まるため。使い方: api_usage <Fable の枠（%）>
+api_usage() {
+  export CLAUDE_AUTO_DEV_USAGE_REFRESH="echo '{\"at\":$CLAUDE_AUTO_DEV_NOW,\"seven_day\":{\"used_percentage\":50,\"resets_at\":$week_reset},\"seven_day_fable\":{\"used_percentage\":$1,\"resets_at\":$week_reset},\"breakdown\":{\"claude_code\":46}}'"
+}
+setup
+usage 0.1 0.5
+api_usage 64
+run
+assert_eq "Fable の枠がログになくても、API の値を使う" "yes" "$(events | grep -q 'Fable の枠 64%' && echo yes || echo no)"
+setup
+usage 0.1 0.5 0.19
+api_usage 64
+run
+assert_eq "Fable の枠は、ログの読みより API の値を使う" "yes" "$(events | grep -q 'Fable の枠 64%' && echo yes || echo no)"
+setup
+usage 0.1 0.5 0.19
+run
+assert_eq "API で取れなければ、ログの読みを使う" "yes" "$(events | grep -q 'Fable の枠 19%' && echo yes || echo no)"
+setup
+enable_plan
+usage 0.1 0.5
+api_usage 100
+run
+assert_eq "API の値で Fable の枠が尽きていれば、企画しない" "opus" "$(args_after --model)"
+setup
+usage 0.1 0.5
+api_usage 64
+run
+assert_eq "API で取った値に、リポジトリの名前を付けて記録に1行足す" '{"repo":"my-app","at":'"$wed"',"fable":64,"claude_code":46}' \
+  "$(jq -c '{repo, at, fable: .seven_day_fable.used_percentage, claude_code: .breakdown.claude_code}' "$CLAUDE_AUTO_DEV_STATE_DIR/usage.jsonl" 2>/dev/null)"
+setup
+usage 0.1 0.5
+run
+assert_eq "API で取れなければ、記録に足さない" "no" "$([ -s "$CLAUDE_AUTO_DEV_STATE_DIR/usage.jsonl" ] && echo yes || echo no)"
 
 # 1日に1回、週の枠の見通しを知らせる
 outlook() { events | grep -c '週の枠'; }

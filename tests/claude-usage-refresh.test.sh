@@ -50,6 +50,36 @@ assert_eq "Fable の週の枠もキャッシュに書き込む" \
   '{"five_hour":{"used_percentage":5,"resets_at":1794804600},"seven_day":{"used_percentage":45,"resets_at":1795262400},"seven_day_fable":{"used_percentage":35,"resets_at":1795262400}}' \
   "$(cat "$cache" 2>/dev/null)"
 
+# --print では、キャッシュに書くのに加えて、記録用の要約を1行で出す。
+# 週の枠の内訳（seven_day_breakdown）は使った場所ごとの枠に対する割合、Fable の割合（weekly_scoped_shares）は週の枠に対する割合
+api_response_full='{
+  "five_hour": {"utilization": 5.0, "resets_at": "2026-11-16T04:50:00.368943+00:00"},
+  "seven_day": {"utilization": 45.0, "resets_at": "2026-11-21T12:00:00.368963+00:00"},
+  "limits": [
+    {"kind": "session", "percent": 5, "resets_at": "2026-11-16T04:50:00.368943+00:00", "scope": null},
+    {"kind": "weekly_all", "percent": 45, "resets_at": "2026-11-21T12:00:00.368963+00:00", "scope": null},
+    {"kind": "weekly_scoped", "percent": 35, "resets_at": "2026-11-21T12:00:00.687188+00:00",
+     "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}}
+  ],
+  "seven_day_breakdown": {"rows": [
+    {"key": "claude_code", "percent": 92, "percent_of_limit": 41},
+    {"key": "cowork", "percent": 8, "percent_of_limit": 4}
+  ]},
+  "weekly_scoped_shares": [{"limit_index": 2, "used_percent_of_weekly": 17, "allowance_percent_of_weekly": 50}]
+}'
+setup
+out=$(CLAUDE_USAGE_FETCH="echo '$api_response_full'" "$bin/claude-usage-refresh" --print)
+assert_eq "--print で、記録用の要約を出す" \
+  '{"five_hour":{"used_percentage":5,"resets_at":1794804600},"seven_day":{"used_percentage":45,"resets_at":1795262400},"seven_day_fable":{"used_percentage":35,"resets_at":1795262400},"breakdown":{"claude_code":41,"cowork":4},"fable_share_of_week":17}' \
+  "$(jq -c 'del(.at)' <<< "$out")"
+assert_eq "--print の要約に、取得した時刻を入れる" "yes" \
+  "$(jq -e '.at | type == "number" and . > 1794000000' <<< "$out" > /dev/null && echo yes || echo no)"
+assert_eq "--print でも、キャッシュには内訳を書かない" \
+  '{"five_hour":{"used_percentage":5,"resets_at":1794804600},"seven_day":{"used_percentage":45,"resets_at":1795262400},"seven_day_fable":{"used_percentage":35,"resets_at":1795262400}}' \
+  "$(cat "$cache" 2>/dev/null)"
+setup
+assert_eq "--print がなければ、何も出さない" "" "$(CLAUDE_USAGE_FETCH="echo '$api_response_full'" "$bin/claude-usage-refresh")"
+
 # 取得に失敗したときは既存のキャッシュを残す
 setup
 echo '{"five_hour":{"used_percentage":1,"resets_at":1}}' > "$cache"
