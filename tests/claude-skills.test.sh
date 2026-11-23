@@ -74,6 +74,15 @@ for dir in claude/skills/*/; do
   assert_eq "$dir の形" "" "$(check_skill "$dir")"
 done
 
+# 案や記録を書く役割の手順に、応答を分けて書く決まりがあること。
+# 1回の応答（考える時間と書く時間の合計）が5分を超えると、プロンプトキャッシュが切れて、文脈の全部を作り直すため
+assert_rule() {
+  assert_eq "$1 に、応答を分けて書く決まりがある" "1" "$(grep -c "$2" "$1")"
+}
+assert_rule claude/skills/planner/SKILL.md '^- Claude: 案のファイルは、応答を分けて書く。読んで考えたあとの最初の応答では1本だけ書き、そのあとは1回の応答で2本までにする'
+assert_rule claude/skills/researcher/ideas.md '^- Claude: 案のファイルは、1回の応答で 2〜3本までにする'
+assert_rule claude/skills/researcher/judge.md '^- Claude: 結果と記録は、応答を分けて書く。審査を終えたあとの最初の応答では `rejected.md` だけを書き'
+
 if [ "$failures" -ne 0 ]; then
   echo "$failures failed"
   exit 1
