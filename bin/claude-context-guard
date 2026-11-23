@@ -1,10 +1,14 @@
 #!/bin/bash
-# Claude Code のフック（PostToolUse・UserPromptSubmit）から呼ばれ、コンテキストが自動圧縮に近づいたら
-# 圧縮で経緯が失われる前に Notion へ途中経過を記録するよう、会話に指示を差し込む。
-# 1回促したら、圧縮などでしきい値を下回るまでは繰り返さない。
-# しきい値は CLAUDE_CONTEXT_WARN_TOKENS で変更できる（既定 250000。autoCompactWindow より小さくする）
+# Claude Code のフック（PostToolUse・UserPromptSubmit）から呼ばれ、コンテキストが大きくなったセッションで次の2つをする。
+# - 長くあけた再開（UserPromptSubmit）: プロンプトキャッシュが切れていて、送ると文脈の全部を作り直すので、
+#   送信を1回だけ止めて知らせる。もう一度送れば通る。
+# - 引き継ぎ: 新しいセッションに移れるよう、Notion に「次にやること」まで記録するよう、会話に指示を差し込む。
+#   1回促したら、圧縮などでしきい値を下回るまでは繰り返さない。
+# しきい値は CLAUDE_CONTEXT_WARN_TOKENS（既定 150000）、あける時間は CLAUDE_RESUME_GAP_MINUTES（既定 60。
+# キャッシュの期限に合わせる）で変更できる
 
-threshold="${CLAUDE_CONTEXT_WARN_TOKENS:-250000}"
+threshold="${CLAUDE_CONTEXT_WARN_TOKENS:-150000}"
+gap_minutes="${CLAUDE_RESUME_GAP_MINUTES:-60}"
 state_dir="${XDG_CACHE_HOME:-$HOME/.cache}/claude-context-guard"
 
 input=$(cat)
@@ -13,21 +17,38 @@ session=$(echo "$input" | jq -r '.session_id // empty')
 event=$(echo "$input" | jq -r '.hook_event_name // "PostToolUse"')
 [ -f "$transcript" ] && [ -n "$session" ] || exit 0
 
-# 最後の応答で送ったコンテキストの量
-tokens=$(tail -n 200 "$transcript" |
-  jq -R 'fromjson? | select(.type == "assistant") | .message.usage // empty
-    | (.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)' |
+# 最後の応答で送ったコンテキストの量と、その応答の時刻（わからなければ 0）
+read -r tokens last < <(tail -n 200 "$transcript" |
+  jq -Rr 'fromjson? | select(.type == "assistant") | select(.message.usage)
+    | "\(.message.usage | (.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)) \(
+      .timestamp // "" | sub("\\.[0-9]+Z$"; "Z") | try fromdateiso8601 catch 0)"' |
   tail -n 1)
 [ -n "$tokens" ] || exit 0
 
 marker="$state_dir/$session"
+resumed="$state_dir/$session.resumed"
 if [ "$tokens" -lt "$threshold" ]; then
-  rm -f "$marker"
+  rm -f "$marker" "$resumed"
   exit 0
 fi
-[ -f "$marker" ] && exit 0
-mkdir -p "$state_dir" && touch "$marker"
+mkdir -p "$state_dir"
 
-message="コンテキストが約$((tokens / 10000))万トークンになり、まもなく自動圧縮されます。Notion に記録する作業なら、圧縮で経緯が失われる前に、今の作業の区切り（なければ今すぐ）で開発ログに途中経過（何をしたか・なぜか・次にやること）を追記し、必要ならプロジェクトページの現状と決定事項も更新してください。"
+minutes=$((($(date +%s) - last) / 60))
+if [ "$event" = UserPromptSubmit ] && [ "$last" -gt 0 ] && [ "$minutes" -ge "$gap_minutes" ]; then
+  if [ ! -f "$resumed" ]; then
+    touch "$resumed"
+    size="文脈の約$((tokens / 10000))万トークンを作り直します。"
+    [ "$tokens" -ge 300000 ] && size="文脈の約$((tokens / 10000))万トークンをまるごと作り直す、大きな作り直しになります。"
+    reason="前の応答から${minutes}分あいていて、プロンプトキャッシュが切れています。このまま送ると、${size}続けるなら、もう一度送信してください。新しいセッションに移るなら、開発ログの「次にやること」を確かめてから /clear してください。"
+    jq -n --arg reason "$reason" '{decision: "block", reason: $reason}'
+    exit 0
+  fi
+  rm -f "$resumed"
+fi
+
+[ -f "$marker" ] && exit 0
+touch "$marker"
+
+message="コンテキストが約$((tokens / 10000))万トークンになりました。長くあけて再開すると文脈の全部を作り直すので、新しいセッションに移れるようにしておきます。Notion に記録する作業なら、今の作業の区切り（なければ今すぐ）で開発ログに途中経過（何をしたか・なぜか・次にやること）を追記し、必要ならプロジェクトページの現状と決定事項も更新してください。次にやることは、新しいセッションがそれだけを読んで続けられるように書いてください。"
 jq -n --arg event "$event" --arg message "$message" \
   '{hookSpecificOutput: {hookEventName: $event, additionalContext: $message}}'
