@@ -193,7 +193,8 @@ assert_eq "Issue があれば claude を1回起動する" "1" "$(claude_calls)"
 assert_eq "origin/main の最新で起動する（手元の clone は古いまま）" "$main_sha" "$(grep '^claude head=' "$FAKE_LOG" | cut -d= -f2)"
 assert_eq "手元のリポジトリの外の worktree で起動する" "no" "$(grep '^claude pwd=' "$FAKE_LOG" | grep -q "^claude pwd=$repo\$" && echo yes || echo no)"
 prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
-assert_eq "プロンプトで手順のファイルを読ませる" "yes" "$(echo "$prompt" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+assert_eq "手順がないとき、Issue を進めるよう伝える" "yes" "$(echo "$prompt" | grep -q 'Issue #1 を進める' && echo yes || echo no)"
+assert_eq "手順がないとき、.claude/auto-dev.md を読ませない" "no" "$(echo "$prompt" | grep -q 'auto-dev.md' && echo yes || echo no)"
 system_prompt=$(sed -n '/^claude arg=--append-system-prompt$/{n;p;}' "$FAKE_LOG")
 assert_eq "システムプロンプトで日本語で書くよう指示する" "yes" "$(echo "$system_prompt" | grep -q '日本語' && echo yes || echo no)"
 assert_eq "プロンプトに設定ファイルの中身を入れる" "yes" "$(grep -q 'https://example.com/notion' "$FAKE_LOG" && echo yes || echo no)"
@@ -201,20 +202,6 @@ assert_eq "キャッシュの保持を5分にして claude を起動する（回
 assert_eq "時間の上限の既定は1時間" "yes" "$(grep -qx 'sleep 3600' "$FAKE_LOG" && echo yes || echo no)"
 assert_eq "キャッシュの保持の設定を、起動した側の環境に残さない" "" "$FORCE_PROMPT_CACHING_5M"
 
-# 手順（.claude/auto-dev.md）と Issue の中身はプロンプトに入れて渡す（読むためのターンを使わせない）
-setup
-(cd "$tmp/seed" && mkdir -p .claude && echo "手順の中身です" > .claude/auto-dev.md && git add .claude && git commit -qm procedure && git push -q origin main)
-"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-prompt=$(awk '/^claude arg=-p$/ { on = 1; next } on && /^claude arg=--/ { on = 0 } on' "$FAKE_LOG" | sed 's/^claude arg=//')
-assert_eq "手順の中身をプロンプトに入れる" "yes" "$(echo "$prompt" | grep -q '手順の中身です' && echo yes || echo no)"
-assert_eq "Issue の本文をプロンプトに入れる" "yes" "$(echo "$prompt" | grep -q '本文です' && echo yes || echo no)"
-assert_eq "Issue のコメントを、仕分けの見出しと一緒にプロンプトに入れる" "yes" "$(echo "$prompt" | grep -B1 'A にしてください' | grep -q '本人の判断' && echo yes || echo no)"
-assert_eq "中身を入れたときは、読み直さなくてよいと伝える" "yes" "$(echo "$prompt" | grep -q '読み直さなくてよい' && echo yes || echo no)"
-assert_eq "手元の clone にない手順も、origin/main から入れる" "no" "$([ -f "$repo/.claude/auto-dev.md" ] && echo yes || echo no)"
-assert_eq ".claude/engineer.md がなければ、古い渡し方で動いたとログに残す" "yes" "$(grep -q '^渡し方: .claude/auto-dev.md' "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log && echo yes || echo no)"
-
-# リポジトリに .claude/engineer.md があれば、engineer スキルの本文を <procedure> に、.claude/engineer.md を <repository> に入れる。
-# スキルの frontmatter は入れない。.claude/auto-dev.md もあるときも、こちらの渡し方にする
 fake_skill() {
   mkdir -p "$CLAUDE_AUTO_DEV_SKILLS_DIR/engineer"
   printf '%s\n' '---' 'name: engineer' 'description: Engineer の共通の手順' '---' '' '# スキルの本文です' '' '---' '区切りのあとの本文です' \
@@ -224,6 +211,35 @@ push_claude_file() {
   (cd "$tmp/seed" && mkdir -p .claude && echo "$2" > ".claude/$1" && git add .claude && git commit -qm "$1" && git push -q origin main)
 }
 section_of() { echo "$prompt" | awk -v tag="$1" '$0 == "</" tag ">" { on = 0 } on; $0 == "<" tag ">" { on = 1 }'; }
+
+# 手順（engineer スキルと .claude/engineer.md）と Issue の中身はプロンプトに入れて渡す（読むためのターンを使わせない）
+setup
+fake_skill
+push_claude_file engineer.md "リポジトリの決まりです"
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+prompt=$(awk '/^claude arg=-p$/ { on = 1; next } on && /^claude arg=--/ { on = 0 } on' "$FAKE_LOG" | sed 's/^claude arg=//')
+assert_eq "Issue の本文をプロンプトに入れる" "yes" "$(echo "$prompt" | grep -q '本文です' && echo yes || echo no)"
+assert_eq "Issue のコメントを、仕分けの見出しと一緒にプロンプトに入れる" "yes" "$(echo "$prompt" | grep -B1 'A にしてください' | grep -q '本人の判断' && echo yes || echo no)"
+assert_eq "中身を入れたときは、読み直さなくてよいと伝える" "yes" "$(echo "$prompt" | grep -q '読み直さなくてよい' && echo yes || echo no)"
+assert_eq "手元の clone にない手順も、origin/main から入れる" "no" "$([ -f "$repo/.claude/engineer.md" ] && echo yes || echo no)"
+
+# .claude/auto-dev.md だけがあるリポジトリでは、手順がないときと同じに動く。古い手順は Claude に渡さない
+setup
+push_claude_file auto-dev.md "古い手順の中身です"
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+code=$?
+prompt=$(awk '/^claude arg=-p$/ { on = 1; next } on && /^claude arg=--/ { on = 0 } on' "$FAKE_LOG" | sed 's/^claude arg=//')
+label="auto-dev.md だけがあるとき"
+assert_eq "${label}、成功で終わる" "0" "$code"
+assert_eq "${label}、手順がないときと同じに claude を起動する" "1" "$(claude_calls)"
+assert_eq "${label}、Issue を進めるよう伝える" "yes" "$(echo "$prompt" | head -n 1 | grep -q 'Issue #1 を進める' && echo yes || echo no)"
+assert_eq "${label}、古い手順の中身を Claude に渡さない" "no" "$(grep -q '古い手順の中身です' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "${label}、.claude/auto-dev.md を読ませない" "no" "$(echo "$prompt" | grep -q 'auto-dev.md' && echo yes || echo no)"
+assert_eq "${label}、<procedure> を入れない" "no" "$(echo "$prompt" | grep -qx '<procedure>' && echo yes || echo no)"
+assert_eq "${label}、Issue のファイルの場所を伝える" "yes" "$(echo "$prompt" | grep -qF "$CLAUDE_AUTO_DEV_STATE_DIR/issue/my-app.md" && echo yes || echo no)"
+
+# リポジトリに .claude/engineer.md があれば、engineer スキルの本文を <procedure> に、.claude/engineer.md を <repository> に入れる。
+# スキルの frontmatter は入れない。.claude/auto-dev.md もあるときも、こちらの渡し方にする
 for both in no yes; do
   setup
   fake_skill
@@ -615,12 +631,31 @@ setup
 assert_eq "判断待ちを通知する" "1" "$(grep -c '^osascript.*判断待ち' "$FAKE_LOG")"
 
 # ---- 企画の回 ----
-# リポジトリに企画の手順（.claude/auto-plan.md）があれば、決まった間隔（既定は6時間）で、
+# リポジトリに企画の決まり（.claude/planner.md）があれば、決まった間隔（既定は6時間）で、
 # 実装の代わりに企画の回を起動する。claude は Issue の案をファイルに書き、スクリプトが Issue にする。
 # 作る件数は、着手できる auto-ready の Issue が目標の件数（既定は8件）になるまで
+# 役割のスキルの偽物。setup のたびに CLAUDE_AUTO_DEV_SKILLS_DIR が空になるので、使う回ごとに作る
+fake_planner_skill() {
+  mkdir -p "$CLAUDE_AUTO_DEV_SKILLS_DIR/planner"
+  printf '%s\n' '---' 'name: planner' 'description: Planner の共通の手順' '---' '' '# Planner のスキルの本文です' \
+    > "$CLAUDE_AUTO_DEV_SKILLS_DIR/planner/SKILL.md"
+}
+fake_auditor_skill() {
+  mkdir -p "$CLAUDE_AUTO_DEV_SKILLS_DIR/auditor"
+  printf '%s\n' '---' 'name: auditor' 'description: Auditor の共通の手順' '---' '' '# Auditor のスキルの本文です' \
+    > "$CLAUDE_AUTO_DEV_SKILLS_DIR/auditor/SKILL.md"
+}
+fake_researcher_skill() {
+  mkdir -p "$CLAUDE_AUTO_DEV_SKILLS_DIR/researcher"
+  printf '%s\n' '---' 'name: researcher' 'description: Researcher の共通の手順' '---' '' '# Researcher の SKILL.md の本文です' \
+    > "$CLAUDE_AUTO_DEV_SKILLS_DIR/researcher/SKILL.md"
+  printf '%s\n' '# 調査の段のスキルの本文です' '' '---' '区切りのあとの調査の段の本文です' > "$CLAUDE_AUTO_DEV_SKILLS_DIR/researcher/research.md"
+  printf '%s\n' '# 案を出す段のスキルの本文です' '' '---' '区切りのあとの案を出す段の本文です' > "$CLAUDE_AUTO_DEV_SKILLS_DIR/researcher/ideas.md"
+  printf '%s\n' '# 審査の段のスキルの本文です' '' '---' '区切りのあとの審査の段の本文です' > "$CLAUDE_AUTO_DEV_SKILLS_DIR/researcher/judge.md"
+}
 enable_plan() {
-  (cd "$tmp/seed" && mkdir -p .claude && echo 企画の手順 > .claude/auto-plan.md && git add .claude &&
-    git commit -qm plan && git push -q origin main)
+  fake_planner_skill
+  push_claude_file planner.md 企画の手順
 }
 issue_creates() { sed -n 's/^gh issue create arg=//p' "$FAKE_LOG" 2>/dev/null; }
 plan_dir() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/plan/my-app"; }
@@ -633,7 +668,7 @@ FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&
 assert_eq "企画の回は成功で終わる" "0" "$?"
 assert_eq "企画の手順があれば、企画の回を起動する" "1" "$(claude_calls)"
 prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
-assert_eq "企画の回は企画の手順を読ませる" "yes" "$(echo "$prompt" | grep -q '.claude/auto-plan.md' && echo yes || echo no)"
+assert_eq "企画の回は企画の手順を読ませる" "yes" "$(echo "$prompt" | grep -q 'Planner として起動された' && echo yes || echo no)"
 assert_eq "企画の回の既定のモデルは fable" "fable" "$(args_after --model)"
 assert_eq "企画の回は Issue に着手しない" "0" "$(grep -c '^gh issue edit' "$FAKE_LOG")"
 creates=$(issue_creates)
@@ -668,18 +703,18 @@ setup
 enable_plan
 FAKE_ISSUES=$(ready_issues 8) "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
-assert_eq "auto-ready が8件あれば実装の回にする" "yes" "$(echo "$prompt" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+assert_eq "auto-ready が8件あれば実装の回にする" "yes" "$(echo "$prompt" | grep -q 'Issue #[0-9]* を進める' && echo yes || echo no)"
 assert_eq "実装の回の既定のモデルは opus のまま" "opus" "$(args_after --model)"
 setup
 enable_plan
 FAKE_ISSUES=$(ready_issues 7) "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
-assert_eq "auto-ready が7件なら企画する（少なくなるのを待たない）" "yes" "$(echo "$prompt" | grep -q '.claude/auto-plan.md' && echo yes || echo no)"
+assert_eq "auto-ready が7件なら企画する（少なくなるのを待たない）" "yes" "$(echo "$prompt" | grep -q 'Planner として起動された' && echo yes || echo no)"
 setup
 enable_plan
 CLAUDE_AUTO_DEV_PLAN_TARGET=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 prompt=$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG")
-assert_eq "目標の件数を環境変数で変えられる" "yes" "$(echo "$prompt" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+assert_eq "目標の件数を環境変数で変えられる" "yes" "$(echo "$prompt" | grep -q 'Issue #[0-9]* を進める' && echo yes || echo no)"
 
 # 企画は決まった間隔で起動する。前の企画から間隔（既定は6時間）がたっていなければ、main が進んでいても企画しない
 setup
@@ -689,7 +724,7 @@ FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "間隔がたっていなければ企画しない" "1" "$(claude_calls)"
 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "間隔がたっていない回は、auto-ready があれば実装する" "yes" "$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG" | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+assert_eq "間隔がたっていない回は、auto-ready があれば実装する" "yes" "$(sed -n '/^claude arg=-p$/{n;p;}' "$FAKE_LOG" | grep -q 'Issue #[0-9]* を進める' && echo yes || echo no)"
 echo $(($(date +%s) - 21601)) > "$(plan_last)"
 FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "6時間たったら、もう一度企画する" "3" "$(claude_calls)"
@@ -903,12 +938,12 @@ FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "前の回の残りのファイルは Issue にしない" "0" "$(grep -c '^gh issue create' "$FAKE_LOG")"
 
 # ---- 精査の回 ----
-# リポジトリに精査の手順（.claude/auto-plan-review.md）があれば、決まった間隔（既定は1日）で、企画が作った Issue
+# リポジトリに精査の決まり（.claude/auditor.md）があれば、決まった間隔（既定は1日）で、企画が作った Issue
 # （auto-planned）のうち、まだ精査していないものを別の回で精査する。企画と同じ回にしないのは、案を書いた流れに
 # 引きずられないようにするため。claude は問題のある Issue だけ <番号>.md を書き、スクリプトが Issue に反映する
 enable_review() {
-  (cd "$tmp/seed" && mkdir -p .claude && echo 精査の手順 > .claude/auto-plan-review.md && git add .claude &&
-    git commit -qm review && git push -q origin main)
+  fake_auditor_skill
+  push_claude_file auditor.md 精査の手順
 }
 review_dir() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/review/my-app"; }
 review_last() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/review-last/my-app"; }
@@ -925,7 +960,7 @@ enable_review
 FAKE_ALL_ISSUES="$planned" FAKE_REVIEW_FILES=7 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "精査の回は成功で終わる" "0" "$?"
 assert_eq "精査の回は claude を1回起動する" "1" "$(claude_calls)"
-assert_eq "精査の回は精査の手順を読ませる（企画・実装より先）" "yes" "$(last_prompt | grep -q '.claude/auto-plan-review.md' && echo yes || echo no)"
+assert_eq "精査の回は精査の手順を読ませる（企画・実装より先）" "yes" "$(last_prompt | grep -q 'Auditor として起動された' && echo yes || echo no)"
 assert_eq "精査の回の既定のモデルは fable" "fable" "$(args_after --model)"
 input="$CLAUDE_AUTO_DEV_STATE_DIR/review-input/my-app.md"
 assert_eq "精査する Issue の本文を渡す" "yes" "$(grep -q '本文7' "$input" && grep -q '本文8' "$input" && echo yes || echo no)"
@@ -980,25 +1015,25 @@ setup
 enable_review
 FAKE_ALL_ISSUES="$planned" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 FAKE_ALL_ISSUES="$planned" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "間隔がたっていなければ精査せず、実装に進む" "yes" "$(last_prompt | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+assert_eq "間隔がたっていなければ精査せず、実装に進む" "yes" "$(last_prompt | grep -q 'Issue #[0-9]* を進める' && echo yes || echo no)"
 echo $(($(date +%s) - 86401)) > "$(review_last)"
 FAKE_ALL_ISSUES="$planned" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "1日たったら、もう一度精査する" "yes" "$(last_prompt | grep -q '.claude/auto-plan-review.md' && echo yes || echo no)"
+assert_eq "1日たったら、もう一度精査する" "yes" "$(last_prompt | grep -q 'Auditor として起動された' && echo yes || echo no)"
 echo $(($(date +%s) - 100)) > "$(review_last)"
 FAKE_ALL_ISSUES="$planned" CLAUDE_AUTO_DEV_REVIEW_INTERVAL=60 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "精査の間隔を環境変数（秒）で変えられる" "yes" "$(last_prompt | grep -q '.claude/auto-plan-review.md' && echo yes || echo no)"
+assert_eq "精査の間隔を環境変数（秒）で変えられる" "yes" "$(last_prompt | grep -q 'Auditor として起動された' && echo yes || echo no)"
 
 # 精査する Issue がなければ、精査の回を起動しない。作業中の Issue は対象にしない
 setup
 enable_review
 FAKE_ALL_ISSUES='[{"number":9,"title":"精査済み","state":"OPEN","labels":[{"name":"auto-planned"},{"name":"auto-reviewed"}],"body":"","author":{"login":"me"}},{"number":12,"title":"作業中","state":"OPEN","labels":[{"name":"auto-planned"},{"name":"in-progress"}],"body":"","author":{"login":"me"}}]' \
   "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "精査する Issue がなければ実装に進む" "yes" "$(last_prompt | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+assert_eq "精査する Issue がなければ実装に進む" "yes" "$(last_prompt | grep -q 'Issue #[0-9]* を進める' && echo yes || echo no)"
 
 # 精査の手順がないリポジトリでは、精査しない
 setup
 FAKE_ALL_ISSUES="$planned" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "精査の手順がなければ精査しない" "yes" "$(last_prompt | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+assert_eq "精査の手順がなければ精査しない" "yes" "$(last_prompt | grep -q 'Issue #[0-9]* を進める' && echo yes || echo no)"
 
 # 精査が失敗したら、Issue に何もせずに通知する。すぐにはくり返さない
 setup
@@ -1027,7 +1062,7 @@ setup
 enable_review
 FAKE_MERGED_PRS="$merged" FAKE_REVIEW_NEW=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "PR を巡回する精査の回は成功で終わる" "0" "$?"
-assert_eq "精査する Issue がなくても、未精査のマージ済み PR があれば精査する" "yes" "$(last_prompt | grep -q '.claude/auto-plan-review.md' && echo yes || echo no)"
+assert_eq "精査する Issue がなくても、未精査のマージ済み PR があれば精査する" "yes" "$(last_prompt | grep -q 'Auditor として起動された' && echo yes || echo no)"
 input="$CLAUDE_AUTO_DEV_STATE_DIR/review-input/my-app.md"
 assert_eq "マージ済み PR の番号・タイトル・マージコミット・本文を渡す" "yes" "$(grep -q '#20 一覧を足す' "$input" && grep -q 'abc123' "$input" && grep -q 'PR本文20' "$input" && echo yes || echo no)"
 assert_eq "手元の作業の PR も渡す" "yes" "$(grep -q '#21 手元の作業' "$input" && grep -q 'def456' "$input" && echo yes || echo no)"
@@ -1069,7 +1104,7 @@ assert_eq "巡回しない PR は渡さない" "no" "$(grep -q 'def456' "$CLAUDE
 setup
 enable_review
 FAKE_MERGED_PRS='[{"number":22,"title":"精査済み","labels":[{"name":"auto-reviewed"}],"mergeCommit":{"oid":"fff999"},"body":"","author":{"login":"me"}}]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "精査する Issue も PR もなければ実装に進む" "yes" "$(last_prompt | grep -q '.claude/auto-dev.md' && echo yes || echo no)"
+assert_eq "精査する Issue も PR もなければ実装に進む" "yes" "$(last_prompt | grep -q 'Issue #[0-9]* を進める' && echo yes || echo no)"
 
 # 精査が失敗したら、PR を精査済みにせず、Issue も作らない
 setup
@@ -1312,7 +1347,7 @@ assert_eq "精査の回が上限で止まったら Issue に反映しない" "no
 assert_eq "精査の回が上限で止まったら、解除の時刻を残す" "$reset_at" "$(cat "$(usage_limit_file)" 2>/dev/null)"
 echo $(($(date +%s) - 1)) > "$(usage_limit_file)"
 FAKE_ALL_ISSUES="$planned" FAKE_REVIEW_FILES=7 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "精査の回が上限で止まったら、間隔を待たずに解除のあとに精査し直す" "yes" "$(last_prompt | grep -q '.claude/auto-plan-review.md' && echo yes || echo no)"
+assert_eq "精査の回が上限で止まったら、間隔を待たずに解除のあとに精査し直す" "yes" "$(last_prompt | grep -q 'Auditor として起動された' && echo yes || echo no)"
 
 # ---- 前提の Issue（依存関係） ----
 # auto-blocked の Issue は、本文の「前提の Issue: #N …」がすべて完了で閉じたら、auto-ready に付け替える
@@ -1365,10 +1400,17 @@ FAKE_ISSUES='[]' FAKE_CREATE_SEQ=1 FAKE_PLAN_COUNT=2 FAKE_PLAN_TEXT_2=$'🤖 [ad
 assert_eq "判断待ちの案は、前提があっても auto-blocked にしない（前提の行は書く）" "auto-planned needs-decision " "$(create_labels 2)"
 
 # ---- 探索の回 ----
-# リポジトリに探索の手順（.claude/auto-explore.md と auto-explore-judge.md）があれば、決まった間隔（既定は3日半）で
+# リポジトリに探索の決まり（.claude/researcher-ideas.md と researcher-judge.md）があれば、決まった間隔（既定は3日半）で
 # 探索の回を起動する。claude を2回起動し、1回目が案を出し、2回目（別の起動）が審査して採用する案を選ぶ。
 # Issue は作らない。採用された案は手元に残し、次の企画の回に渡す
 enable_explore() {
+  fake_researcher_skill
+  (cd "$tmp/seed" && mkdir -p .claude/researcher-themes && echo 探索の手順 > .claude/researcher-ideas.md &&
+    echo 審査の手順 > .claude/researcher-judge.md && echo 'お題: データ' > .claude/researcher-themes/01-data.md &&
+    echo 'お題: 検索' > .claude/researcher-themes/02-search.md && git add .claude && git commit -qm explore && git push -q origin main)
+}
+# 使わなくなった古い手順のファイル（.claude/auto-explore*.md とお題のカード）。あっても読まないことを確かめるのに使う
+push_old_explore() {
   (cd "$tmp/seed" && mkdir -p .claude/auto-explore-themes && echo 探索の手順 > .claude/auto-explore.md &&
     echo 審査の手順 > .claude/auto-explore-judge.md && echo 'お題: データ' > .claude/auto-explore-themes/01-data.md &&
     echo 'お題: 検索' > .claude/auto-explore-themes/02-search.md && git add .claude && git commit -qm explore && git push -q origin main)
@@ -1400,9 +1442,9 @@ enable_explore
 FAKE_ISSUES='[]' FAKE_IDEA_COUNT=3 FAKE_JUDGE_COUNT=2 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "探索の回は成功で終わる" "0" "$?"
 assert_eq "探索の回は claude を2回起動する（案を出す段と審査の段）" "2" "$(claude_calls)"
-assert_eq "案を出す段は探索の手順を読ませる" "yes" "$(call_args_after 1 -p | grep -q '.claude/auto-explore.md' && echo yes || echo no)"
+assert_eq "案を出す段は探索の手順を読ませる" "yes" "$(call_args_after 1 -p | grep -q 'Researcher（案を出す段）' && echo yes || echo no)"
 assert_eq "案を出す段に、お題のカードの中身を渡す" "yes" "$(call_args_after 1 -p | grep -q 'お題: データ' && echo yes || echo no)"
-assert_eq "審査の段は審査の手順を読ませる" "yes" "$(call_args_after 2 -p | grep -q '.claude/auto-explore-judge.md' && echo yes || echo no)"
+assert_eq "審査の段は審査の手順を読ませる" "yes" "$(call_args_after 2 -p | grep -q 'Researcher（審査の段）' && echo yes || echo no)"
 assert_eq "探索の回の既定のモデルは fable" "fable fable" "$(echo "$(call_args_after 1 --model)" "$(call_args_after 2 --model)")"
 ideas="$CLAUDE_AUTO_DEV_STATE_DIR/explore/my-app/ideas"
 adopted="$CLAUDE_AUTO_DEV_STATE_DIR/explore/my-app/adopted"
@@ -1412,7 +1454,7 @@ assert_eq "審査の段は採用の置き場に書ける" "yes" "$(has_line "$(c
 assert_eq "審査の段は案のファイルを書き換えられない" "no" "$(has_line "$(call_args_after 2 --allowedTools)" "Edit(/$ideas/**)")"
 assert_eq "審査の段は案のファイルを読める" "yes" "$(has_line "$(call_args_after 2 --add-dir)" "$ideas")"
 assert_eq "探索の回は worktree を編集できない" "no" "$(has_line "$(call_args_after 1 --allowedTools)" "Edit(/$CLAUDE_AUTO_DEV_STATE_DIR/worktrees/my-app/**)")"
-assert_researcher_tools "古い渡し方" 1 2
+assert_researcher_tools "探索の回" 1 2
 assert_eq "探索の回も --restricted で起動する" "2" "$(grep -c '^claude arg=--restricted$' "$FAKE_LOG")"
 assert_eq "探索の回は Issue を作らない" "0" "$(grep -c '^gh issue create' "$FAKE_LOG")"
 assert_eq "採用された案を、次の企画の回のために残す" "2" "$(find "$(ideas_dir)" -name '*.md' | wc -l | tr -d ' ')"
@@ -1425,11 +1467,11 @@ assert_eq "採用の件数をできごとに残す" "yes" "$(grep -q '採用 2 �
 # 探索は決まった間隔で起動する。間隔がたっていなければ、ふつうの回（実装）にする。お題は回ごとに順に変える
 : > "$FAKE_LOG"
 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "間隔がたっていなければ探索しない（実装の回になる）" "no" "$(grep -q 'auto-explore.md' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "間隔がたっていなければ探索しない（実装の回になる）" "no" "$(grep -q 'Researcher（案を出す段）' "$FAKE_LOG" && echo yes || echo no)"
 echo $(($(date +%s) - 302400)) > "$(explore_last)"
 : > "$FAKE_LOG"
 FAKE_ISSUES='[]' FAKE_IDEA_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "3日半たったら、もう一度探索する" "yes" "$(call_args_after 1 -p | grep -q '.claude/auto-explore.md' && echo yes || echo no)"
+assert_eq "3日半たったら、もう一度探索する" "yes" "$(call_args_after 1 -p | grep -q 'Researcher（案を出す段）' && echo yes || echo no)"
 assert_eq "次の回は、次のお題にする" "yes" "$(call_args_after 1 -p | grep -q 'お題: 検索' && echo yes || echo no)"
 assert_eq "前の回のお題は渡さない" "no" "$(call_args_after 1 -p | grep -q 'お題: データ' && echo yes || echo no)"
 echo 0 > "$(explore_last)"
@@ -1444,19 +1486,13 @@ FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "案がなくても成功で終わる" "0" "$?"
 assert_eq "案がなければ審査の段を起動しない" "1" "$(claude_calls)"
 
-# 探索の手順がそろっていないリポジトリでは、探索しない
-setup
-(cd "$tmp/seed" && mkdir -p .claude && echo 探索の手順 > .claude/auto-explore.md && git add .claude && git commit -qm explore && git push -q origin main)
-FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "審査の手順がなければ探索の回を起動しない" "0" "$(claude_calls)"
-
 # 精査の回が先。探索は、精査のない回に起動する
 setup
 enable_explore
-(cd "$tmp/seed" && echo 精査の手順 > .claude/auto-plan-review.md && git add .claude && git commit -qm review && git push -q origin main)
+enable_review
 FAKE_ISSUES='[]' FAKE_ALL_ISSUES='[{"number":3,"title":"t","state":"OPEN","stateReason":null,"labels":[{"name":"auto-planned"}],"body":"b","author":{"login":"me"}}]' \
   "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "精査するものがあれば、探索より先に精査する" "yes" "$(call_args_after 1 -p | grep -q 'auto-plan-review.md' && echo yes || echo no)"
+assert_eq "精査するものがあれば、探索より先に精査する" "yes" "$(call_args_after 1 -p | grep -q 'Auditor として起動された' && echo yes || echo no)"
 
 # 審査の段が失敗したら、案を残して通知する。お題は進めず、次の間隔でやり直す
 setup
@@ -1485,7 +1521,7 @@ enable_plan
 FAKE_ISSUES='[]' FAKE_IDEA_COUNT=2 FAKE_JUDGE_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 : > "$FAKE_LOG"
 FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "採用された案があれば、次の回で企画する" "yes" "$(call_args_after 1 -p | grep -q '.claude/auto-plan.md' && echo yes || echo no)"
+assert_eq "採用された案があれば、次の回で企画する" "yes" "$(call_args_after 1 -p | grep -q 'Planner として起動された' && echo yes || echo no)"
 assert_eq "企画の回に、採用された案の場所を伝える" "yes" "$(call_args_after 1 -p | grep -qF "$(ideas_dir)" && echo yes || echo no)"
 assert_eq "企画の回は、採用された案を読める" "yes" "$(has_line "$(call_args_after 1 --add-dir)" "$(ideas_dir)")"
 assert_eq "企画の回は、採用された案を書き換えられない" "no" "$(has_line "$(call_args_after 1 --allowedTools)" "Edit(/$(ideas_dir)/**)")"
@@ -1507,12 +1543,12 @@ FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 FAKE_CREATE_FAIL=1 "$bin/claude-auto-dev" "$r
 assert_eq "Issue にできなかったら、採用された案を残す" "1" "$(find "$(ideas_dir)" -name '*.md' | wc -l | tr -d ' ')"
 
 # ---- 探索の回の調査の段 ----
-# 調査の手順（.claude/auto-explore-research.md）があれば、案を出す段の前に、Web を読む調査の段を起動する。
+# 調査の段の決まり（.claude/researcher-research.md）があれば、案を出す段の前に、Web を読む調査の段を起動する。
 # 外から読んだ文章に指示が紛れていても漏らすものがないよう、調査の段にはリポジトリも Issue も Notion も渡さない。
 # 書けるのは調査メモの置き場だけ。あとの段は、調査メモを資料として読む
 enable_research() {
   enable_explore
-  (cd "$tmp/seed" && echo 調査の手順の中身 > .claude/auto-explore-research.md && git add .claude && git commit -qm research && git push -q origin main)
+  push_claude_file researcher-research.md 調査の手順の中身
 }
 research_dir() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/explore/my-app/research"; }
 call_has_flag() { if call_log "$1" | grep -qxF "claude arg=$2"; then echo yes; else echo no; fi; }
@@ -1935,17 +1971,12 @@ assert_eq "スキルがないとき、日が変わると、もう一度通知す
 # ---- Planner の手順の渡し方 ----
 # リポジトリに .claude/planner.md があれば（.claude/auto-plan.md がなくても）、企画の回を起動し、planner スキルの本文を
 # <procedure> に、.claude/planner.md を <repository> に入れる。スキルの frontmatter は入れない
-fake_planner_skill() {
-  mkdir -p "$CLAUDE_AUTO_DEV_SKILLS_DIR/planner"
-  printf '%s\n' '---' 'name: planner' 'description: Planner の共通の手順' '---' '' '# Planner のスキルの本文です' \
-    > "$CLAUDE_AUTO_DEV_SKILLS_DIR/planner/SKILL.md"
-}
 plan_prompt() { awk '/^claude arg=-p$/ { on = 1; next } on && /^claude arg=--/ { on = 0 } on' "$FAKE_LOG" | sed 's/^claude arg=//'; }
 for both in no yes; do
   setup
   fake_planner_skill
   push_claude_file planner.md "企画のリポジトリの決まりです"
-  [ "$both" = no ] || enable_plan
+  [ "$both" = no ] || push_claude_file auto-plan.md 企画の手順
   FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
   code=$?
   prompt=$(plan_prompt)
@@ -1973,14 +2004,13 @@ prompt=$(plan_prompt)
 assert_eq "planner.md があるとき、採用された案の場所を伝える" "yes" "$(echo "$prompt" | grep -qF "$(ideas_dir)" && echo yes || echo no)"
 assert_eq "planner.md があるとき、採用された案を渡す文に auto-plan.md の名前を書かない" "no" "$(echo "$prompt" | grep -q 'auto-plan.md' && echo yes || echo no)"
 
-# .claude/auto-plan.md だけのときは、今までどおり。プロンプトの書き出しも変えない
+# .claude/auto-plan.md だけのときは、企画の回にしない（古い手順は読まない）
 setup
-enable_plan
+fake_planner_skill
+push_claude_file auto-plan.md 企画の手順
 FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-prompt=$(plan_prompt)
-assert_eq "auto-plan.md だけのとき、プロンプトの書き出しは今までどおり" "このリポジトリの自動開発ワークフローの、企画の回として起動された。.claude/auto-plan.md を読み、その手順どおりに次の作業を Issue の案にする。" "$(echo "$prompt" | head -n 1)"
-assert_eq "auto-plan.md だけのとき、<procedure> を入れない" "no" "$(echo "$prompt" | grep -qx '<procedure>' && echo yes || echo no)"
-assert_eq "auto-plan.md だけのとき、古い渡し方で動いたとログに残す" "yes" "$(grep -q '^渡し方: .claude/auto-plan.md' "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log && echo yes || echo no)"
+assert_eq "auto-plan.md だけのとき、企画の回を起動しない" "0" "$(claude_calls)"
+assert_eq "auto-plan.md だけのとき、Issue を作らない" "" "$(issue_creates)"
 
 # .claude/planner.md があってスキルがない（または空の）ときは、claude を起動せず、企画の失敗として知らせる。
 # 起動した回としては数えない（前の企画の時刻・起動の時刻を進めない）ので、直すまで毎回の起動で止まる
@@ -2011,11 +2041,6 @@ assert_eq "planner スキルがないとき、通知を抑えた回もログに�
 # リポジトリに .claude/auditor.md があれば（.claude/auto-plan-review.md がなくても）、精査の回を起動し、auditor スキルの本文を
 # <procedure> に、.claude/auditor.md を <repository> に入れる。Issue と PR が従う決まりとして、planner スキルと engineer スキルの
 # 本文を <reference name="..."> に入れる。スキルの frontmatter は入れない
-fake_auditor_skill() {
-  mkdir -p "$CLAUDE_AUTO_DEV_SKILLS_DIR/auditor"
-  printf '%s\n' '---' 'name: auditor' 'description: Auditor の共通の手順' '---' '' '# Auditor のスキルの本文です' \
-    > "$CLAUDE_AUTO_DEV_SKILLS_DIR/auditor/SKILL.md"
-}
 reference_of() { echo "$prompt" | awk -v open="<reference name=\"$1\">" '$0 == "</reference>" { on = 0 } on; $0 == open { on = 1 }'; }
 for both in no yes; do
   setup
@@ -2023,7 +2048,7 @@ for both in no yes; do
   fake_planner_skill
   fake_skill
   push_claude_file auditor.md "精査のリポジトリの決まりです"
-  [ "$both" = no ] || enable_review
+  [ "$both" = no ] || push_claude_file auto-plan-review.md 精査の手順
   FAKE_ALL_ISSUES="$planned" FAKE_REVIEW_FILES=7 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
   code=$?
   prompt=$(plan_prompt)
@@ -2063,14 +2088,13 @@ prompt=$(plan_prompt)
 assert_eq "参考のスキルがどちらもないとき、精査の回を起動する" "1" "$(claude_calls)"
 assert_eq "参考のスキルがどちらもないとき、<reference> の説明を入れない" "no" "$(echo "$prompt" | grep -q 'reference' && echo yes || echo no)"
 
-# .claude/auto-plan-review.md だけのときは、今までどおり
+# .claude/auto-plan-review.md だけのときは、精査の回にしない（古い手順は読まない）。auto-ready の Issue があるので実装の回になる
 setup
-enable_review
+fake_auditor_skill
+push_claude_file auto-plan-review.md 精査の手順
 FAKE_ALL_ISSUES="$planned" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-prompt=$(plan_prompt)
-assert_eq "auto-plan-review.md だけのとき、プロンプトの書き出しは今までどおり" "このリポジトリの自動開発ワークフローの、精査の回として起動された。.claude/auto-plan-review.md を読み、その手順どおりに、企画の回が作った Issue と、マージされた PR を精査する。" "$(echo "$prompt" | head -n 1)"
-assert_eq "auto-plan-review.md だけのとき、<procedure> を入れない" "no" "$(echo "$prompt" | grep -qx '<procedure>' && echo yes || echo no)"
-assert_eq "auto-plan-review.md だけのとき、古い渡し方で動いたとログに残す" "yes" "$(grep -q '^渡し方: .claude/auto-plan-review.md' "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log && echo yes || echo no)"
+assert_eq "auto-plan-review.md だけのとき、精査の回にしない" "yes" "$(last_prompt | grep -q 'Issue #[0-9]* を進める' && echo yes || echo no)"
+assert_eq "auto-plan-review.md だけのとき、精査の手順を渡さない" "no" "$(grep -q '精査の手順' "$FAKE_LOG" && echo yes || echo no)"
 
 # .claude/auditor.md があって auditor スキルがない（または空の）ときは、claude を起動せず、精査の失敗として知らせる。
 # 起動した回としては数えない（前の精査の時刻・起動の時刻を進めない）ので、直すまで毎回の起動で止まる
@@ -2101,14 +2125,6 @@ assert_eq "auditor スキルがないとき、通知を抑えた回もログに�
 # リポジトリに .claude/researcher-ideas.md と researcher-judge.md があれば（.claude/auto-explore.md などがなくても）、探索の回を起動し、
 # 段ごとに、researcher スキルの段のファイル（frontmatter がない）を <procedure> に、リポジトリの段のファイルを <repository> に入れる。
 # お題のカードは .claude/researcher-themes/ から選ぶ。SKILL.md は渡さない
-fake_researcher_skill() {
-  mkdir -p "$CLAUDE_AUTO_DEV_SKILLS_DIR/researcher"
-  printf '%s\n' '---' 'name: researcher' 'description: Researcher の共通の手順' '---' '' '# Researcher の SKILL.md の本文です' \
-    > "$CLAUDE_AUTO_DEV_SKILLS_DIR/researcher/SKILL.md"
-  printf '%s\n' '# 調査の段のスキルの本文です' '' '---' '区切りのあとの調査の段の本文です' > "$CLAUDE_AUTO_DEV_SKILLS_DIR/researcher/research.md"
-  printf '%s\n' '# 案を出す段のスキルの本文です' '' '---' '区切りのあとの案を出す段の本文です' > "$CLAUDE_AUTO_DEV_SKILLS_DIR/researcher/ideas.md"
-  printf '%s\n' '# 審査の段のスキルの本文です' '' '---' '区切りのあとの審査の段の本文です' > "$CLAUDE_AUTO_DEV_SKILLS_DIR/researcher/judge.md"
-}
 enable_researcher() {
   (cd "$tmp/seed" && mkdir -p .claude/researcher-themes && echo 案を出す段のリポジトリの決まりです > .claude/researcher-ideas.md &&
     echo 審査の段のリポジトリの決まりです > .claude/researcher-judge.md &&
@@ -2124,7 +2140,7 @@ for both in no yes; do
   setup
   fake_researcher_skill
   enable_researcher
-  [ "$both" = no ] || enable_explore
+  [ "$both" = no ] || push_old_explore
   FAKE_ISSUES='[]' FAKE_IDEA_COUNT=2 FAKE_JUDGE_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
   code=$?
   label="researcher-ideas.md と researcher-judge.md があるとき（auto-explore.md もある: ${both}）"
@@ -2170,7 +2186,7 @@ FAKE_ISSUES='[]' FAKE_IDEA_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&
 prompt=$(call_args_after 1 -p)
 assert_eq "新しい渡し方でも、お題が一巡したら最初に戻る" "お題: 新しいデータ" "$(section_of theme)"
 
-# .claude/researcher-themes/ がなければ、.claude/auto-explore-themes/ から選ぶ
+# .claude/researcher-themes/ がなければ、.claude/auto-explore-themes/ があっても、そのお題は渡さない
 setup
 fake_researcher_skill
 (cd "$tmp/seed" && mkdir -p .claude/auto-explore-themes && echo 案の決まり > .claude/researcher-ideas.md &&
@@ -2178,7 +2194,7 @@ fake_researcher_skill
   git add .claude && git commit -qm researcher && git push -q origin main)
 FAKE_ISSUES='[]' FAKE_IDEA_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 prompt=$(call_args_after 1 -p)
-assert_eq ".claude/researcher-themes/ がなければ、.claude/auto-explore-themes/ のお題を渡す" "お題: 古いカード" "$(section_of theme)"
+assert_eq ".claude/researcher-themes/ がなければ、.claude/auto-explore-themes/ のお題を渡さない" "（お題のカードがない。手順に従って、自分でお題を1つ決める）" "$(section_of theme)"
 
 # 片方だけでは、探索の回にしない
 setup
@@ -2268,18 +2284,15 @@ assert_eq "researcher スキルがないとき、次の起動でもまた止ま�
 assert_eq "researcher スキルがないとき、同じ日にもう一度動かしても通知は増えない" "1" "$(notice_count)"
 assert_eq "researcher スキルがないとき、通知を抑えた回もログに残す" "3" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log | grep -c '^researcher スキルがありません')"
 
-# 古い渡し方のファイルだけのときは、今までどおり。researcher スキルがあっても、プロンプトの書き出しは変えない
+# 古い手順のファイル（.claude/auto-explore*.md）だけのときは、探索の回にしない（古い手順は読まない）
 setup
 fake_researcher_skill
-enable_research
+push_old_explore
+push_claude_file auto-explore-research.md 調査の手順の中身
 FAKE_ISSUES='[]' FAKE_IDEA_COUNT=1 FAKE_JUDGE_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 label="auto-explore.md だけのとき"
-assert_eq "${label}、調査の段の書き出しは今までどおり" "自動開発ワークフローの、探索の回（調査の段）として起動された。下の <procedure> の手順どおりに、<theme> のお題について Web で調べ、調査メモを書く。" "$(call_args_after 1 -p | head -n 1)"
-assert_eq "${label}、案を出す段の書き出しは今までどおり" "このリポジトリの自動開発ワークフローの、探索の回（案を出す段）として起動された。.claude/auto-explore.md を読み、その手順どおりに、下のお題に沿って新しい案を出す。" "$(call_args_after 2 -p | head -n 1)"
-assert_eq "${label}、審査の段の書き出しは今までどおり" "このリポジトリの自動開発ワークフローの、探索の回（審査の段）として起動された。.claude/auto-explore-judge.md を読み、その手順どおりに、案を審査して採用するものを選ぶ。" "$(call_args_after 3 -p | head -n 1)"
-assert_eq "${label}、案を出す段に <repository> を入れない" "no" "$(call_args_after 2 -p | grep -qx '<repository>' && echo yes || echo no)"
-assert_eq "${label}、researcher スキルを入れない" "no" "$(grep -q 'スキルの本文です' "$FAKE_LOG" && echo yes || echo no)"
-assert_eq "${label}、古い渡し方で動いたとログに残す" "yes" "$(grep -q '^渡し方: .claude/auto-explore.md' "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log && echo yes || echo no)"
+assert_eq "${label}、探索の回を起動しない" "0" "$(claude_calls)"
+assert_eq "${label}、前の探索の時刻を残さない" "no" "$([ -f "$(explore_last)" ] && echo yes || echo no)"
 
 # ---- Go の環境 ----
 # go.mod があるリポジトリでは、go env が返す Go のキャッシュの場所を、サンドボックスの書き込み先に足す
