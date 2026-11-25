@@ -24,9 +24,13 @@ wed_night=$(at '2026-11-18 03:00')
 sat=$(at '2026-11-21 12:00')
 week_reset=$(at '2026-11-21 21:00')
 
+# setup が作るフォルダは1つのフォルダの下に置き、終わるときにまとめて消す（setup は200回以上呼ばれる）
+tmp_root=$(mktemp -d)
+trap 'rm -rf "$tmp_root"' EXIT
+
 # 偽のリモート（main に1コミット）と、それを clone した作業用のリポジトリを作る
 setup() {
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d "$tmp_root/XXXXXX")
   export CLAUDE_AUTO_DEV_NOW="$wed" CLAUDE_AUTO_DEV_BOOST_RUNS=1
   export CLAUDE_AUTO_DEV_CONFIG_DIR="$tmp/config"
   export CLAUDE_AUTO_DEV_STATE_DIR="$tmp/state"
@@ -125,7 +129,9 @@ fi
 [ -n "$FAKE_NO_RESULT" ] || echo '{"type":"result","result":"PR を作りました","num_turns":3,"total_cost_usd":0.5,"duration_ms":245000,"permission_denials":[{"tool_name":"Bash"}]}'
 exit "$FAKE_CLAUDE_EXIT"
 EOF
-  printf '#!/bin/bash\necho "sleep $1" >> "$FAKE_LOG"\nexec /bin/sleep "$@"\n' > "$tmp/bin/sleep"
+  # 見張りの sleep は claude と同時に動くので、claude の記録（FAKE_LOG）とは別に残す
+  export FAKE_SLEEP_LOG="$tmp/sleep.log"
+  printf '#!/bin/bash\necho "sleep $1" >> "$FAKE_SLEEP_LOG"\nexec /bin/sleep "$@"\n' > "$tmp/bin/sleep"
   cat > "$tmp/bin/gh" <<'EOF'
 #!/bin/bash
 [ -z "$FAKE_GH_FAIL" ] || exit 1
@@ -199,8 +205,15 @@ system_prompt=$(sed -n '/^claude arg=--append-system-prompt$/{n;p;}' "$FAKE_LOG"
 assert_eq "システムプロンプトで日本語で書くよう指示する" "yes" "$(echo "$system_prompt" | grep -q '日本語' && echo yes || echo no)"
 assert_eq "プロンプトに設定ファイルの中身を入れる" "yes" "$(grep -q 'https://example.com/notion' "$FAKE_LOG" && echo yes || echo no)"
 assert_eq "キャッシュの保持を5分にして claude を起動する（回は数分で終わるので）" "claude cache5m=1" "$(grep '^claude cache5m=' "$FAKE_LOG")"
-assert_eq "時間の上限の既定は1時間" "yes" "$(grep -qx 'sleep 3600' "$FAKE_LOG" && echo yes || echo no)"
 assert_eq "キャッシュの保持の設定を、起動した側の環境に残さない" "" "$FORCE_PROMPT_CACHING_5M"
+
+# 時間の上限は、claude と同時に動かす sleep で見張る。claude がすぐ終わると、見張りが sleep を起動する前に
+# 止められて記録が残らないことがあるので、claude に少し時間をかけさせる
+setup
+FAKE_CLAUDE_SLEEP=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "時間の上限の既定は1時間" "yes" "$(grep -qx 'sleep 3600' "$FAKE_SLEEP_LOG" && echo yes || echo no)"
+# 見張りの sleep は claude と同時に動くので、同じ記録に書くと claude の引数の行のあいだに入ることがある
+assert_eq "sleep の記録は claude の記録に混ぜない" "no" "$(grep -q '^sleep ' "$FAKE_LOG" && echo yes || echo no)"
 
 fake_skill() {
   mkdir -p "$CLAUDE_AUTO_DEV_SKILLS_DIR/engineer"
