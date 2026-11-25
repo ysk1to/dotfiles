@@ -84,6 +84,8 @@ work_created=no
 # 正常に終わった回は、起動した時刻を残す。claude-auto-dev-status は、それより前の失敗を一時的なものとみなす
 on_exit() {
   [ $? -ne 0 ] || echo "$started" > "$state_dir/ok/$name"
+  # Notion をスクリプトで扱う回（下の「Notion をスクリプトで扱う」）は、Claude が書いた開発ログを、どう終わっても送る
+  [ "${notion:-off}" != on ] || notion_send_devlogs
   [ "$work_created" = no ] || cleanup
   rm -rf "$state_dir/refs/$name" "$lock"
 }
@@ -723,6 +725,230 @@ allowed_without() {
   done
 }
 
+# ---- Notion をスクリプトで扱う ----
+# Fable の回（企画・精査・探索の案を出す段と審査の段）では、設定ファイル <リポジトリ名>.notion があり、Keychain に
+# Notion の API のトークンもあるときだけ、Notion の読み書きを Claude の道具（MCP）からこのスクリプトに移す。
+# 回の前にページを API で取って置き場に置き、Claude は開発ログをファイルに書き、回のあとにこのスクリプトが開発ログ DB に足す。
+# Notion の道具の定義と引数の取り違えにかかる分を減らすため。どちらかがなければ、今までどおり MCP で動く。
+# .notion は「project=<プロジェクトページの ID>」と「devlog=<開発ログ DB の data source の ID>」の2行。
+# トークンは引数に入れず（ps で見えるため）、curl の設定として標準入力で渡す。ログにもファイルにも書かない
+notion=off
+notion_dir="$state_dir/notion-input/$name"
+notion_failed_dir="$state_dir/notion-failed/$name"
+notion_mcp=(
+  mcp__claude_ai_Notion__notion-fetch mcp__claude_ai_Notion__notion-search
+  mcp__claude_ai_Notion__notion-query-data-sources mcp__claude_ai_Notion__notion-create-pages
+)
+# .notion とトークンがそろっていれば notion=on にする。そろわなければ 1 を返す（MCP で動く）
+notion_enable() {
+  local conf="$config_dir/$name.notion"
+  [ -f "$conf" ] || return 1
+  notion_project=$(sed -n 's/^project=//p' "$conf" | head -n 1 | tr -d '[:space:]')
+  notion_devlog=$(sed -n 's/^devlog=//p' "$conf" | head -n 1 | tr -d '[:space:]')
+  if [ -z "$notion_project" ] || [ -z "$notion_devlog" ]; then
+    echo "$name.notion に project= か devlog= がないので、Notion は MCP で扱います" >> "$log"
+    return 1
+  fi
+  notion_token=$(security find-generic-password -s notion-api-token -w 2>/dev/null)
+  if [ -z "$notion_token" ]; then
+    echo "Keychain に Notion のトークン（notion-api-token）がないので、Notion は MCP で扱います" >> "$log"
+    return 1
+  fi
+  notion=on
+  export CLAUDE_AUTO_DEV_NOTION_DIR="$notion_dir"
+}
+# 使い方: notion_api <メソッド> <パス> <応答を書くファイル> [<送る JSON のファイル>]。HTTP の状態コードを出す
+notion_api() {
+  local data=()
+  [ -z "${4:-}" ] || data=(-H 'Content-Type: application/json' --data-binary "@$4")
+  printf 'header = "Authorization: Bearer %s"\n' "$notion_token" |
+    curl -sS -K - -X "$1" -H "Notion-Version: ${CLAUDE_AUTO_DEV_NOTION_VERSION:-2026-03-11}" "${data[@]}" \
+      --max-time 30 -o "$3" -w '%{http_code}' "https://api.notion.com/v1$2" 2>> "$log"
+}
+# 応答のファイル（$1）から、取れなかった理由（状態コード $2 と、エラーの code と message の頭）を出す。
+# データベースへのリンクは、ページではないので取れない（validation_error）
+notion_reason() { echo "HTTP $2 $(jq -r '[.code, (.message // "" | .[0:120])] | map(select(. != null and . != "")) | join(": ")' "$1" 2>/dev/null)"; }
+# 文に出てくる Notion のページの URL から、ページの ID（32桁）を1行1つで出す
+notion_links() {
+  grep -oE 'https?://(app\.notion\.com|(www\.)?notion\.so)/[^] )"<>]*' "$1" 2>/dev/null | while read -r u; do
+    u=${u%%[?#]*}
+    grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}' <<< "$u" | tail -n 1 | tr -d '-'
+  done
+}
+# ページ（ID が $1）の本文を Markdown で $2 に書き、目次の行（$3 はページの役目）を $notion_index に足す。
+# 取れなければ、取れなかったページとして $notion_missing に足して 1 を返す
+notion_page() {
+  local id="$1" out="$2" res="$notion_dir/.response" code title url
+  code=$(notion_api GET "/pages/$id" "$res")
+  if [ "$code" != 200 ]; then
+    echo "- https://www.notion.so/${id}（${3}）: $(notion_reason "$res" "$code")" >> "$notion_missing"
+    return 1
+  fi
+  title=$(jq -r '[.properties[] | select(.type == "title") | .title[].plain_text] | join("")' "$res" 2>/dev/null)
+  url=$(jq -r '.url // empty' "$res" 2>/dev/null)
+  code=$(notion_api GET "/pages/$id/markdown" "$res")
+  if [ "$code" != 200 ] || ! jq -j '.markdown' "$res" > "$out" 2>/dev/null; then
+    rm -f "$out"
+    echo "- ${url:-https://www.notion.so/$id}（${3}。${title}）: $(notion_reason "$res" "$code")" >> "$notion_missing"
+    return 1
+  fi
+  local note=
+  [ "$(jq -r '.truncated' "$res" 2>/dev/null)" != true ] || note="。長すぎて途中で切れている"
+  echo "- ${out#"$notion_dir"/}: ${title:-（タイトルなし）}（${url}）— ${3}${note}" >> "$notion_index"
+}
+# 回の前に、置き場（${notion_dir}）を作り直してページを置く。取れないページがあっても止めない。
+# 取るもの: プロジェクトページの本文、そこから2段までのリンク先、このプロジェクトの開発ログの一覧（直近
+# CLAUDE_AUTO_DEV_NOTION_DEVLOGS 件）、そのうち新しいものから CLAUDE_AUTO_DEV_NOTION_DEVLOG_BODIES 件の本文
+notion_fetch() {
+  local level next id out role depth=0 seen=" " res="$notion_dir/.response" code
+  local max_devlogs="${CLAUDE_AUTO_DEV_NOTION_DEVLOGS:-20}" max_bodies="${CLAUDE_AUTO_DEV_NOTION_DEVLOG_BODIES:-5}"
+  rm -rf "$notion_dir"
+  mkdir -p "$notion_dir/pages" "$notion_dir/devlog-pages" "$notion_dir/devlog"
+  notion_index="$notion_dir/.index" notion_missing="$notion_dir/.missing"
+  : > "$notion_index"
+  : > "$notion_missing"
+  notion_project=$(tr -d '-' <<< "$notion_project")
+  # プロジェクトページから、リンクを2段までたどる（同じページは1回だけ）
+  level=$notion_project
+  while [ -n "${level// /}" ] && [ "$depth" -le 2 ]; do
+    next=
+    for id in $level; do
+      case "$seen" in *" $id "*) continue ;; esac
+      seen="$seen$id "
+      if [ "$depth" -eq 0 ]; then
+        out="$notion_dir/project.md" role=プロジェクトページ
+      else
+        out="$notion_dir/pages/$id.md" role="プロジェクトページから${depth}段目のリンク先"
+      fi
+      notion_page "$id" "$out" "$role" || continue
+      [ "$depth" -ge 2 ] || next="$next $(notion_links "$out" | tr '\n' ' ')"
+    done
+    level=$next
+    depth=$((depth + 1))
+  done
+  # このプロジェクトの開発ログを、新しい順に引く
+  jq -n --arg p "$notion_project" --argjson n "$max_devlogs" '{filter: {property: "プロジェクト", relation: {contains: $p}},
+    sorts: [{property: "日付", direction: "descending"}, {timestamp: "created_time", direction: "descending"}], page_size: $n}' > "$notion_dir/.query"
+  code=$(notion_api POST "/data_sources/$notion_devlog/query" "$res" "$notion_dir/.query")
+  if [ "$code" = 200 ]; then
+    local i=0 line d_id d_url
+    {
+      echo "# このプロジェクトの開発ログ（新しい順に ${max_devlogs} 件まで）"
+      echo
+    } > "$notion_dir/devlog-list.md"
+    while IFS=$'\t' read -r d_id d_url line; do
+      [ -n "$d_id" ] || continue
+      i=$((i + 1))
+      d_id=$(tr -d '-' <<< "$d_id")
+      if [ "$i" -le "$max_bodies" ] &&
+        notion_page "$d_id" "$notion_dir/devlog-pages/$d_id.md" "開発ログの本文"; then
+        line="${line}。本文: devlog-pages/$d_id.md"
+      fi
+      echo "- ${line}（${d_url}）" >> "$notion_dir/devlog-list.md"
+    done < <(jq -r '.results[] | [.id, .url, ((.properties["日付"].date.start // "日付なし") + " " + (.properties["種類"].select.name // "種類なし")
+      + (if .properties["反映待ち"].checkbox then " 反映待ち" else "" end) + " "
+      + ([.properties["要約"].title[]?.plain_text] | join("")))] | @tsv' "$res" 2>/dev/null)
+    echo "- devlog-list.md: このプロジェクトの開発ログの一覧（${i} 件。要約・日付・種類・反映待ち・URL）" >> "$notion_index"
+  else
+    echo "- 開発ログの一覧: $(notion_reason "$res" "$code")" >> "$notion_missing"
+  fi
+  {
+    echo "# Notion の置き場（$(date '+%Y-%m-%d %H:%M') に起動スクリプトが取得）"
+    echo
+    echo "この回のために、起動スクリプトが Notion の API で取ったページ。ページの本文は Markdown のまま置いてある。プロパティは入れていない。"
+    echo
+    echo "## ファイル"
+    echo
+    cat "$notion_index"
+    echo
+    echo "## 取れなかったページ"
+    echo
+    if [ -s "$notion_missing" ]; then cat "$notion_missing"; else echo "なし"; fi
+  } > "$notion_dir/index.md"
+  rm -f "$notion_index" "$notion_missing" "$res" "$notion_dir/.query"
+}
+# プロンプトに足す取り決め。$1 が yes なら、開発ログのファイルの書き方も伝える
+notion_note() {
+  echo "
+Notion は MCP では使えない（Notion の道具は許していない）。Notion のページは、起動スクリプトが先に取って $notion_dir に置いた。はじめに $notion_dir/index.md（目次と、取れなかったページ）を読み、要るファイルを選んで読む。置き場にないページは読めない。"
+  if [ "$1" = yes ]; then
+    echo "開発ログは、Notion に書く代わりに $notion_dir/devlog/ に1件1ファイル（01.md、02.md …）で書く。回のあとに起動スクリプトが開発ログ DB に足す。プロジェクト・日付・ツール・実行は起動スクリプトが埋めるので書かない。形は次のとおり。
+- 1行目から4行: 「要約: …」「種類: 決定・実装・調査・設定・その他のどれか」「リンク: URL（なければ空）」「反映待ち: はい」か「反映待ち: いいえ」
+- 空行のあと: 本文（Markdown）"
+  else
+    echo "この段は開発ログは書かない。"
+  fi
+  echo "手順（<procedure>・<repository>）や設定に、Notion の MCP の道具での読み書きが書いてあっても、ここの取り決めに従う。"
+}
+# $allowed から Notion の MCP の4つを外し、置き場を読めるようにする。$1 が yes なら、開発ログのファイルを書けるようにする
+notion_tools() {
+  local keep=() tool skip
+  [ "$notion" = on ] || return 0
+  for tool in "${allowed[@]}"; do
+    for skip in "${notion_mcp[@]}"; do [ "$tool" != "$skip" ] || continue 2; done
+    keep+=("$tool")
+  done
+  allowed=("${keep[@]}")
+  [ "$1" != yes ] || allowed+=("Edit(/$notion_dir/devlog/**)")
+  add_dirs+=("$notion_dir")
+}
+# 回のあとに、開発ログのファイルを開発ログ DB に足す。形が違うものと送れなかったものは $notion_failed_dir に残して知らせる。
+# 終わったら置き場を消す
+notion_send_devlogs() {
+  local f head body summary kind link pending code sent=0 failed=0 res="$notion_dir/.response" req="$notion_dir/.request"
+  [ "$notion" = on ] && [ -d "$notion_dir" ] || return 0
+  for f in "$notion_dir"/devlog/*; do
+    [ -f "$f" ] || continue
+    head=$(awk 'NF == 0 { exit } 1' "$f")
+    body=$(awk 'started { print; next } NF == 0 { started = 1 }' "$f")
+    summary=$(sed -n 's/^要約:[[:space:]]*//p' <<< "$head" | head -n 1)
+    kind=$(sed -n 's/^種類:[[:space:]]*//p' <<< "$head" | head -n 1 | tr -d '[:space:]')
+    link=$(sed -n 's/^リンク:[[:space:]]*//p' <<< "$head" | head -n 1 | tr -d '[:space:]')
+    pending=$(sed -n 's/^反映待ち:[[:space:]]*//p' <<< "$head" | head -n 1 | tr -d '[:space:]')
+    case "$pending" in
+      はい | yes | true) pending=true ;;
+      いいえ | no | false | "") pending=false ;;
+      *) pending= ;;
+    esac
+    case "$kind" in 決定 | 実装 | 調査 | 設定 | その他) ;; *) kind= ;; esac
+    code=
+    if [ -n "$summary" ] && [ -n "$kind" ] && [ -n "$pending" ]; then
+      jq -n --arg ds "$notion_devlog" --arg project "$notion_project" --arg summary "$summary" --arg kind "$kind" \
+        --arg link "$link" --argjson pending "$pending" --arg day "$(date -r "$now" +%Y-%m-%d)" --arg body "$body" '{
+          parent: {type: "data_source_id", data_source_id: $ds},
+          properties: {
+            "要約": {title: [{text: {content: $summary}}]},
+            "プロジェクト": {relation: [{id: $project}]},
+            "日付": {date: {start: $day}},
+            "種類": {select: {name: $kind}},
+            "ツール": {select: {name: "Claude Code"}},
+            "実行": {select: {name: "自動"}},
+            "リンク": {url: (if $link == "" then null else $link end)},
+            "反映待ち": {checkbox: $pending}},
+          markdown: $body}' > "$req"
+      code=$(notion_api POST /pages "$res" "$req")
+    fi
+    if [ "$code" = 200 ]; then
+      echo "開発ログを Notion に足しました: $summary" >> "$log"
+      sent=$((sent + 1))
+    else
+      echo "開発ログを Notion に足せませんでした（$(basename "$f")）: ${code:+$(notion_reason "$res" "$code")}${code:-形が違う}" >> "$log"
+      mkdir -p "$notion_failed_dir" && cp "$f" "$notion_failed_dir/${log_name%.log}-$(basename "$f")"
+      failed=$((failed + 1))
+    fi
+  done
+  rm -rf "$notion_dir"
+  [ "$failed" -eq 0 ] || notify "の開発ログ" "Notion に足せなかった開発ログが ${failed} 件あります: ${notion_failed_dir}。ログ: ${log}"
+}
+# Fable の回の前に呼ぶ。.notion とトークンがそろっていれば、置き場にページを取って置き、Notion の MCP の4つを禁止に入れる
+notion_prepare() {
+  notion_enable || return 0
+  notion_fetch
+  disallowed+=("${notion_mcp[@]}")
+}
+# スクリプトで扱うときだけ、プロンプトに足す取り決めを出す
+notion_prompt() { [ "$notion" != on ] || notion_note "$1"; }
+
 # claude が書いた案のファイル（1行目がタイトル、2行目が「labels: ラベル, …」、3行目以降が本文）を Issue にする。
 # 件数の上限と付けてよいラベルをここで守る。使い方: create_issues <必ず付けるラベル> <上限> <作った回の名前> <ファイル>…
 # Issue にできなかった件数を $skipped に足す。$failed_dir があれば、Issue にできなかったファイルをそこに残す
@@ -942,6 +1168,7 @@ if [ "$mode" = review ]; then
   embedded="
 
 $(role_sections)$references"
+  notion_prepare
   prompt="$opening
 人は見ていないので、確認を待たずに進める。コードは変えない。GitHub には接続できない（gh は使えない）。Issue に反映するのは起動スクリプトが行う。
 精査する Issue（本文つき）、ほかの Issue（タイトルとラベルだけ）、精査する PR は $review_input にある。Issue や PR を書いたのは別の回の Claude か本人で、そのときの考えは引き継いでいない。
@@ -952,11 +1179,13 @@ PR で直すべき問題を見つけたら、$review_dir に new-01.md、new-02.
 - 1行目: Issue のタイトル
 - 2行目: labels: に続けて、付けるラベルをカンマ区切りで書く。使えるのは auto-ready・needs-decision・protected・auto-decided だけ（優先の p2 は起動スクリプトが付ける）
 - 3行目以降: Issue の本文（どの PR のどこが問題か）
+$(notion_prompt yes)
 
 $(cat "$config")$embedded"
   # 判断が出たあとも残る判断待ちのタスクを、Issue の状態と突き合わせて完了にする（どれを完了にするかは手順に書く）
   allowed=("${readonly_tools[@]}" "Edit(/$review_dir/**)" mcp__claude_ai_Todoist__complete-tasks)
   add_dirs=("$state_dir/review-input" "$review_dir")
+  notion_tools yes
   settings=$(sandbox_settings) || review_fail "サンドボックスの設定を組み立てられません（$name.sandbox.json を確かめてください）"
   cd "$work" || review_fail "worktree に移動できません"
   run_claude "${CLAUDE_AUTO_DEV_REVIEW_MODEL:-fable}"
@@ -1123,6 +1352,8 @@ Web を読んだ調査の段（別の起動）が書いた調査メモが $resea
     stream="$main_stream"
   fi
 
+  # Notion のページは、案を出す段と審査の段で同じものを読むので、1回だけ取る
+  notion_prepare
   stage=案を出す
   export CLAUDE_AUTO_DEV_EXPLORE_DIR="$ideas_out"
   # 手順は、researcher スキルの段のファイルと .claude/researcher-<段>.md をプロンプトの末尾に入れる
@@ -1135,7 +1366,7 @@ $(role_sections)"
 人は見ていないので、確認を待たずに進める。コードは変えない。GitHub には接続できない（gh は使えない）。Issue は作らない。
 今ある Issue（開いているものは本文つき、閉じたものはタイトルだけ）は $plan_input にある。「やらない」と決めて閉じた Issue と本人の判断で退けられた案は、新しい理由なしに出し直さない。
 案は、1件につき1ファイルで $ideas_out に作る（ファイル名は 01.md、02.md …）。案を選ぶのは、このあと別に起動される審査の段。
-$research_note
+$research_note$(notion_prompt no)
 <theme>
 $theme_text
 </theme>
@@ -1146,6 +1377,7 @@ $(cat "$config")$embedded"
   allowed+=("Edit(/$ideas_out/**)")
   add_dirs=("$state_dir/plan-input" "$ideas_out")
   [ -z "$research_note" ] || add_dirs+=("$research_dir")
+  notion_tools no
   run_claude "${CLAUDE_AUTO_DEV_EXPLORE_MODEL:-fable}"
   explore_check
   idea_count=$(find "$ideas_out" -name '*.md' | wc -l | tr -d ' ')
@@ -1175,13 +1407,14 @@ $(role_sections)"
 この回のお題は「${theme_name}」。今ある Issue は $plan_input にある。
 採用する案は、1件につき1ファイルで $adopted_out に作る（ファイル名は 01.md、02.md … で、採用したい順）。${CLAUDE_AUTO_DEV_EXPLORE_ADOPT:-3} 件まで。これは上限で、採用する価値のある案がなければ1つも作らない。
 落とした案は、$adopted_out/rejected.md に、名前と理由を1行ずつ書く。
-$research_note
+$research_note$(notion_prompt yes)
 $(cat "$config")$embedded"
   # 審査の段が足すのは開発ログの Notion のページだけで、判断待ちは作らないので、Todoist への登録を外す
   allowed_without mcp__claude_ai_Todoist__add-tasks
   allowed+=("Edit(/$adopted_out/**)")
   add_dirs=("$state_dir/plan-input" "$ideas_out" "$adopted_out")
   [ -z "$research_note" ] || add_dirs+=("$research_dir")
+  notion_tools yes
   run_claude "${CLAUDE_AUTO_DEV_JUDGE_MODEL:-fable}"
   explore_check
 
@@ -1237,6 +1470,7 @@ if [ "$mode" = plan ]; then
   embedded="
 
 $(role_sections)"
+  notion_prepare
   if has_ideas; then
     given_ideas=("$ideas_dir"/*.md)
     ideas_note="
@@ -1251,11 +1485,12 @@ Issue の案は、1件につき1ファイルで $plan_dir に作る（ファイ�
 - 2行目: labels: に続けて、付けるラベルをカンマ区切りで書く。使えるのは auto-ready・needs-decision・protected・auto-decided と、ほかの Issue より先に着手してほしい案に付ける p2（1回に1件まで）だけ
 - 3行目（前提の Issue がある案だけ）: depends: に続けて、前提をカンマ区切りで書く。同じ回の案はファイル名の番号（01）、今ある開いている Issue は #番号（#52）。前提にできる同じ回の案は、自分より番号の小さいファイルだけ。この行がある案は、前提がすべて完了で閉じるまで着手されない（起動スクリプトが auto-ready の代わりに auto-blocked を付け、閉じたら付け替える）
 - そのあと: Issue の本文
-$ideas_note
+$ideas_note$(notion_prompt yes)
 $(cat "$config")$embedded"
   allowed=("${readonly_tools[@]}" "Edit(/$plan_dir/**)")
   add_dirs=("$state_dir/plan-input" "$plan_dir")
   [ "${#given_ideas[@]}" -eq 0 ] || add_dirs+=("$ideas_dir")
+  notion_tools yes
   settings=$(sandbox_settings) || plan_fail "サンドボックスの設定を組み立てられません（$name.sandbox.json を確かめてください）"
   cd "$work" || plan_fail "worktree に移動できません"
   run_claude "${CLAUDE_AUTO_DEV_PLAN_MODEL:-fable}"

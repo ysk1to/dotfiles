@@ -79,6 +79,14 @@ fake_bin() {
 echo "claude run=$(cat "$CLAUDE_AUTO_DEV_STATE_DIR"/locks/*/run 2>/dev/null | tr -d '\n')" >> "$FAKE_LOG"
 echo "claude cache5m=$FORCE_PROMPT_CACHING_5M" >> "$FAKE_LOG"
 echo "claude refs=$(cd "$CLAUDE_AUTO_DEV_STATE_DIR/refs" 2>/dev/null && find . -type f | sort | tr '\n' ' ')" >> "$FAKE_LOG"
+echo "claude notion=$(cd "$CLAUDE_AUTO_DEV_NOTION_DIR" 2>/dev/null && find . -type f | sort | tr '\n' ' ')" >> "$FAKE_LOG"
+# FAKE_NOTION_COPY があれば、起動したときの置き場の中身をそこに写す（回のあとに消されるため）
+[ -z "$FAKE_NOTION_COPY" ] || [ -z "$CLAUDE_AUTO_DEV_NOTION_DIR" ] || cp -R "$CLAUDE_AUTO_DEV_NOTION_DIR" "$FAKE_NOTION_COPY"
+# Notion の置き場がある回（案を出す段を除く）では、FAKE_DEVLOG_TEXT を開発ログのファイルに書く
+if [ -n "$FAKE_DEVLOG_TEXT" ] && [ -n "$CLAUDE_AUTO_DEV_NOTION_DIR" ] && [ -z "$CLAUDE_AUTO_DEV_EXPLORE_DIR" ]; then
+  mkdir -p "$CLAUDE_AUTO_DEV_NOTION_DIR/devlog"
+  printf '%s\n' "$FAKE_DEVLOG_TEXT" > "$CLAUDE_AUTO_DEV_NOTION_DIR/devlog/01.md"
+fi
 if [ -n "$CLAUDE_AUTO_DEV_JUDGE_DIR" ]; then
   i=1
   while [ "$i" -le "$FAKE_JUDGE_COUNT" ]; do printf '%s\n' "$FAKE_IDEA_TEXT" > "$CLAUDE_AUTO_DEV_JUDGE_DIR/0$i.md"; i=$((i + 1)); done
@@ -167,6 +175,64 @@ case "$1" in
     if [ -n "$FAKE_GO_LIST_ERR" ]; then printf '%s\n' "$FAKE_GO_LIST_ERR" >&2; exit 1; fi
     echo example.com/app ;;
 esac
+EOF
+  # 偽の security（Keychain）。Notion のトークンを FAKE_NOTION_TOKEN で返す。空ならトークンがないときと同じに失敗する。
+  # 手元の Keychain の本物のトークンを、テストで使わないようにする
+  export FAKE_NOTION_TOKEN= FAKE_NOTION_DIR="$tmp/notion" FAKE_NOTION_POSTS="$tmp/notion-posts.jsonl"
+  export FAKE_NOTION_QUERY_FAIL= FAKE_NOTION_POST_FAIL= FAKE_DEVLOG_TEXT= FAKE_NOTION_COPY=
+  cat > "$tmp/bin/security" <<'EOF'
+#!/bin/bash
+echo "security $*" >> "$FAKE_LOG"
+[ -n "$FAKE_NOTION_TOKEN" ] || exit 44
+echo "$FAKE_NOTION_TOKEN"
+EOF
+  # 偽の curl（Notion の API）。ページは $FAKE_NOTION_DIR/<ID>.md（本文）と <ID>.title（タイトル）で用意し、ないページは 404 を返す。
+  # 開発ログの一覧は $FAKE_NOTION_DIR/query.json を返す（FAKE_NOTION_QUERY_FAIL があれば 500）。
+  # ページの作成は、送られた JSON を $FAKE_NOTION_POSTS に1行ずつ残す（FAKE_NOTION_POST_FAIL があれば 400）。
+  # 呼ばれ方（メソッドと URL、引数）と、設定（-K -）にトークンが入っていたかを残す
+  cat > "$tmp/bin/curl" <<'EOF'
+#!/bin/bash
+cfg=$(cat)
+printf 'curl arg=%s\n' "$@" >> "$FAKE_LOG"
+method=GET out= data= url=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -X) method=$2; shift ;;
+    -o) out=$2; shift ;;
+    --data-binary) data=${2#@}; shift ;;
+    -H | -w | --max-time | -K) shift ;;
+    http*) url=$1 ;;
+  esac
+  shift
+done
+path=${url#*/v1}
+echo "curl call=$method $path" >> "$FAKE_LOG"
+echo "curl auth=$(grep -cF "Authorization: Bearer $FAKE_NOTION_TOKEN" <<< "$cfg")" >> "$FAKE_LOG"
+code=200
+not_found() { code=404; echo '{"object":"error","status":404,"code":"object_not_found","message":"Could not find page"}' > "$out"; }
+case "$method $path" in
+  "GET /pages/"*/markdown)
+    id=${path#/pages/}; id=${id%/markdown}
+    if [ -f "$FAKE_NOTION_DIR/$id.md" ]; then
+      jq -n --arg id "$id" --rawfile m "$FAKE_NOTION_DIR/$id.md" '{object: "page_markdown", id: $id, markdown: $m, truncated: false}' > "$out"
+    else not_found; fi ;;
+  "GET /pages/"*)
+    id=${path#/pages/}
+    if [ -f "$FAKE_NOTION_DIR/$id.md" ]; then
+      jq -n --arg id "$id" --arg t "$(cat "$FAKE_NOTION_DIR/$id.title" 2>/dev/null)" \
+        '{object: "page", id: $id, url: "https://www.notion.so/fake-\($id)", properties: {"名前": {type: "title", title: [{plain_text: $t}]}}}' > "$out"
+    else not_found; fi ;;
+  "POST /data_sources/"*/query)
+    sed 's/^/curl query=/' "$data" >> "$FAKE_LOG"
+    if [ -n "$FAKE_NOTION_QUERY_FAIL" ]; then code=500; echo '{"object":"error","status":500,"code":"internal_server_error"}' > "$out"
+    else cp "$FAKE_NOTION_DIR/query.json" "$out"; fi ;;
+  "POST /pages")
+    jq -c . "$data" >> "$FAKE_NOTION_POSTS"
+    if [ -n "$FAKE_NOTION_POST_FAIL" ]; then code=400; echo '{"object":"error","status":400,"code":"validation_error"}' > "$out"
+    else echo '{"object":"page","id":"new"}' > "$out"; fi ;;
+  *) code=400; echo '{}' > "$out" ;;
+esac
+printf '%s' "$code"
 EOF
   chmod +x "$tmp/bin/"*
 }
@@ -2387,5 +2453,258 @@ push_file go.mod $'module example.com/app\n\ngo 1.99'
 FAKE_GO_LIST_ERR='go: go.mod requires go >= 1.99' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "Go が合わなくても、企画の回は動く" "1" "$(claude_calls)"
 assert_eq "企画の回は go list -m を動かさない" "no" "$(grep -q '^go .*args=list' "$FAKE_LOG" && echo yes || echo no)"
+
+# ---- Notion をスクリプトで扱う ----
+# 設定ファイル <リポジトリ名>.notion（project= と devlog= の2行）があり、Keychain にトークンもあるときだけ、
+# Fable の回（企画・精査・探索の案を出す段と審査の段）の Notion の読み書きを起動スクリプトが行う。
+# ページは回の前に API で取って置き場に置き、開発ログは Claude がファイルに書いたものを回のあとに API で足す。
+# どちらかがなければ、今までどおり MCP で動く。ID はどれも作り物
+np=11111111111111111111111111111111
+nl1=22222222222222222222222222222222
+nl2=33333333333333333333333333333333
+nl3=44444444444444444444444444444444
+nmiss=55555555555555555555555555555555
+nd1=66666666666666666666666666666666
+nd2=77777777777777777777777777777777
+nds=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+notion_mcp_tools=(mcp__claude_ai_Notion__notion-fetch mcp__claude_ai_Notion__notion-search
+  mcp__claude_ai_Notion__notion-query-data-sources mcp__claude_ai_Notion__notion-create-pages)
+notion_page() { printf '%s\n' "$2" > "$FAKE_NOTION_DIR/$1.md"; echo "$3" > "$FAKE_NOTION_DIR/$1.title"; }
+# 作り物の Notion。プロジェクトページ → 1段目 → 2段目 → 3段目 とリンクがつながり、プロジェクトページには取れないページへのリンクもある
+fake_notion() {
+  mkdir -p "$FAKE_NOTION_DIR"
+  notion_page "$np" "# 現状と決定事項
+<mention-page url=\"https://app.notion.com/p/$nl1\">設計</mention-page>
+[消えたページ](https://www.notion.so/Gone-$nmiss)" "プロジェクトの本文"
+  notion_page "$nl1" "設計の本文 [詳細](https://app.notion.com/p/Detail-$nl2)" "設計"
+  notion_page "$nl2" "詳細の本文 [さらに](https://app.notion.com/p/$nl3)" "詳細"
+  notion_page "$nl3" "3段目の本文" "3段目"
+  notion_page "$nd1" "前の企画の記録の本文" "前の企画の記録"
+  notion_page "$nd2" "前の精査の記録の本文" "前の精査の記録"
+  jq -n --arg d1 "$nd1" --arg d2 "$nd2" '{object: "list", results: [
+    {object: "page", id: $d1, url: "https://www.notion.so/log-\($d1)", properties: {
+      "要約": {type: "title", title: [{plain_text: "前の企画の記録"}]}, "日付": {type: "date", date: {start: "2026-11-17"}},
+      "種類": {type: "select", select: {name: "決定"}}, "反映待ち": {type: "checkbox", checkbox: true}}},
+    {object: "page", id: $d2, url: "https://www.notion.so/log-\($d2)", properties: {
+      "要約": {type: "title", title: [{plain_text: "前の精査の記録"}]}, "日付": {type: "date", date: {start: "2026-11-16"}},
+      "種類": {type: "select", select: {name: "実装"}}, "反映待ち": {type: "checkbox", checkbox: false}}}]}' > "$FAKE_NOTION_DIR/query.json"
+}
+enable_notion() {
+  fake_notion
+  printf 'project=%s\ndevlog=%s\n' "$np" "$nds" > "$CLAUDE_AUTO_DEV_CONFIG_DIR/my-app.notion"
+  export FAKE_NOTION_TOKEN=fake-notion-token-for-test
+}
+notion_dir() { echo "$CLAUDE_AUTO_DEV_STATE_DIR/notion-input/my-app"; }
+notion_files() { grep '^claude notion=' "$FAKE_LOG" | sed -n "${1:-1}p" | sed 's/^claude notion=//'; }
+curl_calls() { grep -c '^curl call=' "$FAKE_LOG"; }
+has_word() { if printf '%s\n' "$1" | tr ' ' '\n' | grep -qxF -- "$2"; then echo yes; else echo no; fi; }
+
+# 企画の回: 置き場にページを取って置き、Notion の MCP の4つを許可から外す
+setup
+enable_plan
+enable_notion
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+label="Notion をスクリプトで扱う企画の回"
+assert_eq "${label}は成功で終わる" "0" "$?"
+allowed=$(args_after --allowedTools)
+disallowed=$(args_after --disallowedTools)
+for tool in "${notion_mcp_tools[@]}"; do
+  assert_eq "${label}、${tool} を許さない" "no" "$(has_line "$allowed" "$tool")"
+  assert_eq "${label}、${tool} を禁止に入れる" "yes" "$(has_line "$disallowed" "$tool")"
+done
+assert_eq "${label}、Todoist はそのまま使える" "yes" "$(has_line "$allowed" mcp__claude_ai_Todoist__add-tasks)"
+assert_eq "${label}、置き場を読めるようにする" "yes" "$(has_line "$(args_after --add-dir)" "$(notion_dir)")"
+assert_eq "${label}、開発ログのファイルを書ける" "yes" "$(has_line "$allowed" "Edit(/$(notion_dir)/devlog/**)")"
+assert_eq "${label}、Notion は MCP では使えないと伝える" "yes" "$(grep -q 'Notion は MCP では使えない' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "${label}、置き場の目次の場所を伝える" "yes" "$(grep -qF "$(notion_dir)/index.md" "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "${label}、開発ログのファイルの形を伝える" "yes" "$(grep -q '反映待ち: はい' "$FAKE_LOG" && echo yes || echo no)"
+files=$(notion_files)
+for f in ./index.md ./project.md "./pages/$nl1.md" "./pages/$nl2.md" ./devlog-list.md "./devlog-pages/$nd1.md" "./devlog-pages/$nd2.md"; do
+  assert_eq "${label}、起動の前に ${f} を置く" "yes" "$(has_word "$files" "$f")"
+done
+assert_eq "${label}、3段目のリンク先は取らない" "no" "$(has_word "$files" "./pages/$nl3.md")"
+assert_eq "${label}、3段目のリンク先は API でも読まない" "no" "$(grep -q "^curl call=GET /pages/$nl3" "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "${label}、トークンを curl の引数に入れない" "no" "$(grep '^curl arg=' "$FAKE_LOG" | grep -qF "$FAKE_NOTION_TOKEN" && echo yes || echo no)"
+assert_eq "${label}、トークンはどの呼び出しでも設定（標準入力）で渡す" "no" "$(grep '^curl auth=' "$FAKE_LOG" | grep -qvx 'curl auth=1' && echo yes || echo no)"
+assert_eq "${label}、開発ログはプロジェクトで絞って引く" "$np" "$(sed -n 's/^curl query=//p' "$FAKE_LOG" | jq -r '.filter.relation.contains')"
+assert_eq "${label}、開発ログの一覧は直近20件（既定）" "20" "$(sed -n 's/^curl query=//p' "$FAKE_LOG" | jq -r '.page_size')"
+assert_eq "${label}、回のあと置き場を消す" "no" "$([ -d "$(notion_dir)" ] && echo yes || echo no)"
+assert_eq "${label}、開発ログのファイルがなければ何も送らない" "no" "$([ -s "$FAKE_NOTION_POSTS" ] && echo yes || echo no)"
+assert_eq "${label}、通知しない" "0" "$(grep -c '^osascript' "$FAKE_LOG")"
+
+# 置き場の中身。目次にはページごとのファイル名・タイトル・URL と、取れなかったページと理由を載せる
+setup
+enable_plan
+enable_notion
+FAKE_ISSUES='[]' FAKE_NOTION_COPY="$tmp/notion-copy" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+index=$(cat "$tmp/notion-copy/index.md" 2>/dev/null)
+label="置き場の目次"
+assert_eq "${label}にプロジェクトページのファイル名・タイトル・URL を載せる" "yes" "$(echo "$index" | grep -F 'project.md' | grep -F 'プロジェクトの本文' | grep -qF "https://www.notion.so/fake-$np" && echo yes || echo no)"
+assert_eq "${label}にリンク先のページを載せる" "yes" "$(echo "$index" | grep -F "pages/$nl2.md" | grep -qF '詳細' && echo yes || echo no)"
+assert_eq "${label}に、取れなかったページと理由を載せる" "yes" "$(echo "$index" | grep -F "$nmiss" | grep -qF 'object_not_found' && echo yes || echo no)"
+assert_eq "置き場のページの本文は Markdown のまま" "設計の本文 [詳細](https://app.notion.com/p/Detail-$nl2)" "$(cat "$tmp/notion-copy/pages/$nl1.md" 2>/dev/null)"
+list=$(cat "$tmp/notion-copy/devlog-list.md" 2>/dev/null)
+assert_eq "開発ログの一覧に要約・日付・種類・反映待ち・URL を載せる" "yes" "$(echo "$list" | grep -F '前の企画の記録' | grep -F '2026-11-17' | grep -F '決定' | grep -F '反映待ち' | grep -qF "https://www.notion.so/log-$nd1" && echo yes || echo no)"
+assert_eq "開発ログの一覧に、本文のファイルを載せる" "yes" "$(echo "$list" | grep -F '前の企画の記録' | grep -qF "devlog-pages/$nd1.md" && echo yes || echo no)"
+assert_eq "開発ログの一覧の反映待ちでない行には、反映待ちと書かない" "no" "$(echo "$list" | grep -F '前の精査の記録' | grep -qF '反映待ち' && echo yes || echo no)"
+assert_eq "開発ログの本文を置く" "前の企画の記録の本文" "$(cat "$tmp/notion-copy/devlog-pages/$nd1.md" 2>/dev/null)"
+
+# 取る件数は変数で変えられる
+setup
+enable_plan
+enable_notion
+FAKE_ISSUES='[]' CLAUDE_AUTO_DEV_NOTION_DEVLOGS=7 CLAUDE_AUTO_DEV_NOTION_DEVLOG_BODIES=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "開発ログの一覧の件数を変えられる" "7" "$(sed -n 's/^curl query=//p' "$FAKE_LOG" | jq -r '.page_size')"
+files=$(notion_files)
+assert_eq "本文を取る開発ログの件数を変えられる（新しいものから）" "yes no" "$(has_word "$files" "./devlog-pages/$nd1.md") $(has_word "$files" "./devlog-pages/$nd2.md")"
+
+# プロジェクトページも開発ログの一覧も取れなくても、回は止めない。取れなかったことは目次に載せる
+setup
+enable_plan
+enable_notion
+mv "$FAKE_NOTION_DIR/$np.md" "$FAKE_NOTION_DIR/$np.gone"
+FAKE_ISSUES='[]' FAKE_NOTION_QUERY_FAIL=1 FAKE_NOTION_COPY="$tmp/notion-copy" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+label="Notion のページが取れないとき"
+assert_eq "${label}、回は成功で終わる" "0" "$?"
+assert_eq "${label}、claude は起動する" "1" "$(claude_calls)"
+assert_eq "${label}、目次にプロジェクトページが取れなかったと載せる" "yes" "$(grep -F "$np" "$tmp/notion-copy/index.md" | grep -qF 'object_not_found' && echo yes || echo no)"
+assert_eq "${label}、目次に開発ログの一覧が取れなかったと載せる" "yes" "$(grep -F '開発ログの一覧' "$tmp/notion-copy/index.md" | grep -qF '500' && echo yes || echo no)"
+assert_eq "${label}、それでも MCP は許さない" "no" "$(has_line "$(args_after --allowedTools)" mcp__claude_ai_Notion__notion-fetch)"
+
+# 開発ログのファイルは、回のあとに開発ログ DB に足す。プロジェクト・日付・ツール・実行はスクリプトが埋める
+setup
+enable_plan
+enable_notion
+FAKE_ISSUES='[]' FAKE_DEVLOG_TEXT=$'要約: 企画: 一覧を Issue にした（自動開発）\n種類: 決定\nリンク: https://github.com/me/my-app/issues/20\n反映待ち: はい\n\n- **一覧**を足す案を出した\n  - 理由: `list` がない' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+label="開発ログを足すとき"
+assert_eq "${label}、回は成功で終わる" "0" "$?"
+assert_eq "${label}、1件送る" "1" "$(wc -l < "$FAKE_NOTION_POSTS" 2>/dev/null | tr -d ' ')"
+post=$(head -n 1 "$FAKE_NOTION_POSTS" 2>/dev/null)
+assert_eq "${label}、開発ログ DB に足す" "$nds" "$(jq -r '.parent.data_source_id' <<< "$post")"
+assert_eq "${label}、要約をタイトルにする" "企画: 一覧を Issue にした（自動開発）" "$(jq -r '.properties["要約"].title[0].text.content' <<< "$post")"
+assert_eq "${label}、プロジェクトをつなぐ" "$np" "$(jq -r '.properties["プロジェクト"].relation[0].id' <<< "$post")"
+assert_eq "${label}、日付はその日" "2026-11-18" "$(jq -r '.properties["日付"].date.start' <<< "$post")"
+assert_eq "${label}、種類" "決定" "$(jq -r '.properties["種類"].select.name' <<< "$post")"
+assert_eq "${label}、ツールは Claude Code" "Claude Code" "$(jq -r '.properties["ツール"].select.name' <<< "$post")"
+assert_eq "${label}、実行は自動" "自動" "$(jq -r '.properties["実行"].select.name' <<< "$post")"
+assert_eq "${label}、リンク" "https://github.com/me/my-app/issues/20" "$(jq -r '.properties["リンク"].url' <<< "$post")"
+assert_eq "${label}、反映待ち" "true" "$(jq -r '.properties["反映待ち"].checkbox' <<< "$post")"
+assert_eq "${label}、空行のあとを本文（Markdown）にする" $'- **一覧**を足す案を出した\n  - 理由: `list` がない' "$(jq -r '.markdown' <<< "$post")"
+assert_eq "${label}、送れたら通知しない" "0" "$(grep -c '^osascript' "$FAKE_LOG")"
+assert_eq "${label}、送れたら置き場を消す" "no" "$([ -d "$(notion_dir)" ] && echo yes || echo no)"
+
+# リンクが空で、反映待ちが「いいえ」の開発ログ
+setup
+enable_plan
+enable_notion
+FAKE_ISSUES='[]' FAKE_DEVLOG_TEXT=$'要約: 企画: 案なし\n種類: その他\nリンク:\n反映待ち: いいえ\n\n- 出す案がなかった' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+post=$(head -n 1 "$FAKE_NOTION_POSTS" 2>/dev/null)
+assert_eq "リンクが空なら、リンクを入れない" "null" "$(jq -r '.properties["リンク"].url' <<< "$post")"
+assert_eq "反映待ちが「いいえ」なら、付けない" "false" "$(jq -r '.properties["反映待ち"].checkbox' <<< "$post")"
+
+# 送れなかった開発ログは failed に残し、通知する。回は失敗にしない
+setup
+enable_plan
+enable_notion
+FAKE_ISSUES='[]' FAKE_NOTION_POST_FAIL=1 FAKE_DEVLOG_TEXT=$'要約: 企画: 送れない\n種類: 決定\nリンク:\n反映待ち: いいえ\n\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+label="開発ログを送れないとき"
+assert_eq "${label}、回は成功で終わる" "0" "$?"
+failed_dir="$CLAUDE_AUTO_DEV_STATE_DIR/notion-failed/my-app"
+assert_eq "${label}、ファイルを failed に残す" "1" "$(find "$failed_dir" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "${label}、残したファイルは書いたままの中身" "yes" "$(cat "$failed_dir"/*.md 2>/dev/null | grep -q '要約: 企画: 送れない' && echo yes || echo no)"
+assert_eq "${label}、場所を通知する" "yes" "$(grep '^osascript' "$FAKE_LOG" | grep -qF "$failed_dir" && echo yes || echo no)"
+
+# 形の違う開発ログ（要約がない、種類が決まったものでない、反映待ちが読めない）は送らずに failed に残す
+for bad in $'種類: 決定\nリンク:\n反映待ち: いいえ\n\n本文' $'要約: 種類が違う\n種類: 雑談\nリンク:\n反映待ち: いいえ\n\n本文' \
+  $'要約: 反映待ちが違う\n種類: 決定\nリンク:\n反映待ち: たぶん\n\n本文'; do
+  setup
+  enable_plan
+  enable_notion
+  FAKE_ISSUES='[]' FAKE_DEVLOG_TEXT="$bad" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+  label="形の違う開発ログ（$(head -n 1 <<< "$bad")）"
+  assert_eq "${label}は送らない" "no" "$([ -s "$FAKE_NOTION_POSTS" ] && echo yes || echo no)"
+  assert_eq "${label}は failed に残す" "1" "$(find "$CLAUDE_AUTO_DEV_STATE_DIR/notion-failed/my-app" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+  assert_eq "${label}は通知する" "1" "$(grep -c '^osascript' "$FAKE_LOG")"
+done
+
+# claude が失敗で終わっても、書いてあった開発ログは送る（MCP で書いていたときも、書いた分は残っていた）
+setup
+enable_plan
+enable_notion
+FAKE_ISSUES='[]' FAKE_CLAUDE_EXIT=3 FAKE_DEVLOG_TEXT=$'要約: 途中まで\n種類: 決定\nリンク:\n反映待ち: いいえ\n\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "claude が失敗しても、書いてあった開発ログは送る" "1" "$(wc -l < "$FAKE_NOTION_POSTS" 2>/dev/null | tr -d ' ')"
+
+# トークンがない、または .notion がないときは、今までどおり MCP で動く
+for case_name in token conf; do
+  setup
+  enable_plan
+  enable_notion
+  if [ "$case_name" = token ]; then
+    FAKE_NOTION_TOKEN=
+    label="トークンがないとき"
+  else
+    mv "$CLAUDE_AUTO_DEV_CONFIG_DIR/my-app.notion" "$tmp/my-app.notion.gone"
+    label=".notion がないとき"
+  fi
+  FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+  assert_eq "${label}、回は成功で終わる" "0" "$?"
+  assert_eq "${label}、Notion の API を呼ばない" "0" "$(curl_calls)"
+  assert_eq "${label}、Notion の MCP を許す" "yes" "$(has_line "$(args_after --allowedTools)" mcp__claude_ai_Notion__notion-create-pages)"
+  assert_eq "${label}、Notion の MCP を禁止しない" "no" "$(has_line "$(args_after --disallowedTools)" mcp__claude_ai_Notion__notion-fetch)"
+  assert_eq "${label}、置き場を渡さない" "no" "$(has_line "$(args_after --add-dir)" "$(notion_dir)")"
+  assert_eq "${label}、MCP では使えないと伝えない" "no" "$(grep -q 'Notion は MCP では使えない' "$FAKE_LOG" && echo yes || echo no)"
+done
+
+# .notion の行が足りない（project= か devlog= がない）ときも、MCP で動く
+setup
+enable_plan
+enable_notion
+echo "project=$np" > "$CLAUDE_AUTO_DEV_CONFIG_DIR/my-app.notion"
+FAKE_ISSUES='[]' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq ".notion に devlog= がなければ、Notion の API を呼ばない" "0" "$(curl_calls)"
+assert_eq ".notion に devlog= がなければ、Notion の MCP を許す" "yes" "$(has_line "$(args_after --allowedTools)" mcp__claude_ai_Notion__notion-fetch)"
+
+# 精査の回も、スクリプトで扱う
+setup
+enable_review
+enable_notion
+FAKE_ALL_ISSUES="$planned" FAKE_DEVLOG_TEXT=$'要約: 精査\n種類: 調査\nリンク:\n反映待ち: いいえ\n\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+label="Notion をスクリプトで扱う精査の回"
+assert_eq "${label}は精査の手順で起動する" "yes" "$(last_prompt | grep -q 'Auditor として起動された' && echo yes || echo no)"
+allowed=$(args_after --allowedTools)
+assert_eq "${label}、Notion の MCP を許さない" "no" "$(has_line "$allowed" mcp__claude_ai_Notion__notion-fetch)"
+assert_eq "${label}、Todoist のタスクの完了はそのまま" "yes" "$(has_line "$allowed" mcp__claude_ai_Todoist__complete-tasks)"
+assert_eq "${label}、開発ログのファイルを書ける" "yes" "$(has_line "$allowed" "Edit(/$(notion_dir)/devlog/**)")"
+assert_eq "${label}、置き場を読める" "yes" "$(has_line "$(args_after --add-dir)" "$(notion_dir)")"
+assert_eq "${label}、MCP では使えないと伝える" "yes" "$(grep -q 'Notion は MCP では使えない' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "${label}、開発ログを足す" "精査" "$(head -n 1 "$FAKE_NOTION_POSTS" 2>/dev/null | jq -r '.properties["要約"].title[0].text.content')"
+
+# 探索の回: ページは1回だけ取り、2つの段で同じ置き場を読む。開発ログを書けるのは審査の段だけ
+setup
+enable_explore
+enable_notion
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=1 FAKE_JUDGE_COUNT=1 FAKE_DEVLOG_TEXT=$'要約: 探索\n種類: 調査\nリンク:\n反映待ち: いいえ\n\n本文' "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+label="Notion をスクリプトで扱う探索の回"
+assert_eq "${label}は claude を2回起動する" "2" "$(claude_calls)"
+assert_eq "${label}、開発ログの一覧は1回だけ引く" "1" "$(grep -c '^curl call=POST /data_sources/' "$FAKE_LOG")"
+for n in 1 2; do
+  assert_eq "${label}、${n}回目の段も Notion の MCP を許さない" "no" "$(has_line "$(call_args_after "$n" --allowedTools)" mcp__claude_ai_Notion__notion-fetch)"
+  assert_eq "${label}、${n}回目の段も置き場を読める" "yes" "$(has_line "$(call_args_after "$n" --add-dir)" "$(notion_dir)")"
+  assert_eq "${label}、${n}回目の段にも置き場のファイルがある" "yes" "$(has_word "$(notion_files "$n")" ./index.md)"
+done
+assert_eq "${label}、案を出す段は開発ログを書けない" "no" "$(has_line "$(call_args_after 1 --allowedTools)" "Edit(/$(notion_dir)/devlog/**)")"
+assert_eq "${label}、審査の段は開発ログを書ける" "yes" "$(has_line "$(call_args_after 2 --allowedTools)" "Edit(/$(notion_dir)/devlog/**)")"
+assert_eq "${label}、案を出す段には開発ログを書かないと伝える" "yes" "$(call_args_after 1 -p | grep -q '開発ログは書かない' && echo yes || echo no)"
+assert_eq "${label}、審査の段には開発ログのファイルの形を伝える" "yes" "$(call_args_after 2 -p | grep -q '反映待ち: はい' && echo yes || echo no)"
+assert_eq "${label}、開発ログを足す" "1" "$(wc -l < "$FAKE_NOTION_POSTS" 2>/dev/null | tr -d ' ')"
+
+# 実装の回（Engineer）は今回の範囲の外なので、.notion とトークンがあっても今までどおり MCP で動く
+setup
+enable_notion
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+label="実装の回"
+assert_eq "${label}は、.notion があっても Notion の API を呼ばない" "0" "$(curl_calls)"
+assert_eq "${label}は、.notion があっても Notion の MCP を許す" "yes" "$(has_line "$(args_after --allowedTools)" mcp__claude_ai_Notion__notion-fetch)"
+assert_eq "${label}は、Keychain を読まない" "no" "$(grep -q '^security' "$FAKE_LOG" && echo yes || echo no)"
 
 [ "$failures" -eq 0 ] || exit 1
