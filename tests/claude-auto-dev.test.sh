@@ -988,6 +988,27 @@ assert_eq "精査の回は Issue を作らない" "0" "$(grep -c '^gh issue crea
 assert_eq "精査の結果のファイルを残さない" "0" "$(find "$(review_dir)" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "精査の回のあと worktree を消す" "1" "$(git -C "$repo" worktree list | wc -l | tr -d ' ')"
 
+# eco のあいだは Fable の回（企画・精査・探索）を休むので、記録が途切れる。それを失敗と取り違えないよう、
+# 精査の回に、そのリポジトリの直近の段階の移り変わりを渡す
+setup
+enable_review
+mkdir -p "$CLAUDE_AUTO_DEV_STATE_DIR"
+printf '%s\tmy-app\tpace\teco（週の使用量 35%%、目標 20%%）\n%s\tother\tpace\tboost（週の使用量 1%%、目標 90%%）\n' \
+  "$(($(date +%s) - 86400))" "$(date +%s)" > "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv"
+FAKE_ALL_ISSUES="$planned" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+input="$CLAUDE_AUTO_DEV_STATE_DIR/review-input/my-app.md"
+assert_eq "精査の回に、段階の移り変わりを渡す" "yes" "$(grep -qF 'eco（週の使用量 35%、目標 20%）' "$input" && echo yes || echo no)"
+assert_eq "eco のあいだは Fable の回を休むと伝える" "yes" "$(grep -q 'eco のあいだは' "$input" && echo yes || echo no)"
+assert_eq "ほかのリポジトリの段階は渡さない" "no" "$(grep -q 'boost' "$input" && echo yes || echo no)"
+setup
+enable_review
+mkdir -p "$CLAUDE_AUTO_DEV_STATE_DIR"
+printf '%s\tmy-app\tpace\teco（週の使用量 35%%、目標 20%%）\n' "$(($(date +%s) - 8 * 86400))" > "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv"
+FAKE_ALL_ISSUES="$planned" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+input="$CLAUDE_AUTO_DEV_STATE_DIR/review-input/my-app.md"
+assert_eq "移り変わりがなくても、段階の説明は渡す" "yes" "$(grep -q 'eco のあいだは' "$input" && echo yes || echo no)"
+assert_eq "7日より前の移り変わりは渡さない" "no" "$(grep -qF '週の使用量 35%' "$input" && echo yes || echo no)"
+
 # close の Issue は、理由をコメントして閉じる
 setup
 enable_review
@@ -1816,6 +1837,19 @@ export CLAUDE_AUTO_DEV_NOW="$sat"
 usage 0.1 0.3
 run
 assert_eq "リセット前の24時間の段階は boost" "boost" "$(pace_of)"
+
+# 段階が前の回から変わったら、できごとに残す（精査の回が、Fable の回を休んだ期間を見分けられるように）
+pace_events() { grep -c '	my-app	pace	' "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" 2>/dev/null; }
+setup
+usage 0.1 0.7
+run
+assert_eq "段階が変わったら、できごとに残す" "1" "$(pace_events)"
+assert_eq "できごとに段階と週の枠と目標を書く" "yes" "$(grep -qE '	my-app	pace	eco（週の使用量 70%、目標 [0-9]+%）$' "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" && echo yes || echo no)"
+run
+assert_eq "段階が変わらなければ、できごとに残さない" "1" "$(pace_events)"
+usage 0.1 0.5
+CLAUDE_AUTO_DEV_ECO_INTERVAL=0 run
+assert_eq "eco から normal に戻ったら、できごとに残す" "2" "$(pace_events)"
 
 # リセット前の24時間は、目標より上でも呼ばれるたびに起動する
 setup
