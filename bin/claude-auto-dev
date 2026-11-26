@@ -432,12 +432,15 @@ explore_interval="${CLAUDE_AUTO_DEV_EXPLORE_INTERVAL:-302400}"
 
 # Fable を使う回（精査・探索・企画）をどこまで動かすか。Fable には、全モデルの枠とは別に週の枠がある。
 # on: すべて動かす。low: 残りが少ないので、消費の大きい探索を休む。off: どれも動かさず、実装の回だけにする。
-# off にするのは、控えるとき、Fable の枠が尽きたとき、Fable の枠で止まった回が解除の時刻を残しているとき。
+# off にするのは、控えるとき、Fable の枠が尽きたとき、Fable の枠で止まった回が解除の時刻を残しているとき、
+# 5時間の枠が決まった使用率（既定 70%）以上のとき。Fable の回は1回で5時間の枠を3割近く使うので、始めると
+# 上限で止まりやすい。曜日と時間帯は問わない（実装の回は、下の「平日の日中」の決まりのまま）。
 # 尽きても Opus では企画しない（上流の回は Fable で動かす、という本人の方針）。着手待ちの Issue は実装の回が進める
 fable_limit_file="$state_dir/fable-limit"
 fable=on
 [ "${fable_used:-0}" -lt "${CLAUDE_AUTO_DEV_FABLE_LOW:-80}" ] || fable=low
 if [ "$pace" = eco ] || [ "${fable_used:-0}" -ge 100 ] ||
+  [ "${hours_used:-0}" -ge "${CLAUDE_AUTO_DEV_FABLE_RESERVE:-70}" ] ||
   [ "$now" -lt "$(cat "$fable_limit_file" 2>/dev/null || echo 0)" ]; then
   fable=off
 fi
@@ -1518,17 +1521,24 @@ $(cat "$config")$embedded"
     rm -f "$result.timeout"
     plan_fail "時間の上限（${limit} 秒）を超えたので止めました"
   fi
-  # 上限で止まったら Issue は作らず（書いてあった案は残す）、解除のあとに間隔を待たずに企画し直す
+  # 上限で止まったら Issue は作らず（書いてあった案は残す）、解除のあとに間隔を待たずに企画し直す。
+  # ただし、案をすべて書き終えた印（done）があれば、ふつうに終わった回と同じように Issue にする。
+  # 案を書き終えてから最後のまとめで上限に当たることがあり、案を捨てると次の回が同じ案を作り直すため
+  limit_note=
   if hit_usage_limit; then
-    kept=
-    if compgen -G "$plan_dir/*.md" > /dev/null; then
-      keep_failed "$plan_dir"/*.md && kept="。書いてあった案: ${failed_dir}"
+    if [ -f "$plan_dir/done" ]; then
+      limit_note="使用量の上限で止まりましたが、書き終えていた案を Issue にしました。${limit_until} の解除まで休みます"
+    else
+      kept=
+      if compgen -G "$plan_dir/*.md" > /dev/null; then
+        keep_failed "$plan_dir"/*.md && kept="。書いてあった案: ${failed_dir}"
+      fi
+      rm -rf "$plan_dir" "$plan_last_file"
+      notify "の企画が上限で中断" "使用量の上限で止まりました。${limit_until} の解除のあとに企画し直します${kept}"
+      exit 0
     fi
-    rm -rf "$plan_dir" "$plan_last_file"
-    notify "の企画が上限で中断" "使用量の上限で止まりました。${limit_until} の解除のあとに企画し直します${kept}"
-    exit 0
   fi
-  [ "$status" -eq 0 ] || plan_fail "claude が終了コード ${status} で止まりました" "$status"
+  [ -n "$limit_note" ] || [ "$status" -eq 0 ] || plan_fail "claude が終了コード ${status} で止まりました" "$status"
 
   skipped=0
   ensure_labels auto-planned auto-ready auto-blocked needs-decision protected auto-decided p2
@@ -1545,6 +1555,7 @@ $(cat "$config")$embedded"
   # 取得できなければ残さない（次の間隔でもう一度企画するだけ）
   after=$(gh issue list --state all --limit "$issue_limit" --json number,state 2>> "$log") &&
     plan_key_of "$after" > "$plan_key_file"
+  [ -z "$limit_note" ] || notify "の企画が上限で中断" "$limit_note"
   exit 0
 fi
 
