@@ -65,12 +65,13 @@ setup() {
 # FAKE_USAGE_LIMIT（解除の時刻）があれば、どの回でも使用量の上限で止まった結果を出して終わる。
 # FAKE_FABLE_LIMIT（解除の時刻）があれば、Fable の枠だけが尽きた結果を出して終わる。
 # FAKE_FABLE_CREDITS があれば、Fable の枠が尽きたときの別の形（追加の利用を求めるエラー。使用率は流れない）で終わる
+# FAKE_STREAM があれば、結果の行の前にその行を流す（API の呼び出しの使用量など）
 fake_bin() {
   mkdir -p "$tmp/bin"
   export PATH="$tmp/bin:$PATH" FAKE_LOG="$tmp/fake.log"
   export FAKE_ISSUES='[{"number":1,"labels":[{"name":"auto-ready"}]}]' FAKE_PRS='[]' FAKE_CLAUDE_EXIT=0
   export FAKE_CLAUDE_BRANCH=auto-1-test FAKE_CLAUDE_COMMIT=0 FAKE_PR_TEXT= FAKE_DECISION_TEXT='A と B のどちらにするか'
-  export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL= FAKE_NO_RESULT=
+  export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL= FAKE_NO_RESULT= FAKE_STREAM=
   export FAKE_LABELS='[]' FAKE_MERGED_PRS='[]' FAKE_REVIEW_NEW=0 FAKE_REVIEW_FILES= FAKE_REVIEW_EXIT= FAKE_REVIEW_TEXT=$'action: hold\n仕様が足りない'
   export FAKE_ALL_ISSUES_AFTER= FAKE_CREATE_FAIL= FAKE_USAGE_LIMIT= FAKE_FABLE_LIMIT= FAKE_FABLE_CREDITS= FAKE_BLOCKED='[]' FAKE_CREATE_SEQ= FAKE_PLAN_TEXT_2=
   export FAKE_RESEARCH_MEMO='ほかのサイトの調査メモ' FAKE_RESEARCH_EXIT=
@@ -120,6 +121,7 @@ fi
 [ -z "$FAKE_CLAUDE_SLEEP" ] || sleep "$FAKE_CLAUDE_SLEEP"
 echo '{"type":"system","subtype":"init"}'
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"make test"}}]}}'
+[ -z "$FAKE_STREAM" ] || printf '%s\n' "$FAKE_STREAM"
 if [ -n "$FAKE_FABLE_CREDITS" ]; then
   echo '{"type":"result","is_error":true,"api_error":"model_requires_usage_credits","result":"You have reached your Fable limit","num_turns":1,"total_cost_usd":0,"duration_ms":1000,"permission_denials":[]}'
   exit 1
@@ -435,6 +437,31 @@ FAKE_NO_RESULT=1 FAKE_CLAUDE_EXIT=3 "$bin/claude-auto-dev" "$repo" >/dev/null 2>
 assert_eq "結果の行がなければ、流れた出力の最後をログに残す" "yes" "$(grep -q '"tool_use"' "$CLAUDE_AUTO_DEV_STATE_DIR"/logs/my-app-*.log && echo yes || echo no)"
 assert_eq "結果の行がなければ、終了コードをできごとに残す" "yes" "$(grep -q '	end	終了コード 3$' "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" && echo yes || echo no)"
 assert_eq "実行中の出力の場所をロックに残す" "yes" "$(sed -n 's/^claude run=//p' "$FAKE_LOG" | jq -r .stream | grep -q '\.stream\.jsonl$' && echo yes || echo no)"
+
+# プロンプトキャッシュが切れて文脈を作り直した呼び出しを数え、できごとに残す。
+# 作り直しは、前の呼び出しの文脈の半分もキャッシュから読めず、読めた量が前の呼び出しより減った呼び出し
+call() { # メッセージの ID 書き込み 読み込み [親のツールの ID]
+  jq -cn --arg id "$1" --argjson c "$2" --argjson r "$3" --arg p "${4:-}" \
+    '{type: "assistant", parent_tool_use_id: (if $p == "" then null else $p end),
+      message: {id: $id, content: [{type: "text", text: "x"}], usage: {input_tokens: 2, cache_creation_input_tokens: $c, cache_read_input_tokens: $r}}}'
+}
+rebuild_events() { grep '	rebuild	' "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" | cut -f4; }
+setup
+FAKE_STREAM=$(call m1 20000 0; call m2 5000 20000; call m2 5000 20000; call m3 30000 0; call m4 1000 30000; call m5 31000 0)
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "作り直しの回数と、作り直しで書き込んだトークン数をできごとに残す" "作り直し 2 回、61000 トークン" "$(rebuild_events)"
+setup
+FAKE_STREAM=$(call m1 20000 0; call m2 5000 20000; call m3 1000 25000)
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "作り直しのない回では、できごとに残さない" "" "$(rebuild_events)"
+setup
+FAKE_STREAM=$(call m1 14000 0; call m2 33000 0; call m3 1000 46000)
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "読めた量が前の呼び出しより減っていなければ（始めのうちの読み損ね）、作り直しと数えない" "" "$(rebuild_events)"
+setup
+FAKE_STREAM=$(call m1 20000 0; call s1 9000 0 tool1; call m2 1000 20000; jq -cn '{type: "assistant", parent_tool_use_id: null, message: {id: "m3", content: [], usage: {input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0}}}'; call m4 1000 21000)
+"$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "サブエージェントの呼び出しと、使用量が0の呼び出しは数えない" "" "$(rebuild_events)"
 
 # claude が失敗したら、通知して失敗で終わる。片付けはする
 setup

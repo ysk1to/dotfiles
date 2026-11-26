@@ -92,7 +92,7 @@ on_exit() {
 trap on_exit EXIT
 
 # tmux の表示（claude-auto-dev-watch）が全リポジトリをまとめて流せるよう、できごとを1つのファイルに残す。
-# 1行1件で、時刻・リポジトリ名・種類（start・end・pr・issue・decision・fail・notice）・本文をタブで区切る
+# 1行1件で、時刻・リポジトリ名・種類（start・end・pr・issue・decision・fail・notice・rebuild）・本文をタブで区切る
 event() {
   printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$name" "$1" "${2//$'\t'/ }" >> "$state_dir/events.tsv"
 }
@@ -584,7 +584,7 @@ limit="${CLAUDE_AUTO_DEV_TIMEOUT:-3600}"
 tools="Bash,Read,Edit,Write,Glob,Grep,ToolSearch"
 extra_flags=()
 run_claude() {
-  local model="$1" claude_pid watchdog
+  local model="$1" claude_pid watchdog rebuilds
   # 実行中の回の種類・Issue・ログと流れている出力の場所を、ロックに残す（ロックと一緒に消える）
   jq -n --arg mode "$mode" --argjson issue "${issue:-null}" --arg log "$log" --arg stream "$stream" --argjson at "$(date +%s)" \
     '{mode: $mode, issue: (if $mode == "implement" then $issue else null end), log: $log, stream: $stream, started_at: $at}' \
@@ -600,7 +600,8 @@ run_claude() {
   # --restricted ではグローバルの CLAUDE.md が読まれず、英語の出力が続くと応答が英語になることがあるので、
   # 言語はシステムプロンプトで指示する
   # 回は数分で終わり、API の呼び出しの間もほぼ5分を超えないので、プロンプトキャッシュの保持は5分にする
-  # （定額プランの既定の1時間は、書き込みが割高）。この claude にだけ渡し、対話のセッションには影響させない
+  # （定額プランの既定の1時間は、書き込みが割高）。この claude にだけ渡し、対話のセッションには影響させない。
+  # 外れて文脈を作り直した呼び出しは、回の終わりに数えてできごとに残す（count_rebuilds）
   FORCE_PROMPT_CACHING_5M=1 claude -p "$prompt" \
     --model "$model" \
     --max-turns "${CLAUDE_AUTO_DEV_MAX_TURNS:-150}" \
@@ -641,6 +642,25 @@ run_claude() {
     tail -n 5 "$stream" >> "$log" 2>/dev/null
     event end "終了コード $status"
   fi
+  rebuilds=$(count_rebuilds "$stream")
+  [ -z "$rebuilds" ] || event rebuild "$rebuilds"
+}
+
+# プロンプトキャッシュが切れて、文脈の全部をキャッシュに書き直した呼び出し（作り直し）を、流れた出力（$1）から数える。
+# 1回でもあれば「作り直し N 回、T トークン」（T は作り直しの呼び出しで書き込んだトークン数の合計）を返し、なければ何も返さない。
+# 作り直しは、前の呼び出しの文脈（入力・書き込み・読み込みの合計）の半分もキャッシュから読めず、読めた量が前の呼び出しより
+# 減った呼び出しとする。始めのうちは、前の呼び出しで書いた分を読めないことがある（読めた量は減らない）ので数えない。
+# 同じ呼び出しは中身の区切りごとに同じ使用量で流れるので、メッセージの ID で1つにまとめる。サブエージェントと、使用量が0の行は除く。
+# claude-bot-stats が役割ごとに数え、Evaluator が、応答を分けて書く決まり（#125）が効いたかを確かめる
+count_rebuilds() {
+  jq -rs '[.[] | select(.type? == "assistant" and .parent_tool_use_id == null) | {id: .message.id, u: .message.usage}
+      | select(.u != null)
+      | .u |= {ctx: ((.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)),
+          read: (.cache_read_input_tokens // 0), created: (.cache_creation_input_tokens // 0)}
+      | select(.u.ctx > 0)]
+    | reduce .[] as $m ([]; if length > 0 and .[-1].id == $m.id then . else . + [$m] end) | map(.u)
+    | [range(1; length) as $i | select(.[$i].read < .[$i - 1].ctx / 2 and .[$i].read < .[$i - 1].read) | .[$i].created]
+    | select(length > 0) | "作り直し \(length) 回、\(add) トークン"' "$1" 2>/dev/null
 }
 
 # 使用量の上限で止まったか。止まっていれば、解除の時刻を残し、$limit_until に時刻（時:分）を入れる。

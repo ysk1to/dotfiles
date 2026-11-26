@@ -7,6 +7,7 @@
 #             （#N に着手 → Engineer、企画 → Planner、精査 → Auditor、探索 → Researcher）
 #             fail_reasons: 失敗の理由ごとの数（本文から先頭の「#N: 」を除き、最初の「。」より前を取る）
 #             Researcher の ideas・adopted: お知らせ「探索（…）: 案 N 件、採用 M 件」の N と M の合計
+#             rebuilds・rebuild_tokens: プロンプトキャッシュが切れて文脈を作り直した回数とトークン数（できごと「作り直し N 回、T トークン」の合計）
 #   reviewer: 期間内に作られた PR を、ワークフローがマージしたか・自動レビューのコメントがあるかで、自動マージ・要確認・レビュー前に分ける。gh が失敗したリポジトリは null
 #             要確認は、最後の自動レビューのコメントの理由（「確認をお願いします」より前の「- 」の行）がすべて決まり
 #             （「ファイルを変更しています」か「no-auto-merge」を含む）なら needs_check_by_rule、それ以外は needs_check_by_review に分ける
@@ -49,6 +50,14 @@ bots_json() {
       if (i > 0) reason = substr(reason, 1, i - 1)
       reasons[$2 SUBSEP current[$2] SUBSEP reason]++
     }
+    $3 == "rebuild" && current[$2] != "" && $4 ~ /^作り直し [0-9]+ 回、[0-9]+ トークン$/ {
+      n = $4
+      sub(/^作り直し /, "", n)
+      t = n
+      sub(/^[0-9]+ 回、/, "", t)
+      rebuilds[$2 SUBSEP current[$2]] += n + 0
+      rebuild_tokens[$2 SUBSEP current[$2]] += t + 0
+    }
     $3 == "notice" && current[$2] == "Researcher" && $4 ~ /^探索（.*）: 案 [0-9]+ 件、採用 [0-9]+ 件$/ {
       n = $4
       sub(/.*: 案 /, "", n)
@@ -60,7 +69,7 @@ bots_json() {
     END {
       for (k in runs) {
         split(k, p, SUBSEP)
-        printf "R\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", p[1], p[2], runs[k], count[k SUBSEP "pr"], count[k SUBSEP "issue"], count[k SUBSEP "decision"], count[k SUBSEP "fail"], ideas[p[1]], adopted[p[1]]
+        printf "R\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", p[1], p[2], runs[k], count[k SUBSEP "pr"], count[k SUBSEP "issue"], count[k SUBSEP "decision"], count[k SUBSEP "fail"], ideas[p[1]], adopted[p[1]], rebuilds[k], rebuild_tokens[k]
       }
       for (k in reasons) {
         split(k, p, SUBSEP)
@@ -70,7 +79,8 @@ bots_json() {
     jq -Rn '[inputs | split("\t")] as $rows
       | reduce ($rows[] | select(.[0] == "R")) as $r ({};
           .[$r[1]][$r[2]] = ({runs: ($r[3] | tonumber), pr: ($r[4] | tonumber), issue: ($r[5] | tonumber),
-              decision: ($r[6] | tonumber), fail: ($r[7] | tonumber), fail_reasons: {}}
+              decision: ($r[6] | tonumber), fail: ($r[7] | tonumber), rebuilds: ($r[10] | tonumber),
+              rebuild_tokens: ($r[11] | tonumber), fail_reasons: {}}
             + if $r[2] == "Researcher" then {ideas: ($r[8] | tonumber), adopted: ($r[9] | tonumber)} else {} end))
       | reduce ($rows[] | select(.[0] == "F")) as $f (.; .[$f[1]][$f[2]].fail_reasons[$f[4]] = ($f[3] | tonumber))
       | map_values(map_values(.fail_reasons |= (to_entries | sort_by(-.value, .key) | from_entries)))'
@@ -141,7 +151,8 @@ jq -r '
   "# 自動開発の Bot",
   (.bots | to_entries[] | .key, (.value | to_entries[]
     | "  \(.key)  回 \(.value.runs)  PR \(.value.pr)  Issue \(.value.issue)  判断待ち \(.value.decision)  失敗 \(.value.fail)"
-      + (if .value.ideas then "  案 \(.value.ideas)  採用 \(.value.adopted)" else "" end),
+      + (if .value.ideas then "  案 \(.value.ideas)  採用 \(.value.adopted)" else "" end)
+      + (if .value.rebuilds > 0 then "  作り直し \(.value.rebuilds) 回（\(.value.rebuild_tokens) トークン）" else "" end),
       (.value.fail_reasons | to_entries[] | "    \(.key)  \(.value)"))),
   "",
   "# Reviewer（PR の自動レビュー）",
