@@ -915,53 +915,115 @@ notion_tools() {
   [ "$1" != yes ] || allowed+=("Edit(/$notion_dir/devlog/**)")
   add_dirs+=("$notion_dir")
 }
-# 回のあとに、開発ログのファイルを開発ログ DB に足す。形が違うものと送れなかったものは $notion_failed_dir に残して知らせる。
-# 終わったら置き場を消す
+# 開発ログのファイル（$1）を1件、開発ログ DB に足す。足せたら、できたページの URL を $notion_sent_url に入れる。
+# 形が違うものと送れなかったものは $notion_failed_dir に残し、$notion_failed を1つ増やして 1 を返す
+notion_failed=0
+notion_send_devlog() {
+  local f=$1 head body summary kind link pending code res="$notion_dir/.response" req="$notion_dir/.request"
+  notion_sent_url=
+  head=$(awk 'NF == 0 { exit } 1' "$f")
+  body=$(awk 'started { print; next } NF == 0 { started = 1 }' "$f")
+  summary=$(sed -n 's/^要約:[[:space:]]*//p' <<< "$head" | head -n 1)
+  kind=$(sed -n 's/^種類:[[:space:]]*//p' <<< "$head" | head -n 1 | tr -d '[:space:]')
+  link=$(sed -n 's/^リンク:[[:space:]]*//p' <<< "$head" | head -n 1 | tr -d '[:space:]')
+  pending=$(sed -n 's/^反映待ち:[[:space:]]*//p' <<< "$head" | head -n 1 | tr -d '[:space:]')
+  case "$pending" in
+    はい | yes | true) pending=true ;;
+    いいえ | no | false | "") pending=false ;;
+    *) pending= ;;
+  esac
+  case "$kind" in 決定 | 実装 | 調査 | 設定 | その他) ;; *) kind= ;; esac
+  code=
+  if [ -n "$summary" ] && [ -n "$kind" ] && [ -n "$pending" ]; then
+    jq -n --arg ds "$notion_devlog" --arg project "$notion_project" --arg summary "$summary" --arg kind "$kind" \
+      --arg link "$link" --argjson pending "$pending" --arg day "$(date -r "$now" +%Y-%m-%d)" --arg body "$body" '{
+        parent: {type: "data_source_id", data_source_id: $ds},
+        properties: {
+          "要約": {title: [{text: {content: $summary}}]},
+          "プロジェクト": {relation: [{id: $project}]},
+          "日付": {date: {start: $day}},
+          "種類": {select: {name: $kind}},
+          "ツール": {select: {name: "Claude Code"}},
+          "実行": {select: {name: "自動"}},
+          "リンク": {url: (if $link == "" then null else $link end)},
+          "反映待ち": {checkbox: $pending}},
+        markdown: $body}' > "$req"
+    code=$(notion_api POST /pages "$res" "$req")
+  fi
+  if [ "$code" = 200 ]; then
+    echo "開発ログを Notion に足しました: $summary" >> "$log"
+    notion_sent_url=$(jq -r '.url // empty' "$res" 2>/dev/null)
+    return 0
+  fi
+  echo "開発ログを Notion に足せませんでした（$(basename "$f")）: ${code:+$(notion_reason "$res" "$code")}${code:-形が違う}" >> "$log"
+  mkdir -p "$notion_failed_dir" && cp "$f" "$notion_failed_dir/${log_name%.log}-$(basename "$f")"
+  notion_failed=$((notion_failed + 1))
+  return 1
+}
+# 回のあとに、残っている開発ログのファイルを開発ログ DB に足す。送れなかったものがあれば知らせる。終わったら置き場を消す
 notion_send_devlogs() {
-  local f head body summary kind link pending code sent=0 failed=0 res="$notion_dir/.response" req="$notion_dir/.request"
+  local f
   [ "$notion" = on ] && [ -d "$notion_dir" ] || return 0
   for f in "$notion_dir"/devlog/*; do
     [ -f "$f" ] || continue
-    head=$(awk 'NF == 0 { exit } 1' "$f")
-    body=$(awk 'started { print; next } NF == 0 { started = 1 }' "$f")
-    summary=$(sed -n 's/^要約:[[:space:]]*//p' <<< "$head" | head -n 1)
-    kind=$(sed -n 's/^種類:[[:space:]]*//p' <<< "$head" | head -n 1 | tr -d '[:space:]')
-    link=$(sed -n 's/^リンク:[[:space:]]*//p' <<< "$head" | head -n 1 | tr -d '[:space:]')
-    pending=$(sed -n 's/^反映待ち:[[:space:]]*//p' <<< "$head" | head -n 1 | tr -d '[:space:]')
-    case "$pending" in
-      はい | yes | true) pending=true ;;
-      いいえ | no | false | "") pending=false ;;
-      *) pending= ;;
-    esac
-    case "$kind" in 決定 | 実装 | 調査 | 設定 | その他) ;; *) kind= ;; esac
-    code=
-    if [ -n "$summary" ] && [ -n "$kind" ] && [ -n "$pending" ]; then
-      jq -n --arg ds "$notion_devlog" --arg project "$notion_project" --arg summary "$summary" --arg kind "$kind" \
-        --arg link "$link" --argjson pending "$pending" --arg day "$(date -r "$now" +%Y-%m-%d)" --arg body "$body" '{
-          parent: {type: "data_source_id", data_source_id: $ds},
-          properties: {
-            "要約": {title: [{text: {content: $summary}}]},
-            "プロジェクト": {relation: [{id: $project}]},
-            "日付": {date: {start: $day}},
-            "種類": {select: {name: $kind}},
-            "ツール": {select: {name: "Claude Code"}},
-            "実行": {select: {name: "自動"}},
-            "リンク": {url: (if $link == "" then null else $link end)},
-            "反映待ち": {checkbox: $pending}},
-          markdown: $body}' > "$req"
-      code=$(notion_api POST /pages "$res" "$req")
-    fi
-    if [ "$code" = 200 ]; then
-      echo "開発ログを Notion に足しました: $summary" >> "$log"
-      sent=$((sent + 1))
-    else
-      echo "開発ログを Notion に足せませんでした（$(basename "$f")）: ${code:+$(notion_reason "$res" "$code")}${code:-形が違う}" >> "$log"
-      mkdir -p "$notion_failed_dir" && cp "$f" "$notion_failed_dir/${log_name%.log}-$(basename "$f")"
-      failed=$((failed + 1))
-    fi
+    notion_send_devlog "$f"
   done
   rm -rf "$notion_dir"
-  [ "$failed" -eq 0 ] || notify "の開発ログ" "Notion に足せなかった開発ログが ${failed} 件あります: ${notion_failed_dir}。ログ: ${log}"
+  [ "$notion_failed" -eq 0 ] || notify "の開発ログ" "Notion に足せなかった開発ログが ${notion_failed} 件あります: ${notion_failed_dir}。ログ: ${log}"
+}
+# 審査の段のプロンプトに足す、記録の分担（スクリプトで扱う回だけ）
+notion_judge_note() {
+  [ "$notion" = on ] || return 0
+  echo "審査の段の記録の分担: 開発ログの本文には「お題」と「調査メモの要点」だけを書く。「採用した案」と「落とした案」は、回のあとに起動スクリプトが、採用する案のファイルと rejected.md から写す。採用する案のファイルの ## 記録 は起動スクリプトが書くので、書かない。"
+}
+# ファイルの見出し（# から ####）を2段下げる。コードブロックの中は変えない
+demote_headings() { awk '/^(```|~~~)/ { code = !code } !code && /^#{1,4} / { print "##" $0; next } { print }' "$1"; }
+# 審査の段のあと（スクリプトで扱う回だけ）、採用の案を渡す前に呼ぶ。$1 は採用の件数の上限。
+# Claude が devlog/ に書いた記録（頭の行と、お題・調査メモの要点）に、採用の案のファイル（上限まで）と rejected.md を
+# 「採用した案」「落とした案」としてつないで開発ログ DB に足す。採用の案の全文を、Claude が2回書かずに済むようにするため。
+# 足せたページの URL（足せなければ、そのことと要約）を、採用の案のファイルの ## 記録 に書く（あれば置き換える）
+notion_send_judge() {
+  local max=$1 record files=() f i=0 over=() note summary
+  [ "$notion" = on ] && [ -d "$notion_dir" ] || return 0
+  for f in "$adopted_out"/[0-9]*.md; do
+    [ -f "$f" ] || continue
+    if [ "$i" -lt "$max" ]; then files+=("$f"); else over+=("$(head -n 1 "$f")"); fi
+    i=$((i + 1))
+  done
+  record=$(find "$notion_dir/devlog" -type f 2>/dev/null | sort | head -n 1)
+  if [ -z "$record" ]; then
+    record="$notion_dir/devlog/01.md"
+    mkdir -p "$notion_dir/devlog"
+    printf '要約: Researcher（%s）: 採用 %s 件\n種類: 決定\nリンク:\n反映待ち: いいえ\n\n## お題\n\n%s\n' \
+      "$theme_name" "${#files[@]}" "$theme_name" > "$record"
+  fi
+  # 古い手順で、Claude が採用した案まで書いていたら、つながない（二重にしない）
+  if ! grep -q '^## 採用した案' "$record"; then
+    {
+      printf '\n## 採用した案\n'
+      [ "${#files[@]}" -gt 0 ] || printf '\nなし\n'
+      for f in "${files[@]}"; do
+        printf '\n### %s\n\n' "$(head -n 1 "$f")"
+        tail -n +2 "$f" > "$record.part"
+        demote_headings "$record.part"
+      done
+      printf '\n## 落とした案\n\n'
+      if [ -s "$adopted_out/rejected.md" ]; then cat "$adopted_out/rejected.md"; elif [ "${#over[@]}" -eq 0 ]; then echo なし; fi
+      for f in "${over[@]}"; do echo "- ${f}: 採用の上限（${max} 件）を超えたので、Planner に渡していない"; done
+    } >> "$record"
+    rm -f "$record.part"
+  fi
+  summary=$(sed -n '1,/^$/s/^要約:[[:space:]]*//p' "$record" | head -n 1)
+  if notion_send_devlog "$record"; then note=${notion_sent_url:-"$summary"}; else note="（開発ログを Notion に足せなかった）$summary"; fi
+  # 送ったもの（送れなかったものは failed に残してある）は、回のあとにもう一度送らない
+  rm -f "$record"
+  for f in "${files[@]}"; do
+    awk '/^## 記録[[:space:]]*$/ { exit } { print }' "$f" > "$f.tmp"
+    # 書き足すときは空行をはさむ。置き換えるときは、元の位置のまま
+    { cat "$f.tmp"; grep -q '^## 記録[[:space:]]*$' "$f" || [ -z "$(tail -n 1 "$f.tmp")" ] || echo; printf '## 記録\n\n%s\n' "$note"; } > "$f.new"
+    mv "$f.new" "$f"
+    rm -f "$f.tmp"
+  done
 }
 # Fable の回の前に呼ぶ。.notion とトークンがそろっていれば、置き場にページを取って置き、Notion の MCP の4つを禁止に入れる
 notion_prepare() {
@@ -1431,6 +1493,7 @@ $(role_sections)"
 採用する案は、1件につき1ファイルで $adopted_out に作る（ファイル名は 01.md、02.md … で、採用したい順）。${CLAUDE_AUTO_DEV_EXPLORE_ADOPT:-3} 件まで。これは上限で、採用する価値のある案がなければ1つも作らない。
 落とした案は、$adopted_out/rejected.md に、名前と理由を1行ずつ書く。
 $research_note$(notion_prompt yes)
+$(notion_judge_note)
 $(cat "$config")$embedded"
   # 審査の段が足すのは開発ログの Notion のページだけで、判断待ちは作らないので、Todoist への登録を外す
   allowed_without mcp__claude_ai_Todoist__add-tasks
@@ -1440,6 +1503,8 @@ $(cat "$config")$embedded"
   notion_tools yes
   run_claude "${CLAUDE_AUTO_DEV_JUDGE_MODEL:-fable}"
   explore_check
+  # Notion をスクリプトで扱う回は、記録を送り、採用の案の ## 記録 に URL を書いてから渡す
+  notion_send_judge "${CLAUDE_AUTO_DEV_EXPLORE_ADOPT:-3}"
 
   # 採用された案を、次の企画の回に渡す場所へ移す。上限を超えた分は渡さない
   mkdir -p "$ideas_dir"
