@@ -198,7 +198,8 @@ echo "$FAKE_NOTION_TOKEN"
 EOF
   # 偽の curl（Notion の API）。ページは $FAKE_NOTION_DIR/<ID>.md（本文）と <ID>.title（タイトル）で用意し、ないページは 404 を返す。
   # 開発ログの一覧は $FAKE_NOTION_DIR/query.json を返す（FAKE_NOTION_QUERY_FAIL があれば 500）。
-  # ページの作成は、送られた JSON を $FAKE_NOTION_POSTS に1行ずつ残す（FAKE_NOTION_POST_FAIL があれば 400）。
+  # ページの作成は、送られた JSON を $FAKE_NOTION_POSTS に1行ずつ残し、URL が https://www.notion.so/new-page のページを返す
+  # （FAKE_NOTION_POST_FAIL があれば 400）。
   # 呼ばれ方（メソッドと URL、引数）と、設定（-K -）にトークンが入っていたかを残す
   cat > "$tmp/bin/curl" <<'EOF'
 #!/bin/bash
@@ -239,7 +240,7 @@ case "$method $path" in
   "POST /pages")
     jq -c . "$data" >> "$FAKE_NOTION_POSTS"
     if [ -n "$FAKE_NOTION_POST_FAIL" ]; then code=400; echo '{"object":"error","status":400,"code":"validation_error"}' > "$out"
-    else echo '{"object":"page","id":"new"}' > "$out"; fi ;;
+    else echo '{"object":"page","id":"new","url":"https://www.notion.so/new-page"}' > "$out"; fi ;;
   *) code=400; echo '{}' > "$out" ;;
 esac
 printf '%s' "$code"
@@ -2792,6 +2793,90 @@ assert_eq "${label}、審査の段は開発ログを書ける" "yes" "$(has_line
 assert_eq "${label}、案を出す段には開発ログを書かないと伝える" "yes" "$(call_args_after 1 -p | grep -q '開発ログは書かない' && echo yes || echo no)"
 assert_eq "${label}、審査の段には開発ログのファイルの形を伝える" "yes" "$(call_args_after 2 -p | grep -q '反映待ち: はい' && echo yes || echo no)"
 assert_eq "${label}、開発ログを足す" "1" "$(wc -l < "$FAKE_NOTION_POSTS" 2>/dev/null | tr -d ' ')"
+
+# 審査の段の記録: Claude は開発ログの頭の行と「お題」「調査メモの要点」だけを書き、起動スクリプトが、採用の案のファイル
+# （上限まで）と rejected.md を「採用した案」「落とした案」としてつないで送る。採用の案の全文を Claude が2回書かないようにするため。
+# 送ったページの URL は、採用の案のファイルの ## 記録 に書き足してから、次の企画の回に渡す
+judge_devlog=$'要約: Researcher（お題: データ）: 採用 2 件\n種類: 決定\nリンク:\n反映待ち: いいえ\n\n## お題\n\nお題: データ\n\n## 調査メモの要点\n\n- 要点'
+judge_markdown() { head -n 1 "$FAKE_NOTION_POSTS" 2>/dev/null | jq -r '.markdown'; }
+setup
+enable_explore
+enable_notion
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=3 FAKE_JUDGE_COUNT=2 FAKE_DEVLOG_TEXT="$judge_devlog" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+label="Notion をスクリプトで扱う審査の段の記録"
+assert_eq "${label}、回は成功で終わる" "0" "$?"
+assert_eq "${label}、開発ログは1件だけ送る" "1" "$(wc -l < "$FAKE_NOTION_POSTS" 2>/dev/null | tr -d ' ')"
+assert_eq "${label}、お題・調査メモの要点のあとに、採用した案（見出しを下げる）と落とした案をつなぐ" \
+  "$(printf '%s\n' '## お題' '' 'お題: データ' '' '## 調査メモの要点' '' '- 要点' '' '## 採用した案' '' \
+    '### 地域ごとの落札の傾向' '' '#### 何を作るか' '一覧' '' '### 地域ごとの落札の傾向' '' '#### 何を作るか' '一覧' '' \
+    '## 落とした案' '' '落とした案')" "$(judge_markdown)"
+assert_eq "${label}、要約は Claude が書いたもの" "Researcher（お題: データ）: 採用 2 件" "$(head -n 1 "$FAKE_NOTION_POSTS" 2>/dev/null | jq -r '.properties["要約"].title[0].text.content')"
+for f in "$(ideas_dir)"/*.md; do
+  assert_eq "${label}、採用の案（$(basename "$f")）の ## 記録 に、送ったページの URL を書く" \
+    "$(printf '%s\n' '地域ごとの落札の傾向' '## 何を作るか' '一覧' '' '## 記録' '' 'https://www.notion.so/new-page')" "$(cat "$f")"
+done
+assert_eq "${label}、審査の段に、本文にはお題と調査メモの要点だけを書くと伝える" "yes" "$(call_args_after 2 -p | grep -q '開発ログの本文には「お題」と「調査メモの要点」だけを書く' && echo yes || echo no)"
+assert_eq "${label}、審査の段に、## 記録 は書かないと伝える" "yes" "$(call_args_after 2 -p | grep -q '## 記録 は起動スクリプトが書く' && echo yes || echo no)"
+assert_eq "${label}、通知しない" "0" "$(grep -c '^osascript' "$FAKE_LOG")"
+
+# 上限を超えた採用の案は、採用した案に入れず、落とした案に、渡していないと書く
+setup
+enable_explore
+enable_notion
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=3 FAKE_JUDGE_COUNT=2 CLAUDE_AUTO_DEV_EXPLORE_ADOPT=1 FAKE_DEVLOG_TEXT="$judge_devlog" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+label="採用の案が上限を超えたときの記録"
+assert_eq "${label}、採用した案は上限の件数だけ" "1" "$(judge_markdown | grep -c '^### 地域ごとの落札の傾向$')"
+assert_eq "${label}、落とした案に、上限を超えて渡していないと書く" "- 地域ごとの落札の傾向: 採用の上限（1 件）を超えたので、Planner に渡していない" "$(judge_markdown | sed -n '/^## 落とした案$/,$p' | grep '上限')"
+
+# 採用が0件なら、採用した案は「なし」
+setup
+enable_explore
+enable_notion
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=1 FAKE_JUDGE_COUNT=0 FAKE_DEVLOG_TEXT="$judge_devlog" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "採用が0件なら、採用した案は「なし」と書く" "$(printf '%s\n' '## 採用した案' '' 'なし' '')" "$(judge_markdown | sed -n '/^## 採用した案$/,/^## 落とした案$/p' | sed '$d')"
+
+# Claude が開発ログを書かなかったときは、起動スクリプトが頭の行とお題を埋めて送る
+setup
+enable_explore
+enable_notion
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=1 FAKE_JUDGE_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+label="審査の段が開発ログを書かなかったとき"
+post=$(head -n 1 "$FAKE_NOTION_POSTS" 2>/dev/null)
+assert_eq "${label}、要約を埋めて送る" "Researcher（お題: データ）: 採用 1 件" "$(jq -r '.properties["要約"].title[0].text.content' <<< "$post")"
+assert_eq "${label}、種類は決定" "決定" "$(jq -r '.properties["種類"].select.name' <<< "$post")"
+assert_eq "${label}、本文の先頭にお題を書く" "$(printf '%s\n' '## お題' '' 'お題: データ')" "$(jq -r '.markdown' <<< "$post" | head -n 3)"
+assert_eq "${label}、採用した案もつなぐ" "1" "$(jq -r '.markdown' <<< "$post" | grep -c '^### 地域ごとの落札の傾向$')"
+
+# 古い手順で、Claude が本文に採用した案まで書いていたら、つながない（二重にしない）。採用の案の ## 記録 は URL に置き換える
+setup
+enable_explore
+enable_notion
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=1 FAKE_JUDGE_COUNT=1 FAKE_IDEA_TEXT=$'地域ごとの落札の傾向\n## 何を作るか\n一覧\n## 記録\nResearcher（お題: データ）: 採用 1 件' \
+  FAKE_DEVLOG_TEXT=$'要約: Researcher（お題: データ）: 採用 1 件\n種類: 決定\nリンク:\n反映待ち: いいえ\n\n## お題\n\nお題: データ\n\n## 採用した案\n\n全文\n\n## 落とした案\n\nなし' \
+  "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+label="Claude が採用した案まで書いていたとき"
+assert_eq "${label}、本文はそのまま送る" "$(printf '%s\n' '## お題' '' 'お題: データ' '' '## 採用した案' '' '全文' '' '## 落とした案' '' 'なし')" "$(judge_markdown)"
+assert_eq "${label}、採用の案の ## 記録 は URL に置き換える" "$(printf '%s\n' '地域ごとの落札の傾向' '## 何を作るか' '一覧' '## 記録' '' 'https://www.notion.so/new-page')" "$(cat "$(ideas_dir)"/*.md 2>/dev/null)"
+
+# 送れなかったときは、採用の案の ## 記録 に、送れなかったことと要約を書く。開発ログは failed に残して通知する
+setup
+enable_explore
+enable_notion
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=1 FAKE_JUDGE_COUNT=1 FAKE_NOTION_POST_FAIL=1 FAKE_DEVLOG_TEXT="$judge_devlog" "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+label="審査の段の記録を送れなかったとき"
+assert_eq "${label}、回は成功で終わる" "0" "$?"
+assert_eq "${label}、採用の案は渡す" "1" "$(find "$(ideas_dir)" -name '*.md' | wc -l | tr -d ' ')"
+assert_eq "${label}、## 記録 に、送れなかったことと要約を書く" "（開発ログを Notion に足せなかった）Researcher（お題: データ）: 採用 2 件" "$(cat "$(ideas_dir)"/*.md 2>/dev/null | sed -n '/^## 記録$/,$p' | tail -n 1)"
+assert_eq "${label}、つないだ開発ログを failed に残す" "yes" "$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/notion-failed/my-app"/*.md 2>/dev/null | grep -q '^## 採用した案$' && echo yes || echo no)"
+assert_eq "${label}、1回だけ送ろうとする" "1" "$(wc -l < "$FAKE_NOTION_POSTS" 2>/dev/null | tr -d ' ')"
+assert_eq "${label}、通知する" "1" "$(grep -c '^osascript.*Notion に足せなかった' "$FAKE_LOG")"
+
+# Notion を MCP で扱う回は、今までどおり Claude が記録を書くので、採用の案のファイルに手を加えない
+setup
+enable_explore
+FAKE_ISSUES='[]' FAKE_IDEA_COUNT=1 FAKE_JUDGE_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "Notion を MCP で扱う回は、採用の案のファイルをそのまま渡す" "$(printf '%s\n' '地域ごとの落札の傾向' '## 何を作るか' '一覧')" "$(cat "$(ideas_dir)"/*.md 2>/dev/null)"
+assert_eq "Notion を MCP で扱う回は、審査の段に記録の分担を伝えない" "no" "$(call_args_after 2 -p | grep -q '開発ログの本文には「お題」と「調査メモの要点」だけを書く' && echo yes || echo no)"
 
 # 実装の回（Engineer）は今回の範囲の外なので、.notion とトークンがあっても今までどおり MCP で動く
 setup
