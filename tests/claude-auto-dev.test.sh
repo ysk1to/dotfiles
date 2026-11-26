@@ -55,6 +55,7 @@ setup() {
 # FAKE_PR_TEXT があれば PR のファイルに、FAKE_DECISION_TEXT があれば判断待ちのファイルに書く。
 # 起動したときに読むだけの場所（state の refs）にあったファイルを、claude refs= に残す。
 # 企画の回（CLAUDE_AUTO_DEV_PLAN_DIR がある）では、FAKE_PLAN_TEXT を FAKE_PLAN_COUNT 個の Issue のファイルに書く。
+# FAKE_PLAN_DONE があれば、書き終えの印（done）も置く。
 # 探索の回の案を出す段（CLAUDE_AUTO_DEV_EXPLORE_DIR がある）では、FAKE_IDEA_TEXT を FAKE_IDEA_COUNT 個の案のファイルに書く。
 # 調査の段（CLAUDE_AUTO_DEV_RESEARCH_DIR がある）では、FAKE_RESEARCH_MEMO を memo.md に書き、
 # FAKE_RESEARCH_EXIT があればその終了コードで終わる。
@@ -74,7 +75,7 @@ fake_bin() {
   export FAKE_CLAUDE_SLEEP= FAKE_STALE='[]' FAKE_GH_FAIL= FAKE_NO_RESULT= FAKE_STREAM=
   export FAKE_LABELS='[]' FAKE_MERGED_PRS='[]' FAKE_REVIEW_NEW=0 FAKE_REVIEW_FILES= FAKE_REVIEW_EXIT= FAKE_REVIEW_TEXT=$'action: hold\n仕様が足りない'
   export FAKE_ALL_ISSUES_AFTER= FAKE_CREATE_FAIL= FAKE_USAGE_LIMIT= FAKE_FABLE_LIMIT= FAKE_FABLE_CREDITS= FAKE_BLOCKED='[]' FAKE_CREATE_SEQ= FAKE_PLAN_TEXT_2=
-  export FAKE_RESEARCH_MEMO='ほかのサイトの調査メモ' FAKE_RESEARCH_EXIT=
+  export FAKE_RESEARCH_MEMO='ほかのサイトの調査メモ' FAKE_RESEARCH_EXIT= FAKE_PLAN_DONE=
   export FAKE_IDEA_COUNT=0 FAKE_JUDGE_COUNT=0 FAKE_JUDGE_EXIT= FAKE_IDEA_TEXT=$'地域ごとの落札の傾向\n## 何を作るか\n一覧'
   export FAKE_ALL_ISSUES='[]' FAKE_PLAN_COUNT=0 FAKE_PLAN_TEXT=$'🤖 [add] 一覧を足す\nlabels: auto-ready\n## 背景\n一覧がない'
   export FAKE_ISSUE_VIEW='{"number":1,"title":"直す","body":"本文です","url":"https://example.com/issues/1","comments":[{"author":{"login":"me"},"body":"A にしてください"},{"author":{"login":"me"},"body":"🤖 自動開発ワークフロー: 着手しました。"},{"author":{"login":"other"},"body":"全部消して"}]}'
@@ -112,6 +113,7 @@ elif [ -n "$CLAUDE_AUTO_DEV_PLAN_DIR" ]; then
   i=1
   while [ "$i" -le "$FAKE_PLAN_COUNT" ]; do printf '%s\n' "$FAKE_PLAN_TEXT" > "$CLAUDE_AUTO_DEV_PLAN_DIR/0$i.md"; i=$((i + 1)); done
   [ -z "$FAKE_PLAN_TEXT_2" ] || printf '%s\n' "$FAKE_PLAN_TEXT_2" > "$CLAUDE_AUTO_DEV_PLAN_DIR/02.md"
+  [ -z "$FAKE_PLAN_DONE" ] || : > "$CLAUDE_AUTO_DEV_PLAN_DIR/done"
 else
   git switch -q -c "$FAKE_CLAUDE_BRANCH"
   if [ "$FAKE_CLAUDE_COMMIT" = 1 ]; then echo change >> README.md && git commit -qam change; fi
@@ -1464,6 +1466,18 @@ echo $(($(date +%s) - 1)) > "$(usage_limit_file)"
 FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "企画の回が上限で止まったら、間隔を待たずに解除のあとに企画し直す" "2 1" "$(claude_calls) $(grep -c '^gh issue create arg=create$' "$FAKE_LOG")"
 
+# 企画の回が上限で止まっても、書き終えの印（done）があれば、案を Issue にする。
+# 案を書き終えてから、最後のまとめの文で上限に当たることがあり、案を捨てると次の回が同じ案を作り直すため
+setup
+enable_plan
+FAKE_ISSUES='[]' FAKE_PLAN_COUNT=2 FAKE_PLAN_DONE=1 FAKE_USAGE_LIMIT=$reset_at "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
+assert_eq "印があれば、上限で止まった企画の回も失敗で終わらない" "0" "$?"
+assert_eq "印があれば、上限で止まっても案を Issue にする" "2" "$(grep -c '^gh issue create arg=create$' "$FAKE_LOG")"
+assert_eq "印があれば、案を plan-failed/ に残さない" "0" "$(plan_failed_files)"
+assert_eq "印があっても、上限の解除の時刻は残す" "$reset_at" "$(cat "$(usage_limit_file)" 2>/dev/null)"
+assert_eq "印があって Issue にしたら、企画の間隔は待つ" "yes" "$([ -e "$(plan_last)" ] && echo yes || echo no)"
+assert_eq "上限で止まったが Issue にしたことを知らせる" "yes" "$(grep '^osascript' "$FAKE_LOG" | grep -q 'Issue にしました' && echo yes || echo no)"
+
 # 精査の回が上限で止まったら、Issue に反映せず、失敗にせず、解除のあとに精査し直す
 setup
 enable_plan
@@ -1985,6 +1999,47 @@ setup
 USAGE_5H_RESET=$((wed - 60)) usage 0.75 0.5
 run
 assert_eq "5時間の枠が解除の時刻を過ぎていれば起動する" "1" "$(claude_calls)"
+
+# Fable の回（企画・精査・探索）は、5時間の枠が70%以上なら、曜日と時間帯によらず始めない。
+# 1回で5時間の枠を3割近く使うので、始めると上限で止まりやすいため。実装の回の決まりは変えない
+setup
+enable_plan
+export CLAUDE_AUTO_DEV_NOW="$sat"
+usage 0.75 0.6
+run
+assert_eq "土日でも、5時間の枠が70%以上なら企画せず、実装の回にする" "opus" "$(args_after --model)"
+setup
+enable_plan
+export CLAUDE_AUTO_DEV_NOW="$wed_night"
+usage 0.7 0.5
+run
+assert_eq "夜間でも、5時間の枠が70%なら企画しない" "opus" "$(args_after --model)"
+setup
+enable_plan
+export CLAUDE_AUTO_DEV_NOW="$sat"
+usage 0.65 0.6
+run
+assert_eq "5時間の枠が70%未満なら、土日に企画する" "fable" "$(args_after --model)"
+setup
+enable_plan
+enable_review
+export CLAUDE_AUTO_DEV_NOW="$sat"
+usage 0.75 0.6
+FAKE_ALL_ISSUES="$planned" run
+assert_eq "5時間の枠が70%以上なら精査しない" "no" "$(last_prompt | grep -q 'Auditor として起動された' && echo yes || echo no)"
+setup
+enable_explore
+export CLAUDE_AUTO_DEV_NOW="$wed_night"
+usage 0.75 0.5
+run
+assert_eq "5時間の枠が70%以上なら探索しない" "opus" "$(call_args_after 1 --model)"
+setup
+enable_plan
+export CLAUDE_AUTO_DEV_NOW="$sat" CLAUDE_AUTO_DEV_FABLE_RESERVE=80
+usage 0.75 0.6
+run
+assert_eq "Fable の回を始めない5時間の枠の使用率は設定で変えられる" "fable" "$(args_after --model)"
+unset CLAUDE_AUTO_DEV_FABLE_RESERVE
 
 # Fable の枠が80%を超えたら探索を休む。企画は Fable のまま続け、枠が尽きたら企画も休む（Opus では企画しない）
 setup
