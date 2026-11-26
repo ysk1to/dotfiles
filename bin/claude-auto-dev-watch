@@ -90,7 +90,7 @@ frame() {
       if (explode | map(cw) | add // 0) <= $w then .
       else (reduce explode[] as $c ({s: [], w: 0, full: false};
           if .full or .w + ($c | cw) > $w - 1 then .full = true else .s += [$c] | .w += ($c | cw) end) | .s | implode) + "…" end;
-    def run: if .mode == "implement" then "#\(.issue) の実装" elif .mode == "plan" then "企画" elif .mode == "explore" then "探索" else "精査" end + " \(.started_at | elapsed)";
+    def run: if .mode == "implement" then "Engineer #\(.issue)" elif .mode == "plan" then "Planner" elif .mode == "explore" then "Researcher" elif .mode == "review" then "Auditor" else .mode end + " \(.started_at | elapsed)";
     # 状況の行に出す分。下にタイトルの行が出るなら件数、出ないものがあれば番号
     def brief: if all(.[]; .title) then "\(length)" else [.[] | "#\(.number)"] | join(" ") end;
     def repo:

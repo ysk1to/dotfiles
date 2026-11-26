@@ -101,6 +101,9 @@ assert_eq "直近にマージした自動開発の PR" '[{"number":29,"title":"�
 assert_eq "直近に企画が作った Issue" '[13,14]' "$(q '[.[0].recent.planned[].number]')"
 assert_eq "直近に Claude が自分で決めた Issue" '[14]' "$(q '[.[0].recent.decided[].number]')"
 assert_eq "直近に精査が見つけた問題" '[15]' "$(q '[.[0].recent.findings[].number]')"
+text=$("$bin/claude-auto-dev-status" 2>/dev/null)
+assert_eq "テキストの直近の欄では、企画した Issue を Planner が作成として出す" "yes" "$(grep -qE 'Planner が作成 +#13 企画した' <<< "$text" && echo yes || echo no)"
+assert_eq "テキストの直近の欄では、精査で見つけた問題を Auditor が発見として出す" "yes" "$(grep -qE 'Auditor が発見 +#15 精査で見つけた' <<< "$text" && echo yes || echo no)"
 assert_eq "直近の幅は時間で変えられる" '[13,14,16]' "$(CLAUDE_AUTO_DEV_STATUS_HOURS=72 q '[.[0].recent.planned[].number]')"
 
 setup
@@ -230,7 +233,11 @@ mkdir -p "$state/locks/my-app"
 echo $$ > "$state/locks/my-app/pid"
 echo '{"mode":"implement","issue":14,"log":"/x.log","started_at":100}' > "$state/locks/my-app/run"
 assert_eq "動いている回の種類・Issue・始まった時刻を出す" '{"mode":"implement","issue":14,"log":"/x.log","started_at":100}' "$(q '.[0].running')"
-assert_eq "テキストでも実行中の回を出す" "yes" "$("$bin/claude-auto-dev-status" 2>/dev/null | grep -q '実行中.*#14' && echo yes || echo no)"
+assert_eq "テキストでも実行中の回を出す（Engineer と Issue の番号）" "yes" "$("$bin/claude-auto-dev-status" 2>/dev/null | grep -q '実行中 *Engineer #14（' && echo yes || echo no)"
+for m in plan:Planner explore:Researcher review:Auditor evaluate:evaluate; do
+  echo '{"mode":"'"${m%%:*}"'","issue":null,"log":"/x.log","started_at":100}' > "$state/locks/my-app/run"
+  assert_eq "テキストでは ${m%%:*} の回を ${m#*:} と出す" "yes" "$("$bin/claude-auto-dev-status" 2>/dev/null | grep -q "実行中 *${m#*:}（" && echo yes || echo no)"
+done
 
 setup
 mkdir -p "$state/locks/my-app"

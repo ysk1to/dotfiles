@@ -168,14 +168,14 @@ echo "$all" | jq -r --arg hours "${CLAUDE_AUTO_DEV_STATUS_HOURS:-24}" '
     links("判断待ち"; "issues"; .decisions; item),
     links("開いている PR"; "pull"; .prs; item + (if (.labels | length) > 0 then "（\(.labels | join(", "))）" else "" end)),
     "  自動開発",
-    (if .running then line("実行中"; "\(.running | if .mode == "implement" then "#\(.issue) の実装" elif .mode == "plan" then "企画" elif .mode == "explore" then "探索" else "精査" end)（\(.running.started_at | time) から）") else empty end),
+    (if .running then line("実行中"; "\(.running | if .mode == "implement" then "Engineer #\(.issue)" elif .mode == "plan" then "Planner" elif .mode == "explore" then "Researcher" elif .mode == "review" then "Auditor" else .mode end)（\(.running.started_at | time) から）") else empty end),
     list("作業中"; [.in_progress[] | item]),
     list("次に着手"; [if .next then "\(.next | item)（着手できる Issue \(.ready) 件）" else empty end]),
     line("起動"; "前回 \(.schedule.checked_at // null | if . then time else "記録なし" end) / 次回 \(.schedule.next_at // null | if . then time else "launchd の設定なし" end)"),
     line("今日"; "\(.runs.today.count) 回  \(.runs.today.duration | duration)  拒否 \(.runs.today.denials)"),
     (if .runs.last then line("前回の回"; "\(.runs.last.at | time)  \(.runs.last.turns) ターン  \(.runs.last.duration | duration)") else empty end),
-    ([some("マージ"; .recent.merged), some("企画"; .recent.planned),
-      some("Claude が決定"; .recent.decided), some("精査で発見"; .recent.findings)] as $recent
+    ([some("マージ"; .recent.merged), some("Planner が作成"; .recent.planned),
+      some("Claude が決定"; .recent.decided), some("Auditor が発見"; .recent.findings)] as $recent
       | if ($recent | length) > 0 then "  直近 \($hours) 時間", $recent[] else empty end),
     (if (.notices | length) > 0 then "  通知（直近 \($hours) 時間）", (.notices[] | "    \(.at | time)  \(.title)  \(.message)") else empty end),
     "")'

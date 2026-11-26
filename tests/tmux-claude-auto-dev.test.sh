@@ -82,11 +82,13 @@ echo "[$(repo)]" > "$cache"
 running my-app '{"mode":"implement","issue":14,"started_at":'"$((now - 750))"'}'
 assert_eq "実行中の回は、Issue と経過時間を出す" "🔧 app  🏃 #14 12m" "$(show)"
 running my-app '{"mode":"plan","issue":null,"started_at":'"$((now - 3900))"'}'
-assert_eq "企画の回は 🏃企画（1時間を超えたら時間も）" "🔧 app  🏃 企画 1h05m" "$(show)"
+assert_eq "企画の回は 🏃 Planner（1時間を超えたら時間も）" "🔧 app  🏃 Planner 1h05m" "$(show)"
 running my-app '{"mode":"review","issue":null,"started_at":'"$now"'}'
-assert_eq "精査の回は 🏃精査" "🔧 app  🏃 精査 0m" "$(show)"
+assert_eq "精査の回は 🏃 Auditor" "🔧 app  🏃 Auditor 0m" "$(show)"
 running my-app '{"mode":"explore","issue":null,"started_at":'"$now"'}'
-assert_eq "探索の回は 🏃探索" "🔧 app  🏃 探索 0m" "$(show)"
+assert_eq "探索の回は 🏃 Researcher" "🔧 app  🏃 Researcher 0m" "$(show)"
+running my-app '{"mode":"evaluate","issue":null,"started_at":'"$now"'}'
+assert_eq "知らない種類の回は、mode をそのまま出す" "🔧 app  🏃 evaluate 0m" "$(show)"
 
 setup
 echo "[$(repo)]" > "$cache"
@@ -174,6 +176,8 @@ setup
 popup=$("$bin/tmux-claude-auto-dev" --popup)
 assert_eq "ポップアップに凡例を出す" "yes" "$(echo "$popup" | grep -q '🙋 判断待ちの Issue' && echo yes || echo no)"
 assert_eq "凡例に次の起動と今日の回数・かかった時間も出す" "yes" "$(echo "$popup" | grep -q '⏩ 次の起動' && echo "$popup" | grep -q '⏳ 今日のかかった時間' && echo yes || echo no)"
+assert_eq "凡例の実行中の回は、役割の名前で出す" "yes" "$(echo "$popup" | grep -qF '🏃 実行中の回（#Issue・Planner・Researcher・Auditor と経過時間）' && echo yes || echo no)"
+assert_eq "凡例の Eco は、Engineer だけを2時間おきと出す" "yes" "$(echo "$popup" | grep -qF '（Engineer だけを2時間おき）' && echo yes || echo no)"
 assert_eq "凡例に費用は出さない" "no" "$(echo "$popup" | grep -q '💰' && echo yes || echo no)"
 assert_eq "ポップアップに状況の全文を出す" "yes" "$(echo "$popup" | grep -q '状況の全文' && echo yes || echo no)"
 
