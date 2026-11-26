@@ -216,6 +216,102 @@ assert_eq "会話の記録から、期間内にスキルが呼ばれた回数を
 setup
 assert_eq "会話の記録がなければ空にする" '{}' "$(q '.skills')"
 
+# ---- 週の枠の使用量 ----
+
+week_reset=$((now + 3 * day))
+usage_rec() { # 何秒前 リポジトリ 週の枠の% Fable の枠の%（空なら記録しない） [週の枠のリセットの時刻]
+  jq -cn --argjson at "$((now - $1))" --arg repo "$2" --argjson w "$3" --arg f "$4" --argjson r "${5:-$week_reset}" \
+    '{repo: $repo, at: $at, five_hour: {used_percentage: 1, resets_at: ($at + 3600)},
+      seven_day: {used_percentage: $w, resets_at: $r}}
+     + (if $f == "" then {} else {seven_day_fable: {used_percentage: ($f | tonumber), resets_at: $r}} end)' >> "$state/usage.jsonl"
+}
+stream() { # ファイル名（.stream.jsonl の前） 何秒前に書き終えたか 「週の枠の割合:Fable の枠の割合（なければ空）」…
+  local f="$state/logs/$1.stream.jsonl" ago="$2" w
+  shift 2
+  mkdir -p "$state/logs"
+  echo '{"type":"system","subtype":"init"}' > "$f"
+  for w in "$@"; do
+    jq -cn --argjson w "${w%%:*}" --arg f "${w#*:}" --argjson r "$week_reset" \
+      '{type: "rate_limit_event", rate_limit_info: {unifiedWindows: ({five_hour: {utilization: 0.1, resetsAt: ($r - 3600)},
+         seven_day: {utilization: $w, resetsAt: $r}}
+         + (if $f == "" then {} else {seven_day_overage_included: {utilization: ($f | tonumber), resetsAt: $r}} end))}}' >> "$f"
+  done
+  touch -t "$(date -r "$((now - ago))" +%Y%m%d%H%M.%S)" "$f"
+}
+
+setup
+usage_rec 5000 my-app 40 60
+usage_rec 4000 other-app 43 61
+usage_rec 3000 my-app 45 63
+usage_rec 2000 other-app 50 63
+assert_eq "週の枠の増えた分を、記録の続く2件の差から足し合わせる" '{"seven_day":10,"fable":3}' \
+  "$(q '.usage | {seven_day: .seven_day.total, fable: .fable.total}')"
+assert_eq "記録の範囲と件数を出す" "{\"from\":$((now - 5000)),\"to\":$((now - 2000)),\"records\":4}" \
+  "$(q '.usage | {from, to, records}')"
+
+setup
+usage_rec 5000 my-app 90 70
+usage_rec 4000 my-app 95 80
+usage_rec 3000 my-app 3 2 $((week_reset + 7 * day))
+usage_rec 2000 my-app 5 4 $((week_reset + 7 * day))
+assert_eq "リセットをまたいだら、リセットのあとの値を増えた分とする" '{"seven_day":10,"fable":14}' \
+  "$(q '.usage | {seven_day: .seven_day.total, fable: .fable.total}')"
+
+setup
+usage_rec 5000 my-app 40 60
+usage_rec 4000 my-app 42 61 $((week_reset - 1))
+usage_rec 3000 my-app 44 62
+event 2900 my-app start "企画"
+stream my-app-20261122-111000 2500 "0.44:0.62" "0.46:0.63"
+jq -c --argjson r "$((week_reset - 1))" 'if .type == "rate_limit_event" then .rate_limit_info.unifiedWindows.seven_day.resetsAt = $r else . end' \
+  "$state/logs/my-app-20261122-111000.stream.jsonl" > "$tmp/s" && head -n 2 "$tmp/s" > "$state/logs/my-app-20261122-111000.stream.jsonl" &&
+  tail -n 1 "$tmp/s" | jq -c --argjson r "$week_reset" '.rate_limit_info.unifiedWindows.seven_day.resetsAt = $r' >> "$state/logs/my-app-20261122-111000.stream.jsonl"
+touch -t "$(date -r "$((now - 2500))" +%Y%m%d%H%M.%S)" "$state/logs/my-app-20261122-111000.stream.jsonl"
+usage_rec 2000 my-app 47 63
+assert_eq "リセットの時刻が1時間以内しか動いていなければ、リセットとみなさない" '{"seven_day":7,"fable":3,"auto":2}' \
+  "$(q '.usage | {seven_day: .seven_day.total, fable: .fable.total, auto: .seven_day.auto_dev}')"
+
+setup
+usage_rec 5000 my-app 40 ""
+usage_rec 4000 my-app 42 60
+usage_rec 3000 my-app 44 61
+assert_eq "Fable の枠がない記録をはさむ2件は、Fable の枠では数えない" '1' "$(q '.usage.fable.total')"
+
+setup
+usage_rec 5000 my-app 40 60
+event 4800 my-app start "#1 に着手"
+stream my-app-20261122-104000 4500 "0.41:" "0.43:"
+event 4400 other-app start "企画"
+stream other-app-20261122-104500 4000 "0.43:0.61" "0.44:0.61" "0.46:0.63"
+event 3900 my-app start "#2 に着手"
+stream my-app-20261122-105500 3500 "0.46:" "0.47:"
+usage_rec 3000 my-app 50 64
+assert_eq "回の出力の最初と最後の差を、自動開発の回で使った分として役割ごとに足す" \
+  '{"Engineer":{"runs":2,"used":3,"per_run":1.5},"Planner":{"runs":1,"used":3,"per_run":3}}' \
+  "$(q '.usage.seven_day.roles')"
+assert_eq "週の枠の増えた分を、自動開発の回で使った分と回のあいだに増えた分に分ける" '{"total":10,"auto_dev":6,"other":4}' \
+  "$(q '.usage.seven_day | {total, auto_dev, other}')"
+assert_eq "Fable の枠は、出力に Fable の枠が出た回だけを数える" \
+  '{"total":4,"auto_dev":2,"other":2,"roles":{"Planner":{"runs":1,"used":2,"per_run":2}}}' "$(q '.usage.fable')"
+
+setup
+event 6000 my-app start "#1 に着手"
+stream my-app-20261122-102000 5500 "0.30:" "0.39:"
+usage_rec 5000 my-app 40 60
+event 4800 my-app start "探索（調査）"
+stream my-app-1-20261122-104000 4500 "0.41:" "0.42:"
+event 4400 my-app start "探索（審査）"
+stream my-app-2-20261122-104000 4000 "0.42:0.60" "0.44:0.62"
+usage_rec 3000 my-app 45 62
+event 2800 my-app start "#2 に着手"
+stream my-app-20261122-112000 2500 "0.45:" "0.48:"
+assert_eq "記録の範囲の中で始まった回だけを、名前に段の番号が付いた出力も含めて数える" \
+  '{"Researcher":{"runs":2,"used":3,"per_run":1.5}}' "$(q '.usage.seven_day.roles')"
+
+setup
+usage_rec 3000 my-app 45 62
+assert_eq "記録が2件より少なければ、使用量は null にする" 'null' "$(q '.usage')"
+
 # ---- テキストの出力 ----
 
 setup
@@ -249,6 +345,20 @@ assert_eq "テキストでは、失敗の理由を役割の行の下に多い順
 assert_eq "テキストでは、Researcher の行に案と採用の数を続けて出す" "1" "$(grep -c '^  Researcher  回 1  .*  失敗 0  案 5  採用 2$' <<< "$out")"
 assert_eq "テキストでは、Reviewer の行に要確認の内訳と古くなった記述の Issue を続けて出す" "1" \
   "$(grep -c '要確認 1  レビュー前 0  決まりで要確認 1  判断で要確認 0  古くなった記述の Issue 1（開 1）$' <<< "$out")"
+
+setup
+usage_rec 5000 my-app 40 60
+event 4800 my-app start "企画"
+stream my-app-20261122-104000 4500 "0.41:0.60" "0.44:0.63"
+usage_rec 3000 my-app 50 64
+out=$("$bin/claude-bot-stats" 2>/dev/null)
+assert_eq "テキストでは、週の枠と Fable の枠の内訳を、役割ごとの1回あたりと一緒に出す" \
+  "$(printf '  週の枠  増えた分 10%%  自動開発の回 3%%  回のあいだ 7%%\n    Planner  回 1  計 3%%  1回あたり 3%%\n  Fable の枠  増えた分 4%%  自動開発の回 3%%  回のあいだ 1%%\n    Planner  回 1  計 3%%  1回あたり 3%%')" \
+  "$(grep -A3 '^  週の枠' <<< "$out")"
+
+setup
+out=$("$bin/claude-bot-stats" 2>/dev/null)
+assert_eq "テキストでは、記録が足りなければそう出す" "1" "$(grep -c '^  使用率の記録が2件より少ないので、集計できません$' <<< "$out")"
 
 echo
 if [ "$failures" -eq 0 ]; then

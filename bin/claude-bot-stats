@@ -12,6 +12,15 @@
 #             要確認は、最後の自動レビューのコメントの理由（「確認をお願いします」より前の「- 」の行）がすべて決まり
 #             （「ファイルを変更しています」か「no-auto-merge」を含む）なら needs_check_by_rule、それ以外は needs_check_by_review に分ける
 #             followup_issues: 期間内にワークフロー（github-actions）が作った Issue（PR のマージで古くなった記述を直すもの）の数と、開いている数
+#   usage:    週の枠（seven_day）と Fable の枠（fable）の使用量（%）を、自動開発の回で使った分と、回のあいだに増えた分に分ける。
+#             total: usage.jsonl（claude-auto-dev が回を始めるときに usage API から取った記録）の、時刻の順に続く2件の差の合計。
+#               リセットの時刻が1時間より先に動いた2件は、リセットをまたいだとみなし、あとの値を増えた分とする
+#               （同じ枠でも、リセットの時刻は1秒ほど揺れて返るため）。from・to・records は、使った記録の範囲と件数
+#             auto_dev・roles: 各回の出力（logs/*.stream.jsonl）の rate_limit_event の、最初と最後の差の合計と、役割ごとの回数・合計・1回あたり。
+#               回の役割は、出力を書き終えた時刻より前で、いちばん新しい同じリポジトリの着手（events.tsv）で決める。
+#               記録の範囲の中で始まった回だけを数える。Fable の枠は、出力に Fable の枠が出た回（Fable で動いた回）だけを数える
+#             other: total から auto_dev を引いた分（対話のセッションやほかの端末で使った分）。記録が2件より少なければ usage は null
+#             最初の問い合わせの分は出力に出ないので、auto_dev は少なめに、other は多めに出る。別のリポジトリの回が重なると、auto_dev は重なった分を二重に数える
 #   skills:   会話の記録（~/.claude/projects の jsonl）で、期間内に Skill ツールで呼ばれた回数
 # 記録の場所は CLAUDE_AUTO_DEV_STATE_DIR（既定 ~/.local/state/claude-auto-dev）と CLAUDE_PROJECTS_DIR（既定 ~/.claude/projects）で変更できる
 
@@ -137,8 +146,42 @@ skills_json() {
     jq -Rn '[inputs] | group_by(.) | map({key: .[0], value: length}) | from_entries'
 }
 
-result=$(jq -n --argjson days "$days" --argjson bots "$(bots_json)" --argjson reviewer "$(reviewer_json)" --argjson skills "$(skills_json)" \
-  '{days: $days, bots: $bots, reviewer: $reviewer, skills: $skills}')
+# 週の枠の使用量。回を始めるときの記録（usage.jsonl）と、各回の出力の rate_limit_event から数える
+usage_json() {
+  local f m runs starts
+  [ -f "$state_dir/usage.jsonl" ] || { echo null; return; }
+  # 回ごとに、リポジトリ・出力を書き終えた時刻・枠ごとの最初と最後の差（出力に枠が出なければ null）を出す
+  runs=$(for f in "$state_dir"/logs/*.stream.jsonl; do
+    [ -f "$f" ] || continue
+    m=$(stat -f %m "$f")
+    [ "$m" -ge "$since" ] || continue
+    grep -h '"rate_limit_event"' "$f" 2>/dev/null | jq -sc --arg repo "$(basename "$f" .stream.jsonl | sed -E 's/-([12]-)?[0-9]{8}-[0-9]{6}$//')" --argjson end "$m" '
+      def pct: .utilization * 100 + 0.5 | floor;
+      def used(w): [.[] | .rate_limit_info.unifiedWindows[w] // empty] | if length == 0 then null
+        else first as $a | last as $b | if $b.resetsAt - $a.resetsAt <= 3600 then ($b | pct) - ($a | pct) else $b | pct end end;
+      {repo: $repo, end: $end, seven_day: used("seven_day"), fable: used("seven_day_overage_included")}' 2>/dev/null
+  done | jq -sc .)
+  starts=$(awk -F'\t' '$3 == "start"' "$state_dir/events.tsv" 2>/dev/null | jq -Rn '[inputs | split("\t") | {at: (.[0] | tonumber), repo: .[1],
+    role: (.[3] | if test("^#[0-9]+ に着手") then "Engineer" elif test("^企画") then "Planner" elif test("^精査") then "Auditor"
+      elif test("^探索") then "Researcher" else "" end)}]')
+  jq -sc --argjson since "$since" --argjson runs "${runs:-[]}" --argjson starts "${starts:-[]}" '
+    [.[] | select(.at >= $since)] | sort_by(.at) as $r
+    | if ($r | length) < 2 then null else
+      ($r[0].at) as $from | ($r[-1].at) as $to
+      | def inc(w): [range(1; $r | length) as $i | $r[$i - 1][w] as $a | $r[$i][w] as $b | select($a != null and $b != null)
+          | if $b.resets_at - $a.resets_at <= 3600 then [$b.used_percentage - $a.used_percentage, 0] | max else $b.used_percentage end] | add // 0;
+      [$runs[] | . as $run | ([$starts[] | select(.repo == $run.repo and .at <= $run.end)] | max_by(.at)) as $s
+        | select($s != null and $s.role != "" and $s.at >= $from and $s.at < $to) | . + {role: $s.role}] as $in
+      | def window(key; total): ([$in[] | select(.[key] != null)]) as $w | ($w | map(.[key]) | add // 0) as $auto
+          | {total: total, auto_dev: $auto, other: (total - $auto),
+             roles: ($w | group_by(.role) | map({key: .[0].role, value: {runs: length, used: (map(.[key]) | add),
+               per_run: ((map(.[key]) | add) / length * 10 | round / 10)}}) | from_entries)};
+      {from: $from, to: $to, records: ($r | length), seven_day: window("seven_day"; inc("seven_day")), fable: window("fable"; inc("seven_day_fable"))}
+    end' "$state_dir/usage.jsonl"
+}
+
+result=$(jq -n --argjson days "$days" --argjson bots "$(bots_json)" --argjson reviewer "$(reviewer_json)" --argjson usage "$(usage_json)" \
+  --argjson skills "$(skills_json)" '{days: $days, bots: $bots, reviewer: $reviewer, usage: $usage, skills: $skills}')
 
 if [ -n "$json" ]; then
   echo "$result"
@@ -161,6 +204,14 @@ jq -r '
       + "  決まりで要確認 \(.value.needs_check_by_rule)  判断で要確認 \(.value.needs_check_by_review)"
       + (if .value.followup_issues == null then "  古くなった記述の Issue 取得できませんでした"
          else "  古くなった記述の Issue \(.value.followup_issues.created)（開 \(.value.followup_issues.open)）" end) end),
+  "",
+  "# 週の枠の使用量（自動開発の回と、回のあいだ）",
+  (if .usage == null then "  使用率の記録が2件より少ないので、集計できません"
+   else (.usage | "  記録 \(.records) 件（\(.from | strflocaltime("%m/%d %H:%M"))〜\(.to | strflocaltime("%m/%d %H:%M"))）"),
+     (.usage | [["週の枠", .seven_day], ["Fable の枠", .fable]][]
+       | "  \(.[0])  増えた分 \(.[1].total)%  自動開発の回 \(.[1].auto_dev)%  回のあいだ \(.[1].other)%",
+         (.[1].roles | to_entries[] | "    \(.key)  回 \(.value.runs)  計 \(.value.used)%  1回あたり \(.value.per_run)%"))
+   end),
   "",
   "# スキル（呼ばれた回数）",
   (.skills | to_entries[] | "  \(.key)  \(.value)")' <<< "$result"
