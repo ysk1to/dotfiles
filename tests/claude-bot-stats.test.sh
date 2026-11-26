@@ -118,6 +118,20 @@ event 1800 my-app notice "週の枠 10%"
 assert_eq "Researcher の出した案と採用した案を、探索のお知らせから足し合わせる" '{"ideas":10,"adopted":4}' \
   "$(q '.bots["my-app"].Researcher | {ideas, adopted}')"
 
+setup
+event 3000 my-app start "企画"
+event 2900 my-app end "10 ターン、7m"
+event 2890 my-app rebuild "作り直し 2 回、500000 トークン"
+event 2000 my-app start "企画"
+event 1900 my-app end "10 ターン、3m"
+event 1000 my-app start "企画"
+event 890 my-app rebuild "作り直し 1 回、250000 トークン"
+event 800 my-app start "#3 に着手"
+assert_eq "作り直しの回数とトークン数を、役割ごとに足し合わせる" '{"rebuilds":3,"rebuild_tokens":750000}' \
+  "$(q '.bots["my-app"].Planner | {rebuilds, rebuild_tokens}')"
+assert_eq "作り直しのない役割は0にする" '{"rebuilds":0,"rebuild_tokens":0}' \
+  "$(q '.bots["my-app"].Engineer | {rebuilds, rebuild_tokens}')"
+
 # ---- Reviewer ----
 
 pr() { # 番号 何秒前に作ったか 状態 マージした人（なければ空） 自動レビューのコメントの1行目（なければ空）
@@ -209,6 +223,15 @@ event 600 my-app start "#1 に着手"
 event 500 my-app pr "#2 PR"
 out=$("$bin/claude-bot-stats" 2>/dev/null)
 assert_eq "テキストでは、リポジトリと役割ごとに1行で出す" "1" "$(grep -c '^  Engineer  回 1  PR 1' <<< "$out")"
+
+setup
+event 3000 my-app start "企画"
+event 2890 my-app rebuild "作り直し 2 回、500000 トークン"
+event 2000 my-app start "#1 に着手"
+out=$("$bin/claude-bot-stats" 2>/dev/null)
+assert_eq "テキストでは、作り直しがあった役割の行に、作り直しの回数とトークン数を続けて出す" "1" \
+  "$(grep -c '^  Planner  回 1  .*  失敗 0  作り直し 2 回（500000 トークン）$' <<< "$out")"
+assert_eq "テキストでは、作り直しのない役割の行には出さない" "1" "$(grep -c '^  Engineer  回 1  .*  失敗 0$' <<< "$out")"
 
 setup
 event 3000 my-app start "#1 に着手"
