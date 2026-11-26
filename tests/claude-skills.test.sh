@@ -83,6 +83,10 @@ assert_rule claude/skills/planner/SKILL.md '^- Claude: 案のファイルは、�
 assert_rule claude/skills/researcher/ideas.md '^- Claude: 案のファイルは、1回の応答で 2〜3本までにする'
 assert_rule claude/skills/researcher/judge.md '^- Claude: 結果と記録は、応答を分けて書く。審査を終えたあとの最初の応答では `rejected.md` だけを書き'
 
+# 企画の手順に、案を全部書き終えたら印のファイル（done）を置く決まりがあること。
+# 起動スクリプトは、使用量の上限で止まった回でも、この印があれば案を Issue にする（なければ plan-failed/ に残す）
+assert_eq "planner に、書き終えの印を置く決まりがある" "1" "$(grep -c '^- Claude: 案をすべて書き終えたら、案の置き場所に `done` という名前の空のファイルを置く' claude/skills/planner/SKILL.md)"
+
 # Notion を読み書きする役割の手順に、置き場が渡されたとき（起動スクリプトが Notion を扱う回）と、
 # 渡されないとき（MCP で読み書きする回・対話）の両方の書き方があること。
 # 置き場の回は Notion の MCP の道具が禁止なので、MCP の書き方しかないと読めず、記録も残らないため
