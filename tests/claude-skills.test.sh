@@ -100,6 +100,12 @@ assert_notion claude/skills/auditor/SKILL.md 1
 assert_notion claude/skills/researcher/judge.md 1
 # 案を出す段は開発ログを書かない（審査の段がまとめて書く）
 assert_notion claude/skills/researcher/ideas.md 0
+# 審査の段は、置き場の回では、記録の本文にお題と調査メモの要点だけを書く。採用した案と落とした案は起動スクリプトが
+# 採用の案のファイルと rejected.md から写すので、Claude が採用の案の全文を2回書かないようにするため
+assert_eq "judge.md に、置き場の回は記録の本文にお題と調査メモの要点だけを書く決まりがある" "1" \
+  "$(grep -c '^- 置き場が渡されたときは、本文に「お題」と「調査メモの要点」だけを書く' claude/skills/researcher/judge.md)"
+assert_eq "judge.md に、置き場の回は ## 記録 を起動スクリプトが書くとある" "1" \
+  "$(grep -c '置き場が渡されたときは書かない。起動スクリプトが' claude/skills/researcher/judge.md)"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures failed"
