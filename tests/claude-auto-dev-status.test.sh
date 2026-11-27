@@ -234,7 +234,7 @@ echo $$ > "$state/locks/my-app/pid"
 echo '{"mode":"implement","issue":14,"log":"/x.log","started_at":100}' > "$state/locks/my-app/run"
 assert_eq "動いている回の種類・Issue・始まった時刻を出す" '{"mode":"implement","issue":14,"log":"/x.log","started_at":100}' "$(q '.[0].running')"
 assert_eq "テキストでも実行中の回を出す（Engineer と Issue の番号）" "yes" "$("$bin/claude-auto-dev-status" 2>/dev/null | grep -q '実行中 *Engineer #14（' && echo yes || echo no)"
-for m in plan:Planner explore:Researcher review:Auditor evaluate:evaluate; do
+for m in plan:Planner explore:Researcher review:Auditor evaluate:Evaluator other:other; do
   echo '{"mode":"'"${m%%:*}"'","issue":null,"log":"/x.log","started_at":100}' > "$state/locks/my-app/run"
   assert_eq "テキストでは ${m%%:*} の回を ${m#*:} と出す" "yes" "$("$bin/claude-auto-dev-status" 2>/dev/null | grep -q "実行中 *${m#*:}（" && echo yes || echo no)"
 done

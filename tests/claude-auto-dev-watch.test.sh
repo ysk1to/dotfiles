@@ -137,7 +137,7 @@ setup
 echo "[$(repo)]" > "$cache"
 running my-app '{"mode":"plan","issue":null,"log":"/x.log","stream":"/nonexistent.jsonl","started_at":'"$now"'}'
 assert_eq "出力がまだなければ、見出しだけ出す" "yes" "$(has "$(frame)" '── 実行中 app Planner')"
-for m in plan:Planner explore:Researcher review:Auditor evaluate:evaluate; do
+for m in plan:Planner explore:Researcher review:Auditor evaluate:Evaluator other:other; do
   running my-app '{"mode":"'"${m%%:*}"'","issue":null,"log":"/x.log","started_at":'"$now"'}'
   assert_eq "${m%%:*} の回は ${m#*:} と出す" "yes" "$(has "$(frame)" "🏃 ${m#*:} 0m")"
 done
