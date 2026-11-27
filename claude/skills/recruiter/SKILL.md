@@ -25,7 +25,7 @@ description: 本人の仕事を聞き取り、Claude に任せる仕組み（ス
 
 - スキル: `~/.claude/skills/`、そのリポジトリの `.claude/skills/`
 - サブエージェント: `~/.claude/agents/`、そのリポジトリの `.claude/agents/`
-- 自動開発の手順: そのリポジトリの `.claude/auto-*.md`
+- 自動開発の役割の手順: 役割のスキル（`~/.claude/skills/` の `engineer`・`planner`・`auditor`・`researcher`・`reviewer`）と、そのリポジトリの役割の決まり（`.claude/<役割>.md`）
 - スクリプト: dotfiles の `bin/`、そのリポジトリのスクリプト
 
 近いものがあれば、新しく作るのではなく、それを直す案を先に出す。
