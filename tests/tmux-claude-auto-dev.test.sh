@@ -6,6 +6,10 @@ cd "$(dirname "$0")/.." || exit 1
 bin="$PWD/bin"
 failures=0
 
+# setup が作るフォルダは1つのフォルダの下に置き、終わるときにまとめて消す
+tmp_root=$(mktemp -d)
+trap 'rm -rf "$tmp_root"' EXIT
+
 assert_eq() {
   if [ "$2" = "$3" ]; then
     echo "ok   $1"
@@ -19,7 +23,7 @@ assert_eq() {
 
 # 偽の claude-auto-dev-status は FAKE_STATUS を出す。FAKE_DELAY（秒）があれば、出す前にその分だけ待つ
 setup() {
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d "$tmp_root/XXXXXX")
   export XDG_CACHE_HOME="$tmp" FAKE_LOG="$tmp/fake.log" FAKE_STATUS='[]' FAKE_DELAY=0 CLAUDE_AUTO_DEV_STATE_DIR="$tmp/state"
   cache="$tmp/claude-auto-dev-status.json"
   cat > "$tmp/status" <<'EOF'
@@ -95,8 +99,9 @@ assert_eq "知らない種類の回は、mode をそのまま出す" "🔧 app  
 setup
 echo "[$(repo)]" > "$cache"
 running my-app '{"mode":"implement","issue":14,"started_at":1}'
-sleep 30 & dead=$!
-kill "$dead"; wait "$dead" 2>/dev/null
+# 終わったプロセスの番号を作る。kill で止めると、exec の前の子が trap（tmp_root を消す）を動かすことがあるので、自分で終わらせる
+sleep 0 & dead=$!
+wait "$dead"
 echo "$dead" > "$CLAUDE_AUTO_DEV_STATE_DIR/locks/my-app/pid"
 assert_eq "落ちてロックだけ残っていれば 🏃 を出さない" "🔧 app  ✓" "$(show)"
 

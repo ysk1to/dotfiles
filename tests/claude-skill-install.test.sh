@@ -6,6 +6,10 @@ cd "$(dirname "$0")/.." || exit 1
 bin="$PWD/bin"
 failures=0
 
+# setup が作るフォルダは1つのフォルダの下に置き、終わるときにまとめて消す
+tmp_root=$(mktemp -d)
+trap 'rm -rf "$tmp_root"' EXIT
+
 assert_eq() {
   if [ "$2" = "$3" ]; then
     echo "ok   $1"
@@ -19,7 +23,7 @@ assert_eq() {
 
 # 取得元のリポジトリを作る。1つ目のコミットには old.txt があり、2つ目のコミットで消える
 setup() {
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d "$tmp_root/XXXXXX")
   src="$tmp/src"
   export CLAUDE_SKILLS_DIR="$tmp/skills"
   mkdir -p "$src/skills/demo"

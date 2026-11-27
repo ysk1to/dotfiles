@@ -6,6 +6,10 @@ cd "$(dirname "$0")/.." || exit 1
 bin="$PWD/bin"
 failures=0
 
+# setup が作るフォルダは1つのフォルダの下に置き、終わるときにまとめて消す
+tmp_root=$(mktemp -d)
+trap 'rm -rf "$tmp_root"' EXIT
+
 assert_eq() {
   if [ "$2" = "$3" ]; then
     echo "ok   $1"
@@ -20,7 +24,7 @@ assert_eq() {
 # 偽の defaults は、書き込みを $tmp/written に記録し、読み込みには $tmp/current を返す
 # 偽の pgrep は、$tmp/running があれば iTerm2 が動いているとみなす
 setup() {
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d "$tmp_root/XXXXXX")
   mkdir "$tmp/bin"
   cat > "$tmp/bin/defaults" <<EOF
 #!/bin/bash

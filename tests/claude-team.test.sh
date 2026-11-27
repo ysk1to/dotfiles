@@ -6,6 +6,10 @@ cd "$(dirname "$0")/.." || exit 1
 bin="$PWD/bin"
 failures=0
 
+# setup が作るフォルダは1つのフォルダの下に置き、終わるときにまとめて消す
+tmp_root=$(mktemp -d)
+trap 'rm -rf "$tmp_root"' EXIT
+
 assert_eq() {
   if [ "$2" = "$3" ]; then
     echo "ok   $1"
@@ -20,7 +24,7 @@ has() { if grep -qF -- "$2" <<< "$1"; then echo yes; else echo no; fi; }
 count() { grep -cF -- "$2" <<< "$1"; }
 
 setup() {
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d "$tmp_root/XXXXXX")
   repo="$tmp/Program/private/my.app"
   mkdir -p "$repo" "$tmp/bin"
   export HOME="$tmp" PATH="$tmp/bin:$PATH" FAKE_LOG="$tmp/fake.log" TMUX=

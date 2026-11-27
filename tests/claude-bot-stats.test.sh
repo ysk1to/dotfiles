@@ -6,6 +6,10 @@ cd "$(dirname "$0")/.." || exit 1
 bin="$PWD/bin"
 failures=0
 
+# setup が作るフォルダは1つのフォルダの下に置き、終わるときにまとめて消す
+tmp_root=$(mktemp -d)
+trap 'rm -rf "$tmp_root"' EXIT
+
 assert_eq() {
   if [ "$2" = "$3" ]; then
     echo "ok   $1"
@@ -24,7 +28,7 @@ day=86400
 
 # 状態のディレクトリ（リポジトリの場所と events.tsv）と会話の記録を作る。gh は FAKE_PRS を返す
 setup() {
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d "$tmp_root/XXXXXX")
   state="$tmp/state"
   projects="$tmp/projects"
   export CLAUDE_AUTO_DEV_STATE_DIR="$state" CLAUDE_AUTO_DEV_NOW="$now" CLAUDE_PROJECTS_DIR="$projects"

@@ -6,6 +6,10 @@ cd "$(dirname "$0")/.." || exit 1
 bin="$PWD/bin"
 failures=0
 
+# setup が作るフォルダは1つのフォルダの下に置き、終わるときにまとめて消す
+tmp_root=$(mktemp -d)
+trap 'rm -rf "$tmp_root"' EXIT
+
 assert_eq() {
   if [ "$2" = "$3" ]; then
     echo "ok   $1"
@@ -24,7 +28,7 @@ at() { date -j -f '%Y-%m-%d %H:%M:%S' "$1" +%s; }
 
 # 状態のディレクトリに、claude-auto-dev が残すもの（リポジトリの場所）を作る。gh は FAKE_ISSUES・FAKE_PRS を返す
 setup() {
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d "$tmp_root/XXXXXX")
   state="$tmp/state"
   export CLAUDE_AUTO_DEV_STATE_DIR="$state" CLAUDE_AUTO_DEV_LAUNCH_AGENTS="$tmp/agents" CLAUDE_AUTO_DEV_NOW="$now"
   export CLAUDE_AUTO_DEV_CONFIG_DIR="$tmp/config"
@@ -241,8 +245,9 @@ done
 
 setup
 mkdir -p "$state/locks/my-app"
-sleep 30 & dead=$!
-kill "$dead"; wait "$dead" 2>/dev/null
+# 終わったプロセスの番号を作る。kill で止めると、exec の前の子が trap（tmp_root を消す）を動かすことがあるので、自分で終わらせる
+sleep 0 & dead=$!
+wait "$dead"
 echo "$dead" > "$state/locks/my-app/pid"
 echo '{"mode":"plan","issue":null,"log":"/x.log","started_at":100}' > "$state/locks/my-app/run"
 assert_eq "落ちてロックだけ残っていれば running は null" "null" "$(q '.[0].running')"
