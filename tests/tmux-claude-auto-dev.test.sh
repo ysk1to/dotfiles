@@ -99,8 +99,9 @@ assert_eq "知らない種類の回は、mode をそのまま出す" "🔧 app  
 setup
 echo "[$(repo)]" > "$cache"
 running my-app '{"mode":"implement","issue":14,"started_at":1}'
-sleep 30 & dead=$!
-kill "$dead"; wait "$dead" 2>/dev/null
+# 終わったプロセスの番号を作る。kill で止めると、exec の前の子が trap（tmp_root を消す）を動かすことがあるので、自分で終わらせる
+sleep 0 & dead=$!
+wait "$dead"
 echo "$dead" > "$CLAUDE_AUTO_DEV_STATE_DIR/locks/my-app/pid"
 assert_eq "落ちてロックだけ残っていれば 🏃 を出さない" "🔧 app  ✓" "$(show)"
 

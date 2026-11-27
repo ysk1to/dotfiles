@@ -245,8 +245,9 @@ done
 
 setup
 mkdir -p "$state/locks/my-app"
-sleep 30 & dead=$!
-kill "$dead"; wait "$dead" 2>/dev/null
+# 終わったプロセスの番号を作る。kill で止めると、exec の前の子が trap（tmp_root を消す）を動かすことがあるので、自分で終わらせる
+sleep 0 & dead=$!
+wait "$dead"
 echo "$dead" > "$state/locks/my-app/pid"
 echo '{"mode":"plan","issue":null,"log":"/x.log","started_at":100}' > "$state/locks/my-app/run"
 assert_eq "落ちてロックだけ残っていれば running は null" "null" "$(q '.[0].running')"
