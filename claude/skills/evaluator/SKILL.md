@@ -1,6 +1,6 @@
 ---
 name: evaluator
-description: Bot（自動開発の回・PR の自動レビュー）とスキルの働きぶりを、記録をもとに評価し、直す案・消してよいものを出す。「仕組みを見直して」「Bot の働きぶりを評価して」「このスキルはうまく動いている？」と頼まれたとき、または /evaluator で呼ばれたときに使う。自動開発から週に1回、Bot としても呼ばれる。
+description: Bot（自動開発の Engineer・Planner・Auditor・Researcher と、PR の自動レビューの Reviewer）とスキルの働きぶりを、記録をもとに評価し、直す案・消してよいものを出す。「仕組みを見直して」「Bot の働きぶりを評価して」「このスキルはうまく動いている？」と頼まれたとき、または /evaluator で呼ばれたときに使う。自動開発から週に1回、Bot としても呼ばれる。
 ---
 
 # Evaluator: 仕組みの働きぶりを評価する
@@ -16,8 +16,8 @@ Bot とスキルの全部を、記録をもとに評価する。Recruiter（`rec
 
 ## 1. 材料を集める
 
-- 集計: `~/bin/claude-bot-stats --days <日数>`（既定は7日）。役割ごとの回数・PR・Issue・判断待ち・失敗、PR の自動マージ・要確認・レビュー前の数、スキルが呼ばれた回数が出る。数は自分で数え直さず、この出力を使う
-- 仕組みの中身: スキルの `SKILL.md`（`~/.claude/skills/`、各リポジトリの `.claude/skills/`）、自動開発の手順（各リポジトリの `.claude/auto-*.md`）、PR の自動レビュー（各リポジトリの `.github/workflows/pr-review.yml`）
+- 集計: `~/bin/claude-bot-stats --days <日数>`（既定は7日）。役割ごとの回数・PR・Issue・判断待ち・失敗、PR の自動マージ・要確認・レビュー前の数、週の枠と Fable の枠の使用量の内訳（自動開発の Bot が使った分と、そのあいだに対話のセッションなどで増えた分、役割ごとの1回あたり）、スキルが呼ばれた回数が出る。数は自分で数え直さず、この出力を使う
+- 仕組みの中身: スキルの `SKILL.md`（`~/.claude/skills/`、各リポジトリの `.claude/skills/`）、役割のスキル（`engineer`・`planner`・`auditor`・`researcher`・`reviewer`）と、各リポジトリの役割の決まり（`.claude/<役割>.md`）、PR の自動レビュー（各リポジトリの `.github/workflows/pr-review.yml`）
 - 要確認になった PR の自動レビューのコメント、判断待ちの Issue のコメント（どの指摘・判断が多いか）
 - Notion の開発ログ（その期間のもの）。本人に直された・同じ指摘が続いた、という記録を探す
 
@@ -62,8 +62,8 @@ GitHub やほかのリポジトリに触れるのは起動スクリプトだけ�
 
 1 の「材料を集める」の代わりに、起動時のプロンプトにある材料の置き場所のファイルを読む。自分で `claude-bot-stats` や `gh` を実行しない。
 
-- `stats.txt`・`stats.json`: `claude-bot-stats` の出力（期間は7日）。`stats.txt` はテキスト、`stats.json` は `--json` の出力。数は自分で数え直さず、これを使う。`stats.json` の `reviewer` の値が `null` のリポジトリは、集計のときに取得できなかったもの。
-- `repos/<リポジトリ名>/`: 自動開発に登録されている各リポジトリの、デフォルトブランチの `.claude/` と `.github/workflows/`。仕組みの中身（自動開発の手順、リポジトリの決まり、PR の自動レビュー）は、ここから読む。
+- `stats.txt`・`stats.json`: `claude-bot-stats` の出力（期間は7日）。`stats.txt` はテキスト、`stats.json` は `--json` の出力。数は自分で数え直さず、これを使う。`stats.json` の `reviewer` の値が `null` のリポジトリは、集計のときに取得できなかったもの。`usage` が `null` なのは、使用率の記録が2件より少なく集計できなかったとき。
+- `repos/<リポジトリ名>/`: 自動開発に登録されている各リポジトリの、デフォルトブランチの `.claude/` と `.github/workflows/`。仕組みの中身（役割の決まり `.claude/<役割>.md`、PR の自動レビュー）は、ここから読む。
 - `needs-check.md`: 期間内に要確認になった PR と、その自動レビューのコメント。
 - `needs-decision.md`: 期間内に判断待ちになった Issue と、ワークフローが書いたコメント（`🤖 自動開発ワークフロー` で始まるもの）。
 - スキル（`claude/skills/`）は、起動時のプロンプトにある場所から読む。
