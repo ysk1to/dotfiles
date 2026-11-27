@@ -4,7 +4,7 @@
 #   --days: 何日分を数えるか（既定 7）。--json: JSON で出す（既定はテキスト）
 # 数えるもの（件数だけを出し、会話や Issue の中身は出さない）:
 #   bots:     自動開発の回。events.tsv の着手（start）の内容から役割を決め、次の着手までの PR・Issue・判断待ち・失敗をその回のものとして数える
-#             （Engineer #N・Planner・Auditor・Researcher（…）。前の文言の #N に着手・企画・精査・探索（…）も読む）
+#             （Engineer #N・Planner・Auditor・Researcher（…）・Evaluator。前の文言の #N に着手・企画・精査・探索（…）も読む）
 #             fail_reasons: 失敗の理由ごとの数（本文から先頭の「#N: 」を除き、最初の「。」より前を取る）
 #             Researcher の ideas・adopted: お知らせ「Researcher（…）: 案 N 件、採用 M 件」（前の文言は「探索（…）: …」）の N と M の合計
 #             rebuilds・rebuild_tokens: プロンプトキャッシュが切れて文脈を作り直した回数とトークン数（できごと「作り直し N 回、T トークン」の合計）
@@ -47,7 +47,7 @@ bots_json() {
     $1 < since { next }
     $3 == "start" {
       role = ($4 ~ /^(Engineer #[0-9]+|#[0-9]+ に着手)/) ? "Engineer" : ($4 ~ /^(Planner|企画)/) ? "Planner" \
-        : ($4 ~ /^(Auditor|精査)/) ? "Auditor" : ($4 ~ /^(Researcher|探索)/) ? "Researcher" : ""
+        : ($4 ~ /^(Auditor|精査)/) ? "Auditor" : ($4 ~ /^(Researcher|探索)/) ? "Researcher" : ($4 ~ /^Evaluator/) ? "Evaluator" : ""
       current[$2] = role
       if (role != "") runs[$2 SUBSEP role]++
       next
@@ -164,7 +164,7 @@ usage_json() {
   done | jq -sc .)
   starts=$(awk -F'\t' '$3 == "start"' "$state_dir/events.tsv" 2>/dev/null | jq -Rn '[inputs | split("\t") | {at: (.[0] | tonumber), repo: .[1],
     role: (.[3] | if test("^(Engineer #[0-9]+|#[0-9]+ に着手)") then "Engineer" elif test("^(Planner|企画)") then "Planner"
-      elif test("^(Auditor|精査)") then "Auditor" elif test("^(Researcher|探索)") then "Researcher" else "" end)}]')
+      elif test("^(Auditor|精査)") then "Auditor" elif test("^(Researcher|探索)") then "Researcher" elif test("^Evaluator") then "Evaluator" else "" end)}]')
   jq -sc --argjson since "$since" --argjson runs "${runs:-[]}" --argjson starts "${starts:-[]}" '
     [.[] | select(.at >= $since)] | sort_by(.at) as $r
     | if ($r | length) < 2 then null else

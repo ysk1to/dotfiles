@@ -168,7 +168,7 @@ echo "$all" | jq -r --arg hours "${CLAUDE_AUTO_DEV_STATUS_HOURS:-24}" '
     links("判断待ち"; "issues"; .decisions; item),
     links("開いている PR"; "pull"; .prs; item + (if (.labels | length) > 0 then "（\(.labels | join(", "))）" else "" end)),
     "  自動開発",
-    (if .running then line("実行中"; "\(.running | if .mode == "implement" then "Engineer #\(.issue)" elif .mode == "plan" then "Planner" elif .mode == "explore" then "Researcher" elif .mode == "review" then "Auditor" else .mode end)（\(.running.started_at | time) から）") else empty end),
+    (if .running then line("実行中"; "\(.running | if .mode == "implement" then "Engineer #\(.issue)" elif .mode == "plan" then "Planner" elif .mode == "explore" then "Researcher" elif .mode == "review" then "Auditor" elif .mode == "evaluate" then "Evaluator" else .mode end)（\(.running.started_at | time) から）") else empty end),
     list("作業中"; [.in_progress[] | item]),
     list("次に着手"; [if .next then "\(.next | item)（着手できる Issue \(.ready) 件）" else empty end]),
     line("起動"; "前回 \(.schedule.checked_at // null | if . then time else "記録なし" end) / 次回 \(.schedule.next_at // null | if . then time else "launchd の設定なし" end)"),

@@ -2,7 +2,7 @@
 # claude-auto-dev の状況（claude-auto-dev-status --json）を、tmux のステータスバー（2行目）向けに絵文字と件数で出力する。
 # 例: 🔧 kbi  🏃 #14 12m  🙋 1  🔀 2  │  foo  ✓  │  ⏩ 20:00  🔁 4  ⏳ 1h52m
 #   リポジトリごとに略称と件数を並べる（0件のものは出さない。何もなければ ✓）
-#   🏃 実行中の回（#Issue・Planner・Researcher・Auditor と経過時間）/ 🙋 判断待ちの Issue / 🔀 開いている PR / 📥 着手できる Issue
+#   🏃 実行中の回（#Issue・Planner・Researcher・Auditor・Evaluator と経過時間）/ 🙋 判断待ちの Issue / 🔀 開いている PR / 📥 着手できる Issue
 #   🚨 起動の見落とし・gh の失敗・直近の失敗の通知
 #   最後に、全リポジトリで ⚠ 止まっているセルフホストランナー / 🍃 Eco・🚀 Boost ペース配分の段階（Normal は出さない）/
 #   ⏩ いちばん近い次の起動 / 🔁 今日の回数 / ⏳ 今日のかかった時間
@@ -24,7 +24,7 @@ docker="${TMUX_AUTO_DEV_DOCKER:-docker}"
 runners_cache="$(dirname "$cache")/claude-auto-dev-runners"
 
 if [ "$1" = --popup ]; then
-  echo "🏃 実行中の回（#Issue・Planner・Researcher・Auditor と経過時間）  🙋 判断待ちの Issue  🔀 開いている PR  📥 着手できる Issue"
+  echo "🏃 実行中の回（#Issue・Planner・Researcher・Auditor・Evaluator と経過時間）  🙋 判断待ちの Issue  🔀 開いている PR  📥 着手できる Issue"
   echo "🚨  起動の見落とし・gh の失敗・直近の失敗の通知"
   echo "⏩ 次の起動  🔁 今日の回数  ⏳ 今日のかかった時間  ※ 全リポジトリの合計"
   echo "🍃 Eco 週の使用率が目標より上（Engineer だけを2時間おき）  🚀 Boost 土曜のリセット前の24時間（続けて動かす）"
@@ -106,7 +106,7 @@ fi
 jq -r --argjson running "$running" --argjson now "$now" --arg pace "$pace" --arg runners "$runners" '
   def duration: (. / 60 | round) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" else "\($m)m" end;
   def elapsed: (($now - .) / 60 | floor) as $m | if $m >= 60 then "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" else "\($m)m" end;
-  def run: if .mode == "implement" then "#\(.issue)" elif .mode == "plan" then "Planner" elif .mode == "explore" then "Researcher" elif .mode == "review" then "Auditor" else .mode end + " \(.started_at | elapsed)";
+  def run: if .mode == "implement" then "#\(.issue)" elif .mode == "plan" then "Planner" elif .mode == "explore" then "Researcher" elif .mode == "review" then "Auditor" elif .mode == "evaluate" then "Evaluator" else .mode end + " \(.started_at | elapsed)";
   def segment:
     ($running[.name] // null) as $r | .label as $label
     | (.schedule.missed_at or .error or any(.notices[]; (.title | test("失敗")) and (.resolved | not))) as $warn

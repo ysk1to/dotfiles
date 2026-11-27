@@ -99,11 +99,16 @@ event 1500 my-app start "探索（審査）"
 event 1400 my-app notice "探索（お題）: 案 5 件、採用 2 件"
 event 1000 my-app start "Researcher（審査）"
 event 900 my-app notice "Researcher（お題）: 案 3 件、採用 1 件"
+event 800 my-app start "Evaluator"
+event 700 my-app notice "Evaluator: 直す案 2 件、消す案 0 件"
+event 600 my-app start "Evaluator"
+event 500 my-app fail "summary.md を残さずに終わりました。ログ: /x.log"
 assert_eq "前の文言と役割の名前が混ざっていても、Engineer を数える" '{"runs":2,"pr":2}' "$(q '.bots["my-app"].Engineer | {runs, pr}')"
 assert_eq "前の文言と役割の名前が混ざっていても、Planner を数える" '{"runs":2,"issue":3}' "$(q '.bots["my-app"].Planner | {runs, issue}')"
 assert_eq "前の文言と役割の名前が混ざっていても、Auditor を数える" '{"runs":2,"issue":1}' "$(q '.bots["my-app"].Auditor | {runs, issue}')"
 assert_eq "前の文言と役割の名前が混ざっていても、Researcher の回と案を数える" '{"runs":2,"ideas":8,"adopted":3}' \
   "$(q '.bots["my-app"].Researcher | {runs, ideas, adopted}')"
+assert_eq "Evaluator の回は Evaluator として、失敗も数える" '{"runs":2,"fail":1}' "$(q '.bots["my-app"].Evaluator | {runs, fail}')"
 
 setup
 event $((8 * day)) my-app start "#1 に着手"
@@ -342,9 +347,11 @@ event 3900 my-app start "Auditor"
 stream my-app-20261122-105500 3600 "0.44:0.61" "0.45:0.62"
 event 3500 my-app start "Researcher（審査）"
 stream my-app-2-20261122-110000 3200 "0.45:0.62" "0.47:0.63"
+event 3150 my-app start "Evaluator"
+stream my-app-20261122-110500 3100 "0.47:0.63" "0.48:0.64"
 usage_rec 3000 my-app 50 64
 assert_eq "役割の名前で書いた着手からも、使った分の役割を決める" \
-  '{"Auditor":{"runs":1,"used":1,"per_run":1},"Engineer":{"runs":1,"used":2,"per_run":2},"Planner":{"runs":1,"used":1,"per_run":1},"Researcher":{"runs":1,"used":2,"per_run":2}}' \
+  '{"Auditor":{"runs":1,"used":1,"per_run":1},"Engineer":{"runs":1,"used":2,"per_run":2},"Evaluator":{"runs":1,"used":1,"per_run":1},"Planner":{"runs":1,"used":1,"per_run":1},"Researcher":{"runs":1,"used":2,"per_run":2}}' \
   "$(q '.usage.seven_day.roles')"
 
 setup

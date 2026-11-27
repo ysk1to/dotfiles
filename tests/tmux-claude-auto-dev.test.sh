@@ -88,7 +88,9 @@ assert_eq "精査の回は 🏃 Auditor" "🔧 app  🏃 Auditor 0m" "$(show)"
 running my-app '{"mode":"explore","issue":null,"started_at":'"$now"'}'
 assert_eq "探索の回は 🏃 Researcher" "🔧 app  🏃 Researcher 0m" "$(show)"
 running my-app '{"mode":"evaluate","issue":null,"started_at":'"$now"'}'
-assert_eq "知らない種類の回は、mode をそのまま出す" "🔧 app  🏃 evaluate 0m" "$(show)"
+assert_eq "Evaluator の回は 🏃 Evaluator" "🔧 app  🏃 Evaluator 0m" "$(show)"
+running my-app '{"mode":"other","issue":null,"started_at":'"$now"'}'
+assert_eq "知らない種類の回は、mode をそのまま出す" "🔧 app  🏃 other 0m" "$(show)"
 
 setup
 echo "[$(repo)]" > "$cache"
@@ -176,7 +178,7 @@ setup
 popup=$("$bin/tmux-claude-auto-dev" --popup)
 assert_eq "ポップアップに凡例を出す" "yes" "$(echo "$popup" | grep -q '🙋 判断待ちの Issue' && echo yes || echo no)"
 assert_eq "凡例に次の起動と今日の回数・かかった時間も出す" "yes" "$(echo "$popup" | grep -q '⏩ 次の起動' && echo "$popup" | grep -q '⏳ 今日のかかった時間' && echo yes || echo no)"
-assert_eq "凡例の実行中の回は、役割の名前で出す" "yes" "$(echo "$popup" | grep -qF '🏃 実行中の回（#Issue・Planner・Researcher・Auditor と経過時間）' && echo yes || echo no)"
+assert_eq "凡例の実行中の回は、役割の名前で出す" "yes" "$(echo "$popup" | grep -qF '🏃 実行中の回（#Issue・Planner・Researcher・Auditor・Evaluator と経過時間）' && echo yes || echo no)"
 assert_eq "凡例の Eco は、Engineer だけを2時間おきと出す" "yes" "$(echo "$popup" | grep -qF '（Engineer だけを2時間おき）' && echo yes || echo no)"
 assert_eq "凡例に費用は出さない" "no" "$(echo "$popup" | grep -q '💰' && echo yes || echo no)"
 assert_eq "ポップアップに状況の全文を出す" "yes" "$(echo "$popup" | grep -q '状況の全文' && echo yes || echo no)"
