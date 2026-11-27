@@ -44,9 +44,6 @@
       "Bash(mkfs*)",
       "Read(~/.ssh/**)",
       "Read(~/.aws/**)"
-    ],
-    "ask": [
-      "Agent"
     ]
   },
   "hooks": {
