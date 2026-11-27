@@ -787,7 +787,7 @@ assert_eq "企画が作った Issue に auto-planned を付ける" "yes" "$(has_
 body=$(sed -n 's/^gh issue create body=//p' "$FAKE_LOG")
 assert_eq "3行目以降を Issue の本文にする" "yes" "$(echo "$body" | head -n 1 | grep -qxF '## 背景' && echo yes || echo no)"
 assert_eq "本文にラベルの行を残さない" "no" "$(echo "$body" | grep -q '^labels:' && echo yes || echo no)"
-assert_eq "本文の末尾に、企画が作ったと書く" "yes" "$(echo "$body" | grep -q '🤖 自動開発ワークフロー（企画）' && echo yes || echo no)"
+assert_eq "本文の末尾に、企画が作ったと書く" "yes" "$(echo "$body" | grep -q '🤖 自動開発ワークフロー（Planner）が作成' && echo yes || echo no)"
 assert_eq "Issue にしたらファイルを消す" "0" "$(find "$(plan_dir)" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "企画の回のあと worktree を消す" "1" "$(git -C "$repo" worktree list | wc -l | tr -d ' ')"
 
@@ -1073,6 +1073,8 @@ assert_eq "精査の回は精査の手順を読ませる（企画・実装より
 assert_eq "精査の回の既定のモデルは fable" "fable" "$(args_after --model)"
 input="$CLAUDE_AUTO_DEV_STATE_DIR/review-input/my-app.md"
 assert_eq "精査する Issue の本文を渡す" "yes" "$(grep -q '本文7' "$input" && grep -q '本文8' "$input" && echo yes || echo no)"
+assert_eq "精査する Issue の見出しは、Planner が作ったものと書く" "yes" "$(grep -qxF '# 精査する Issue（Planner が作ったもの）' "$input" && echo yes || echo no)"
+assert_eq "精査の回の開始を、役割の名前で残す" "start	Auditor" "$(cut -f3- "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" | grep '^start')"
 assert_eq "精査済み・人が書いた・閉じた Issue は精査の対象にしない" "no" "$(grep -q '本文9\|本文10\|本文11' "$input" && echo yes || echo no)"
 assert_eq "ほかの Issue はタイトルを渡す（重複を見るため）" "yes" "$(grep -q '#10 人が書いた' "$input" && grep -q '#11 閉じた' "$input" && echo yes || echo no)"
 assert_eq "精査の入力と結果の置き場所をプロンプトで伝える" "yes" "$(grep -qF "$input" "$FAKE_LOG" && grep -qF "$(review_dir)" "$FAKE_LOG" && echo yes || echo no)"
@@ -1089,7 +1091,7 @@ assert_eq "ほかの Issue はラベルも渡す（判断が出たかを見る�
 edits=$(grep '^gh issue edit' "$FAKE_LOG")
 assert_eq "hold の Issue は auto-ready を外して判断待ちにし、精査済みにする" "yes" "$(echo "$edits" | grep -qxF 'gh issue edit issue edit 7 --remove-label auto-ready --add-label needs-decision --add-label auto-reviewed' && echo yes || echo no)"
 assert_eq "hold の理由を Issue にコメントする" "yes" "$(grep -q '^gh issue comment arg=.*仕様が足りない' "$FAKE_LOG" && echo yes || echo no)"
-assert_eq "コメントに精査が書いたと入れる" "yes" "$(grep -q '^gh issue comment arg=.*企画の精査' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "コメントに精査が書いたと入れる" "yes" "$(grep -q '^gh issue comment arg=🤖 自動開発ワークフロー（Auditor）: ' "$FAKE_LOG" && echo yes || echo no)"
 assert_eq "コメントに action の行を残さない" "no" "$(grep -q '^gh issue comment arg=.*action:' "$FAKE_LOG" && echo yes || echo no)"
 assert_eq "ファイルのない Issue は、精査済みにするだけ" "yes" "$(echo "$edits" | grep -qxF 'gh issue edit issue edit 8 --add-label auto-reviewed' && echo yes || echo no)"
 assert_eq "対象でない Issue には触らない" "2" "$(echo "$edits" | wc -l | tr -d ' ')"
@@ -1206,7 +1208,7 @@ assert_eq "見つけた問題を Issue にする" "yes" "$(has_line "$creates" '
 assert_eq "精査が作った Issue に auto-finding を付ける" "yes" "$(has_line "$creates" 'auto-finding')"
 assert_eq "精査が作った Issue に auto-planned は付けない（精査の対象にしない）" "no" "$(has_line "$creates" 'auto-planned')"
 assert_eq "精査が作った Issue にも、書かれたラベルを付ける" "yes" "$(has_line "$creates" 'auto-ready')"
-assert_eq "精査が作った Issue の本文の末尾に、精査が作ったと書く" "yes" "$(sed -n 's/^gh issue create body=//p' "$FAKE_LOG" | grep -q '🤖 自動開発ワークフロー（精査）' && echo yes || echo no)"
+assert_eq "精査が作った Issue の本文の末尾に、精査が作ったと書く" "yes" "$(sed -n 's/^gh issue create body=//p' "$FAKE_LOG" | grep -q '🤖 自動開発ワークフロー（Auditor）が作成' && echo yes || echo no)"
 
 # 精査が作る Issue にも、ラベルの決まりと件数の上限（既定は5件）がある
 setup
@@ -1396,7 +1398,7 @@ assert_eq "やることがない回は、できごとを残さない" "" "$(even
 
 setup
 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "着手・claude の終了（ターン数とかかった時間）・判断待ちを残す" "my-app	start	#1 に着手
+assert_eq "着手・claude の終了（ターン数とかかった時間）・判断待ちを残す" "my-app	start	Engineer #1
 my-app	end	3 ターン、4m
 my-app	decision	#1: 判断待ちで止まりました。Issue のコメントを見てください" "$(events)"
 assert_eq "できごとの時刻を残す" "3" "$(cut -f1 "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" 2>/dev/null | grep -cE '^[0-9]+$')"
@@ -1417,7 +1419,7 @@ assert_eq "失敗を残す" "my-app	fail	#1: claude が終了コード 3 で止�
 setup
 enable_plan
 FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
-assert_eq "企画の回は、開始と作った Issue を残す" "my-app	start	企画
+assert_eq "企画の回は、開始と作った Issue を残す" "my-app	start	Planner
 my-app	end	3 ターン、4m
 my-app	issue	#20 🤖 [add] 一覧を足す" "$(events)"
 assert_eq "企画の回は、回の種類をロックに残す" '"plan" null' "$(sed -n 's/^claude run=//p' "$FAKE_LOG" | jq -r '"\(.mode | tojson) \(.issue)"')"
@@ -1463,6 +1465,7 @@ assert_eq "企画の回が上限で止まっても失敗で終わらない" "0" 
 assert_eq "企画の回が上限で止まったら Issue を作らない" "0" "$(grep -c '^gh issue create' "$FAKE_LOG")"
 assert_eq "企画の回が上限で止まったら、書いてあった案を残す" "1" "$(find "$CLAUDE_AUTO_DEV_STATE_DIR/plan-failed" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "企画の回が上限で止まったら、解除の時刻を残す" "$reset_at" "$(cat "$(usage_limit_file)" 2>/dev/null)"
+assert_eq "企画の回が上限で止まったら、Planner の中断として知らせる" "yes" "$(grep '^osascript' "$FAKE_LOG" | grep 'my-app の Planner が上限で中断' | grep -q 'のあとにやり直します' && echo yes || echo no)"
 echo $(($(date +%s) - 1)) > "$(usage_limit_file)"
 FAKE_ISSUES='[]' FAKE_PLAN_COUNT=1 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "企画の回が上限で止まったら、間隔を待たずに解除のあとに企画し直す" "2 1" "$(claude_calls) $(grep -c '^gh issue create arg=create$' "$FAKE_LOG")"
@@ -1487,6 +1490,7 @@ FAKE_ALL_ISSUES="$planned" FAKE_REVIEW_FILES=7 FAKE_USAGE_LIMIT=$reset_at "$bin/
 assert_eq "精査の回が上限で止まっても失敗で終わらない" "0" "$?"
 assert_eq "精査の回が上限で止まったら Issue に反映しない" "no" "$(grep -qE '^gh issue (edit|close)' "$FAKE_LOG" && echo yes || echo no)"
 assert_eq "精査の回が上限で止まったら、解除の時刻を残す" "$reset_at" "$(cat "$(usage_limit_file)" 2>/dev/null)"
+assert_eq "精査の回が上限で止まったら、Auditor の中断として知らせる" "yes" "$(grep '^osascript' "$FAKE_LOG" | grep 'my-app の Auditor が上限で中断' | grep -q 'のあとにやり直します' && echo yes || echo no)"
 echo $(($(date +%s) - 1)) > "$(usage_limit_file)"
 FAKE_ALL_ISSUES="$planned" FAKE_REVIEW_FILES=7 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "精査の回が上限で止まったら、間隔を待たずに解除のあとに精査し直す" "yes" "$(last_prompt | grep -q 'Auditor として起動された' && echo yes || echo no)"
@@ -1605,6 +1609,9 @@ assert_eq "実行中の回の種類を explore と残す" "yes" "$(call_log 1 | 
 assert_eq "段ごとに、流れる出力の場所を分ける" "2" "$(grep '^claude run=' "$FAKE_LOG" | sed 's/.*"stream": *"\([^"]*\)".*/\1/' | sort -u | wc -l | tr -d ' ')"
 assert_eq "探索の回のあと worktree を消す" "1" "$(git -C "$repo" worktree list | wc -l | tr -d ' ')"
 assert_eq "採用の件数をできごとに残す" "yes" "$(grep -q '採用 2 件' "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" && echo yes || echo no)"
+assert_eq "Researcher の段の開始と案の数を、役割の名前で残す" "start	Researcher（案を出す）
+start	Researcher（審査）
+notice	Researcher（お題: データ）: 案 3 件、採用 2 件" "$(cut -f3- "$CLAUDE_AUTO_DEV_STATE_DIR/events.tsv" | grep -v '^end')"
 
 # 探索は決まった間隔で起動する。間隔がたっていなければ、ふつうの回（実装）にする。お題は回ごとに順に変える
 : > "$FAKE_LOG"
@@ -1642,7 +1649,7 @@ enable_explore
 FAKE_ISSUES='[]' FAKE_IDEA_COUNT=2 FAKE_JUDGE_EXIT=2 "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "審査の段が失敗したら失敗で終わる" "2" "$?"
 assert_eq "審査の段が失敗したら、採用の案を残さない" "0" "$(find "$(ideas_dir)" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
-assert_eq "審査の段が失敗したら通知する" "yes" "$(grep -q '^osascript .*探索が失敗' "$FAKE_LOG" && echo yes || echo no)"
+assert_eq "審査の段が失敗したら通知する" "yes" "$(grep -q '^osascript .*my-app の Researcher が失敗' "$FAKE_LOG" && echo yes || echo no)"
 assert_eq "書いてあった案を残す" "2" "$(find "$CLAUDE_AUTO_DEV_STATE_DIR"/explore-failed -name '*.md' | wc -l | tr -d ' ')"
 echo 0 > "$(explore_last)"
 : > "$FAKE_LOG"
@@ -1654,6 +1661,7 @@ setup
 enable_explore
 FAKE_ISSUES='[]' FAKE_USAGE_LIMIT=$(($(date +%s) + 600)) "$bin/claude-auto-dev" "$repo" >/dev/null 2>&1
 assert_eq "探索の回が上限で止まっても成功で終わる" "0" "$?"
+assert_eq "探索の回が上限で止まったら、Researcher の中断として知らせる" "yes" "$(grep '^osascript' "$FAKE_LOG" | grep 'my-app の Researcher が上限で中断' | grep -q 'のあとにやり直します' && echo yes || echo no)"
 assert_eq "上限で止まったら、前の探索の時刻を残さない" "no" "$([ -f "$(explore_last)" ] && echo yes || echo no)"
 
 # 採用された案は、次の企画の回に渡す。企画が Issue にしたら、渡し終えた案として片付ける
@@ -2221,7 +2229,7 @@ for skill in none empty; do
   assert_eq "${label}、claude を起動しない" "0" "$(claude_calls)"
   assert_eq "${label}、Issue を作らない" "" "$(issue_creates)"
   notice=$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/notices/my-app.tsv" 2>/dev/null)
-  assert_eq "${label}、企画の失敗として通知を残す" "yes" "$(echo "$notice" | cut -f2 | grep -q '企画が失敗' && echo yes || echo no)"
+  assert_eq "${label}、企画の失敗として通知を残す" "yes" "$(echo "$notice" | cut -f2 | grep -q '^の Planner が失敗$' && echo yes || echo no)"
   assert_eq "${label}、通知に探した場所を書く" "yes" "$(echo "$notice" | grep -qF "$CLAUDE_AUTO_DEV_SKILLS_DIR/planner/SKILL.md" && echo yes || echo no)"
   assert_eq "${label}、通知で make deploy-claude を確かめるよう伝える" "yes" "$(echo "$notice" | grep -q 'make deploy-claude' && echo yes || echo no)"
   assert_eq "${label}、前の企画の時刻を残さない" "no" "$([ -f "$(plan_last)" ] && echo yes || echo no)"
@@ -2252,7 +2260,7 @@ for both in no yes; do
   assert_eq "${label}、成功で終わる" "0" "$code"
   assert_eq "${label}、精査の回を起動する" "1" "$(claude_calls)"
   assert_eq "${label}、精査の結果を Issue に反映する" "yes" "$(grep -qxF 'gh issue edit issue edit 7 --remove-label auto-ready --add-label needs-decision --add-label auto-reviewed' "$FAKE_LOG" && echo yes || echo no)"
-  assert_eq "${label}、Auditor として起動されたと、Engineer と同じ形で書き出す" "このリポジトリの自動開発ワークフローの Auditor として起動された。末尾の <procedure>（Auditor の共通の手順）と <repository>（このリポジトリに固有の決まり）のとおりに、企画の回が作った Issue と、マージされた PR を精査する。2つが同じ事柄を決めているときは <repository> を優先する。" "$(echo "$prompt" | head -n 1)"
+  assert_eq "${label}、Auditor として起動されたと、Engineer と同じ形で書き出す" "このリポジトリの自動開発ワークフローの Auditor として起動された。末尾の <procedure>（Auditor の共通の手順）と <repository>（このリポジトリに固有の決まり）のとおりに、Planner が作った Issue と、マージされた PR を精査する。2つが同じ事柄を決めているときは <repository> を優先する。" "$(echo "$prompt" | head -n 1)"
   assert_eq "${label}、<procedure> にスキルの本文を入れる" "yes" "$(section_of procedure | grep -q 'Auditor のスキルの本文です' && echo yes || echo no)"
   assert_eq "${label}、スキルの frontmatter は入れない" "no" "$(echo "$prompt" | grep -qE '^(name|description):' && echo yes || echo no)"
   assert_eq "${label}、<repository> に .claude/auditor.md の中身を入れる" "yes" "$(section_of repository | grep -q '精査のリポジトリの決まりです' && echo yes || echo no)"
@@ -2305,7 +2313,7 @@ for skill in none empty; do
   assert_eq "${label}、claude を起動しない" "0" "$(claude_calls)"
   assert_eq "${label}、Issue と PR に触らない" "0" "$(grep -c '^gh issue edit\|^gh issue close\|^gh issue comment\|^gh issue create\|^gh pr edit' "$FAKE_LOG")"
   notice=$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/notices/my-app.tsv" 2>/dev/null)
-  assert_eq "${label}、精査の失敗として通知を残す" "yes" "$(echo "$notice" | cut -f2 | grep -q '精査が失敗' && echo yes || echo no)"
+  assert_eq "${label}、精査の失敗として通知を残す" "yes" "$(echo "$notice" | cut -f2 | grep -q '^の Auditor が失敗$' && echo yes || echo no)"
   assert_eq "${label}、通知に探した場所を書く" "yes" "$(echo "$notice" | grep -qF "$CLAUDE_AUTO_DEV_SKILLS_DIR/auditor/SKILL.md" && echo yes || echo no)"
   assert_eq "${label}、通知で make deploy-claude を確かめるよう伝える" "yes" "$(echo "$notice" | grep -q 'make deploy-claude' && echo yes || echo no)"
   assert_eq "${label}、前の精査の時刻を残さない" "no" "$([ -f "$(review_last)" ] && echo yes || echo no)"
@@ -2467,7 +2475,7 @@ for missing in judge:none judge:empty ideas:none research:none; do
   assert_eq "${label}、失敗で終わる" "yes" "$([ "$code" -ne 0 ] && echo yes || echo no)"
   assert_eq "${label}、claude を起動しない" "0" "$(claude_calls)"
   notice=$(cat "$CLAUDE_AUTO_DEV_STATE_DIR/notices/my-app.tsv" 2>/dev/null)
-  assert_eq "${label}、探索の失敗として通知を残す" "yes" "$(echo "$notice" | cut -f2 | grep -q '探索が失敗' && echo yes || echo no)"
+  assert_eq "${label}、探索の失敗として通知を残す" "yes" "$(echo "$notice" | cut -f2 | grep -q '^の Researcher が失敗$' && echo yes || echo no)"
   assert_eq "${label}、通知に探した場所を書く" "yes" "$(echo "$notice" | grep -qF "$CLAUDE_AUTO_DEV_SKILLS_DIR/researcher/$stage_file.md" && echo yes || echo no)"
   assert_eq "${label}、通知で make deploy-claude を確かめるよう伝える" "yes" "$(echo "$notice" | grep -q 'make deploy-claude' && echo yes || echo no)"
   assert_eq "${label}、前の探索の時刻を残さない" "no" "$([ -f "$(explore_last)" ] && echo yes || echo no)"

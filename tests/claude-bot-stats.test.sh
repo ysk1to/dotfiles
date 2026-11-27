@@ -81,6 +81,30 @@ assert_eq "企画の回は Planner として、作った Issue を数える" '{"
 assert_eq "精査の回は Auditor として数える" '1' "$(q '.bots["my-app"].Auditor.runs')"
 assert_eq "探索の段は Researcher として、段ごとに1回と数える" '2' "$(q '.bots["my-app"].Researcher.runs')"
 
+# 役割の名前で書いたできごと（#102 から）と、前の文言のできごとが混ざっていても、役割ごとに数える
+setup
+event 5000 my-app start "#11 に着手"
+event 4900 my-app pr "#30 🤖 [add] 前の文言の回"
+event 4000 my-app start "Engineer #12"
+event 3900 my-app pr "#31 🤖 [add] 新しい文言の回"
+event 3500 my-app start "企画"
+event 3400 my-app issue "#32 🤖 案その1"
+event 3000 my-app start "Planner"
+event 2900 my-app issue "#33 🤖 案その2"
+event 2800 my-app issue "#34 🤖 案その3"
+event 2500 my-app start "精査"
+event 2000 my-app start "Auditor"
+event 1900 my-app issue "#35 🤖 見つけた問題"
+event 1500 my-app start "探索（審査）"
+event 1400 my-app notice "探索（お題）: 案 5 件、採用 2 件"
+event 1000 my-app start "Researcher（審査）"
+event 900 my-app notice "Researcher（お題）: 案 3 件、採用 1 件"
+assert_eq "前の文言と役割の名前が混ざっていても、Engineer を数える" '{"runs":2,"pr":2}' "$(q '.bots["my-app"].Engineer | {runs, pr}')"
+assert_eq "前の文言と役割の名前が混ざっていても、Planner を数える" '{"runs":2,"issue":3}' "$(q '.bots["my-app"].Planner | {runs, issue}')"
+assert_eq "前の文言と役割の名前が混ざっていても、Auditor を数える" '{"runs":2,"issue":1}' "$(q '.bots["my-app"].Auditor | {runs, issue}')"
+assert_eq "前の文言と役割の名前が混ざっていても、Researcher の回と案を数える" '{"runs":2,"ideas":8,"adopted":3}' \
+  "$(q '.bots["my-app"].Researcher | {runs, ideas, adopted}')"
+
 setup
 event $((8 * day)) my-app start "#1 に着手"
 event $((8 * day - 60)) my-app pr "#2 古い PR"
@@ -307,6 +331,21 @@ event 2800 my-app start "#2 に着手"
 stream my-app-20261122-112000 2500 "0.45:" "0.48:"
 assert_eq "記録の範囲の中で始まった回だけを、名前に段の番号が付いた出力も含めて数える" \
   '{"Researcher":{"runs":2,"used":3,"per_run":1.5}}' "$(q '.usage.seven_day.roles')"
+
+setup
+usage_rec 5000 my-app 40 60
+event 4800 my-app start "Engineer #1"
+stream my-app-20261122-104000 4500 "0.41:" "0.43:"
+event 4400 my-app start "Planner"
+stream my-app-20261122-104500 4000 "0.43:0.61" "0.44:0.61"
+event 3900 my-app start "Auditor"
+stream my-app-20261122-105500 3600 "0.44:0.61" "0.45:0.62"
+event 3500 my-app start "Researcher（審査）"
+stream my-app-2-20261122-110000 3200 "0.45:0.62" "0.47:0.63"
+usage_rec 3000 my-app 50 64
+assert_eq "役割の名前で書いた着手からも、使った分の役割を決める" \
+  '{"Auditor":{"runs":1,"used":1,"per_run":1},"Engineer":{"runs":1,"used":2,"per_run":2},"Planner":{"runs":1,"used":1,"per_run":1},"Researcher":{"runs":1,"used":2,"per_run":2}}' \
+  "$(q '.usage.seven_day.roles')"
 
 setup
 usage_rec 3000 my-app 45 62
