@@ -6,6 +6,10 @@ cd "$(dirname "$0")/.." || exit 1
 bin="$PWD/bin"
 failures=0
 
+# setup が作るフォルダは1つのフォルダの下に置き、終わるときにまとめて消す
+tmp_root=$(mktemp -d)
+trap 'rm -rf "$tmp_root"' EXIT
+
 assert_eq() {
   if [ "$2" = "$3" ]; then
     echo "ok   $1"
@@ -24,7 +28,7 @@ at() { date -j -f '%Y-%m-%d %H:%M:%S' "$1" +%s; }
 
 # 状態のディレクトリに、claude-auto-dev が残すもの（リポジトリの場所）を作る。gh は FAKE_ISSUES・FAKE_PRS を返す
 setup() {
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d "$tmp_root/XXXXXX")
   state="$tmp/state"
   export CLAUDE_AUTO_DEV_STATE_DIR="$state" CLAUDE_AUTO_DEV_LAUNCH_AGENTS="$tmp/agents" CLAUDE_AUTO_DEV_NOW="$now"
   export CLAUDE_AUTO_DEV_CONFIG_DIR="$tmp/config"

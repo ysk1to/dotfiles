@@ -5,6 +5,10 @@ cd "$(dirname "$0")/.." || exit 1
 bin="$PWD/bin"
 failures=0
 
+# setup が作るフォルダは1つのフォルダの下に置き、終わるときにまとめて消す
+tmp_root=$(mktemp -d)
+trap 'rm -rf "$tmp_root"' EXIT
+
 assert_eq() {
   if [ "$2" = "$3" ]; then
     echo "ok   $1"
@@ -17,7 +21,7 @@ assert_eq() {
 }
 
 setup() {
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d "$tmp_root/XXXXXX")
   export XDG_CACHE_HOME="$tmp"
   # 取得の代わりに、問い合わせた URL をそのまま出す
   export TMUX_WEATHER_FETCH="echo"
