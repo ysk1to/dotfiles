@@ -4,9 +4,9 @@
 #   --days: 何日分を数えるか（既定 7）。--json: JSON で出す（既定はテキスト）
 # 数えるもの（件数だけを出し、会話や Issue の中身は出さない）:
 #   bots:     自動開発の回。events.tsv の着手（start）の内容から役割を決め、次の着手までの PR・Issue・判断待ち・失敗をその回のものとして数える
-#             （#N に着手 → Engineer、企画 → Planner、精査 → Auditor、探索 → Researcher）
+#             （Engineer #N・Planner・Auditor・Researcher（…）。前の文言の #N に着手・企画・精査・探索（…）も読む）
 #             fail_reasons: 失敗の理由ごとの数（本文から先頭の「#N: 」を除き、最初の「。」より前を取る）
-#             Researcher の ideas・adopted: お知らせ「探索（…）: 案 N 件、採用 M 件」の N と M の合計
+#             Researcher の ideas・adopted: お知らせ「Researcher（…）: 案 N 件、採用 M 件」（前の文言は「探索（…）: …」）の N と M の合計
 #             rebuilds・rebuild_tokens: プロンプトキャッシュが切れて文脈を作り直した回数とトークン数（できごと「作り直し N 回、T トークン」の合計）
 #   reviewer: 期間内に作られた PR を、ワークフローがマージしたか・自動レビューのコメントがあるかで、自動マージ・要確認・レビュー前に分ける。gh が失敗したリポジトリは null
 #             要確認は、最後の自動レビューのコメントの理由（「確認をお願いします」より前の「- 」の行）がすべて決まり
@@ -46,7 +46,8 @@ bots_json() {
   awk -F'\t' -v since="$since" '
     $1 < since { next }
     $3 == "start" {
-      role = ($4 ~ /^#[0-9]+ に着手/) ? "Engineer" : ($4 ~ /^企画/) ? "Planner" : ($4 ~ /^精査/) ? "Auditor" : ($4 ~ /^探索/) ? "Researcher" : ""
+      role = ($4 ~ /^(Engineer #[0-9]+|#[0-9]+ に着手)/) ? "Engineer" : ($4 ~ /^(Planner|企画)/) ? "Planner" \
+        : ($4 ~ /^(Auditor|精査)/) ? "Auditor" : ($4 ~ /^(Researcher|探索)/) ? "Researcher" : ""
       current[$2] = role
       if (role != "") runs[$2 SUBSEP role]++
       next
@@ -67,7 +68,7 @@ bots_json() {
       rebuilds[$2 SUBSEP current[$2]] += n + 0
       rebuild_tokens[$2 SUBSEP current[$2]] += t + 0
     }
-    $3 == "notice" && current[$2] == "Researcher" && $4 ~ /^探索（.*）: 案 [0-9]+ 件、採用 [0-9]+ 件$/ {
+    $3 == "notice" && current[$2] == "Researcher" && $4 ~ /^(Researcher|探索)（.*）: 案 [0-9]+ 件、採用 [0-9]+ 件$/ {
       n = $4
       sub(/.*: 案 /, "", n)
       m = n
@@ -162,8 +163,8 @@ usage_json() {
       {repo: $repo, end: $end, seven_day: used("seven_day"), fable: used("seven_day_overage_included")}' 2>/dev/null
   done | jq -sc .)
   starts=$(awk -F'\t' '$3 == "start"' "$state_dir/events.tsv" 2>/dev/null | jq -Rn '[inputs | split("\t") | {at: (.[0] | tonumber), repo: .[1],
-    role: (.[3] | if test("^#[0-9]+ に着手") then "Engineer" elif test("^企画") then "Planner" elif test("^精査") then "Auditor"
-      elif test("^探索") then "Researcher" else "" end)}]')
+    role: (.[3] | if test("^(Engineer #[0-9]+|#[0-9]+ に着手)") then "Engineer" elif test("^(Planner|企画)") then "Planner"
+      elif test("^(Auditor|精査)") then "Auditor" elif test("^(Researcher|探索)") then "Researcher" else "" end)}]')
   jq -sc --argjson since "$since" --argjson runs "${runs:-[]}" --argjson starts "${starts:-[]}" '
     [.[] | select(.at >= $since)] | sort_by(.at) as $r
     | if ($r | length) < 2 then null else
