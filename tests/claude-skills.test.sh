@@ -109,6 +109,24 @@ assert_eq "judge.md に、置き場の回は記録の本文にお題と調査メ
 assert_eq "judge.md に、置き場の回は ## 記録 を起動スクリプトが書くとある" "1" \
   "$(grep -c '置き場が渡されたときは書かない。起動スクリプトが' claude/skills/researcher/judge.md)"
 
+# Tutor の仕入れ先の一覧の形を確かめ、問題のある行を1行1つで出す。問題がなければ何も出さない。
+# 仕入れのスクリプトがタブ区切りの3列（種類・名前・フィードの URL）で読むので、形が崩れると仕入れ先が黙って抜けるため
+check_tutor_sources() {
+  awk -F '\t' '
+    /^#/ || /^$/ { next }
+    NF != 3 { print NR ": 列がタブ区切りの3つでない"; next }
+    $1 !~ /^(release|session|podcast)$/ { print NR ": 種類が release・session・podcast のどれでもない: " $1 }
+    $2 == "" { print NR ": 名前が空" }
+    $3 !~ /^https:\/\/[^ ]+$/ { print NR ": URL が https で始まらない: " $3 }
+  ' "$1"
+}
+assert_eq "claude/skills/tutor/sources.tsv の形" "" "$(check_tutor_sources claude/skills/tutor/sources.tsv)"
+# 確かめ方そのものが、崩れた一覧を見つけられること
+printf 'release\tClaude Code\n' > "$tmp/sources.tsv"
+printf 'video\tAI Engineer\thttps://example.com/feed\n' >> "$tmp/sources.tsv"
+printf 'podcast\tLatent Space\thttp://example.com/feed\n' >> "$tmp/sources.tsv"
+assert_eq "崩れた仕入れ先の一覧を見つける" "3" "$(check_tutor_sources "$tmp/sources.tsv" | wc -l | tr -d ' ')"
+
 if [ "$failures" -ne 0 ]; then
   echo "$failures failed"
   exit 1

@@ -1,0 +1,14 @@
+# Tutor の仕入れ先。仕入れのスクリプトが読み、新しい項目を調査の材料にする。
+# 列はタブで区切る: 種類	名前	フィードの URL
+# 種類:
+#   release - リリース（GitHub Releases の Atom など）。本文のリリースノートを材料にする
+#   session - 英語圏の講演の動画（YouTube のチャンネルのフィード）。選ばれたものだけ字幕を取る
+#   podcast - 英語圏のポッドキャストや記事（RSS）。本文の書き起こしを材料にする
+# 有名どころだけにする。足すときは、一次情報か、講演の主催者や番組の公式のフィードにする。
+release	Claude Code	https://github.com/anthropics/claude-code/releases.atom
+release	llama.cpp	https://github.com/ggml-org/llama.cpp/releases.atom
+release	Ollama	https://github.com/ollama/ollama/releases.atom
+release	vLLM	https://github.com/vllm-project/vllm/releases.atom
+session	AI Engineer	https://www.youtube.com/feeds/videos.xml?channel_id=UCLKPca3kwwd-B59HNr-_lvA
+session	Anthropic	https://www.youtube.com/feeds/videos.xml?channel_id=UCrDwWp7EBBv4NwvScIpBDOA
+podcast	Latent Space	https://www.latent.space/feed
