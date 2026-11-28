@@ -82,6 +82,8 @@ assert_rule() {
 assert_rule claude/skills/planner/SKILL.md '^- Claude: 案のファイルは、応答を分けて書く。読んで考えたあとの最初の応答では1本だけ書き、そのあとは1回の応答で2本までにする'
 assert_rule claude/skills/researcher/ideas.md '^- Claude: 案のファイルは、1回の応答で 2〜3本までにする'
 assert_rule claude/skills/researcher/judge.md '^- Claude: 結果と記録は、応答を分けて書く。審査を終えたあとの最初の応答では `rejected.md` だけを書き'
+assert_rule claude/skills/tutor/digest.md '^- Claude: 学習 DB の話題は、1回の応答で1件ずつ書く'
+assert_rule claude/skills/tutor/review.md '^- Claude: 学習 DB の話題は、1回の応答で1件ずつ書く'
 
 # 企画の手順に、案を全部書き終えたら印のファイル（done）を置く決まりがあること。
 # 起動スクリプトは、使用量の上限で止まった回でも、この印があれば案を Issue にする（なければ plan-failed/ に残す）
